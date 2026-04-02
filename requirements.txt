@@ -1,0 +1,18 @@
+# Web framework and server
+fastapi==0.115.12
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# Database
+sqlalchemy==2.0.40
+psycopg2-binary==2.9.10
+
+# Configuration
+pydantic==2.11.1
+pydantic-settings==2.8.1
+python-dotenv==1.1.0
+
+# Testing
+pytest==8.3.5
+pytest-cov==6.1.0
+httpx==0.28.1
