@@ -185,17 +185,32 @@ def _group_events(events, client_agent_map):
         if conv_id and direction == "IN" and client_num:
             conv_to_client[conv_id] = client_num
 
+    # Sort events chronologically for proximity matching
+    sorted_evs = sorted(events, key=lambda e: e.received_at or datetime.min.replace(tzinfo=timezone.utc))
+
     groups: dict[str, list] = defaultdict(list)
     phone_learned: dict[str, str] = {}
-    for ev in events:
+
+    # Track last known client for OUT messages without from/to
+    last_known_client = ""
+    for ev in sorted_evs:
         p = ev.raw_payload or {}
+        ev_type = (p.get("type", "") or "").upper()
+        if ev_type in ("CONVERSATION_STATUS", "MESSAGE_STATUS"):
+            continue
         client_num = _extract_client_number(p)
         conv_id = _extract_conversation_id(p)
         if not client_num and conv_id:
             client_num = conv_to_client.get(conv_id, "")
+        direction = _extract_direction(p)
+        # For OUT without client info, use last known client from nearby messages
+        if not client_num and direction == "OUT" and last_known_client:
+            client_num = last_known_client
         if not client_num:
             continue
-        direction = _extract_direction(p)
+        # Update last known client
+        if client_num:
+            last_known_client = client_num
         agent = _extract_agent_from_payload(p)
         if direction == "OUT" and agent and client_num:
             phone_learned[client_num] = agent
@@ -385,7 +400,7 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
     if not _check_auth(request):
         return _auth_redirect()
 
-    all_events, total = get_events(db, limit=5000, offset=0)
+    all_events, total = get_events(db, limit=50000, offset=0)
     client_agent_map = get_agent_mappings(db)
     client_name_map = get_client_names(db)
     groups, phone_learned = _group_events(all_events, client_agent_map)
@@ -484,7 +499,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
     elif periodo == "7dias":
         cutoff = now_br - timedelta(days=7)
 
-    all_events, _ = get_events(db, limit=5000, offset=0)
+    all_events, _ = get_events(db, limit=50000, offset=0)
     client_agent_map = get_agent_mappings(db)
 
     if cutoff:
