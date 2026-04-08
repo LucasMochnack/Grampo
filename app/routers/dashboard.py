@@ -88,12 +88,21 @@ def _extract_content_preview(payload: dict) -> str:
         contents = msg.get("contents", [])
         if isinstance(contents, list):
             for c in contents:
+                if isinstance(c, str):
+                    return c[:300]
+                if not isinstance(c, dict):
+                    continue
                 for key in ("text", "body", "payload"):
                     txt = c.get(key, "")
-                    if txt:
-                        return str(txt)[:300]
+                    if txt and isinstance(txt, str):
+                        return txt[:300]
+                    elif txt and isinstance(txt, dict):
+                        # Nested: {'text': {'text': '...'}}
+                        inner = txt.get("text", "") or txt.get("body", "")
+                        if inner:
+                            return str(inner)[:300]
                 ctype = (c.get("type", "") or "").lower()
-                if ctype in ("image", "audio", "video", "file", "document"):
+                if ctype in ("image", "audio", "video", "file", "document", "sticker"):
                     caption = c.get("caption", "")
                     fname = c.get("fileName", c.get("filename", ""))
                     label = ctype.upper()
@@ -104,6 +113,14 @@ def _extract_content_preview(payload: dict) -> str:
                     return f"[{label}]"
         if msg.get("text"):
             return str(msg["text"])[:300]
+        # Fallback: try top-level contents
+        top_contents = payload.get("contents", [])
+        if isinstance(top_contents, list):
+            for c in top_contents:
+                if isinstance(c, dict):
+                    txt = c.get("text", "") or c.get("body", "")
+                    if txt and isinstance(txt, str):
+                        return txt[:300]
         return ""
     except Exception:
         return ""
@@ -266,6 +283,29 @@ COMMON_CSS = """
   .msg-time { font-size: 10px; color: #4a5a7a; margin-top: 3px; }
 </style>
 """
+
+
+# ── Debug (temporary) ────────────────────────────────────────────────────────
+
+@router.get("/dashboard/debug-payloads", include_in_schema=False)
+def debug_payloads(request: Request, db: Session = Depends(get_db)):
+    if not _check_auth(request):
+        return _auth_redirect()
+    import json
+    from app.models import WebhookEvent
+    events = db.query(WebhookEvent).order_by(WebhookEvent.received_at.desc()).limit(10).all()
+    result = []
+    for ev in events:
+        p = ev.raw_payload or {}
+        result.append({
+            "type": p.get("type"),
+            "direction": _extract_direction(p),
+            "client": _extract_client_number(p),
+            "content_preview": _extract_content_preview(p),
+            "contents_raw": (p.get("message", {}) or {}).get("contents", []),
+            "message_keys": list((p.get("message", {}) or {}).keys()),
+        })
+    return result
 
 
 # ── Login ────────────────────────────────────────────────────────────────────
