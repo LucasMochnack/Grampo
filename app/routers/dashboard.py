@@ -63,13 +63,18 @@ def _auth_redirect():
 
 def _extract_client_number(payload: dict) -> str:
     try:
-        msg = payload.get("message", {})
+        msg = payload.get("message", {}) or {}
         direction = (msg.get("direction", "") or payload.get("direction", "")).upper()
-        if direction == "OUT":
-            num = msg.get("to", "") or payload.get("to", "")
-        else:
-            num = msg.get("from", "") or payload.get("from", "")
-        return "" if num == COMPANY_CHANNEL else num
+        # Zenvia Conversations API: for both IN and OUT, "from" is the client phone
+        # and "to" is the company channel. Try "from" first, fallback to "to".
+        from_num = msg.get("from", "") or payload.get("from", "")
+        to_num = msg.get("to", "") or payload.get("to", "")
+        # Pick whichever is NOT the company channel
+        if from_num and from_num != COMPANY_CHANNEL:
+            return from_num
+        if to_num and to_num != COMPANY_CHANNEL:
+            return to_num
+        return ""
     except Exception:
         return ""
 
@@ -416,7 +421,7 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
         for ev in evs:
             p = ev.raw_payload or {}
             ev_type = (p.get("type", "") or "").upper()
-            if ev_type == "MESSAGE_STATUS":
+            if ev_type in ("MESSAGE_STATUS", "CONVERSATION_STATUS"):
                 continue
             direction = _extract_direction(p)
             content = html_mod.escape(_extract_content_preview(p) or "")
