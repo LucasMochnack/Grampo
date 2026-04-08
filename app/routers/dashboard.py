@@ -291,19 +291,22 @@ COMMON_CSS = """
 def debug_payloads(request: Request, db: Session = Depends(get_db)):
     if not _check_auth(request):
         return _auth_redirect()
-    import json
     from app.models import WebhookEvent
-    events = db.query(WebhookEvent).order_by(WebhookEvent.received_at.desc()).limit(10).all()
+    events = db.query(WebhookEvent).order_by(WebhookEvent.received_at.desc()).limit(20).all()
     result = []
     for ev in events:
         p = ev.raw_payload or {}
+        msg = p.get("message", {}) or {}
         result.append({
             "type": p.get("type"),
             "direction": _extract_direction(p),
-            "client": _extract_client_number(p),
+            "msg_from": msg.get("from", ""),
+            "msg_to": msg.get("to", ""),
+            "top_from": p.get("from", ""),
+            "top_to": p.get("to", ""),
+            "client_extracted": _extract_client_number(p),
             "content_preview": _extract_content_preview(p),
-            "contents_raw": (p.get("message", {}) or {}).get("contents", []),
-            "message_keys": list((p.get("message", {}) or {}).keys()),
+            "conversationId": msg.get("conversationId", p.get("conversationId", "")),
         })
     return result
 
