@@ -1,7 +1,7 @@
 import uuid as uuid_module
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, JSON, String, Text
+from sqlalchemy import Column, DateTime, JSON, String, Text, Index
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.types import CHAR, TypeDecorator
 
@@ -63,3 +63,11 @@ class WebhookEvent(Base):
     source_ip = Column(String(64), nullable=True)
     user_agent = Column(Text, nullable=True)
     content_type = Column(String(255), nullable=True)
+
+
+class AgentMapping(Base):
+    __tablename__ = "agent_mappings"
+
+    phone = Column(String(32), primary_key=True)
+    agent_name = Column(String(255), nullable=False)
+    client_name = Column(String(255), nullable=True)

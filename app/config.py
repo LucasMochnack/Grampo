@@ -4,6 +4,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./grampo_dev.db"
     WEBHOOK_SECRET_TOKEN: str = ""
+    DASHBOARD_PASSWORD: str = ""
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
 

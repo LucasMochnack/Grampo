@@ -3,7 +3,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.models import WebhookEvent
+from app.models import AgentMapping, WebhookEvent
 
 
 def create_event(
@@ -44,3 +44,22 @@ def get_events(
 
 def get_event(db: Session, event_id: UUID) -> WebhookEvent | None:
     return db.query(WebhookEvent).filter(WebhookEvent.id == str(event_id)).first()
+
+
+# --- Agent Mappings ---
+
+def get_agent_mappings(db: Session) -> dict[str, str]:
+    rows = db.query(AgentMapping).all()
+    return {r.phone: r.agent_name for r in rows}
+
+
+def replace_agent_mappings(db: Session, mappings: dict[str, dict[str, str]]) -> int:
+    db.query(AgentMapping).delete()
+    for phone, data in mappings.items():
+        db.add(AgentMapping(
+            phone=phone,
+            agent_name=data["agent_name"],
+            client_name=data.get("client_name", ""),
+        ))
+    db.commit()
+    return len(mappings)
