@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.crud import get_events, get_agent_mappings, replace_agent_mappings
+from app.crud import get_events, get_agent_mappings, get_client_names, replace_agent_mappings
 from app.dependencies import get_db
 
 router = APIRouter(tags=["dashboard"])
@@ -175,6 +175,15 @@ COMMON_CSS = """
   .login-box { max-width: 340px; margin: 80px auto; text-align: center; }
   .login-box input { width: 100%; padding: 10px; margin: 10px 0; background: #0d1117; border: 1px solid #30363d; color: #e6edf3; border-radius: 6px; font-size: 14px; }
   .login-box button { width: 100%; padding: 10px; background: #238636; color: #fff; border: none; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .conv-row { cursor: pointer; }
+  .conv-row:hover { background: #1c2128; }
+  .chat-box { display: none; background: #0d1117; border: 1px solid #30363d; border-radius: 8px; margin: 8px 0 16px; padding: 14px; max-height: 400px; overflow-y: auto; }
+  .chat-box.open { display: block; }
+  .msg { margin: 6px 0; padding: 8px 12px; border-radius: 10px; max-width: 75%; font-size: 13px; line-height: 1.4; word-wrap: break-word; }
+  .msg-out { background: #1a3a2a; color: #a8e6cf; margin-left: auto; text-align: right; border-bottom-right-radius: 2px; }
+  .msg-in { background: #1c2333; color: #c8d6e5; margin-right: auto; border-bottom-left-radius: 2px; }
+  .msg-time { font-size: 10px; color: #8b949e; margin-top: 2px; }
+  .msg-container { display: flex; flex-direction: column; }
 </style>
 """
 
@@ -233,8 +242,9 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
     if not _check_auth(request):
         return _auth_redirect()
 
-    all_events, total = get_events(db, limit=2000, offset=0)
+    all_events, total = get_events(db, limit=5000, offset=0)
     client_agent_map = get_agent_mappings(db)
+    client_name_map = get_client_names(db)
 
     # Two-pass grouping: first map conversation IDs to client phones
     conv_to_client: dict[str, str] = {}
@@ -263,28 +273,51 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
             phone_learned[client_num] = agent
         groups[client_num].append(ev)
 
-    # Build conversation rows
-    conversations = []
+    # Build conversation rows with chat messages
+    import html as html_mod
+    rows_html = ""
+    idx = 0
     for client_num, evs in sorted(groups.items(), key=lambda x: max(e.received_at for e in x[1]), reverse=True):
-        evs.sort(key=lambda e: e.received_at, reverse=True)
-        last = evs[0]
+        evs.sort(key=lambda e: e.received_at)  # chronological for chat
+        agent = client_agent_map.get(client_num) or phone_learned.get(client_num) or "Sem atendente"
+        client_name = client_name_map.get(client_num, "")
+        badge = _segment_badge(agent)
+        last_ev = evs[-1]
+        ts = last_ev.received_at.astimezone(BRASILIA).strftime("%d/%m %H:%M") if last_ev.received_at else ""
         out_count = sum(1 for e in evs if _extract_direction(e.raw_payload or {}) == "OUT")
         in_count = sum(1 for e in evs if _extract_direction(e.raw_payload or {}) == "IN")
-        agent = client_agent_map.get(client_num) or phone_learned.get(client_num) or "Sem atendente"
-        ts = last.received_at.astimezone(BRASILIA).strftime("%d/%m %H:%M") if last.received_at else ""
-        preview = _extract_content_preview(last.raw_payload or {})
-        conversations.append((client_num, agent, out_count, in_count, ts, preview))
+        chat_id = f"chat_{idx}"
+        idx += 1
 
-    rows_html = ""
-    for phone, agent, out_c, in_c, ts, preview in conversations:
-        badge = _segment_badge(agent)
-        rows_html += f"""<tr>
-            <td style="font-family:monospace;font-size:12px">{phone}</td>
+        # Client display name
+        client_display = html_mod.escape(client_name) if client_name else f'<span style="color:#8b949e">—</span>'
+
+        rows_html += f"""
+        <tr class="conv-row" onclick="toggleChat('{chat_id}')">
+            <td style="font-weight:600">{client_display}</td>
+            <td style="font-family:monospace;font-size:12px;color:#8b949e">{client_num}</td>
             <td>{agent}{badge}</td>
-            <td><span class="dir-out">&uarr;{out_c}</span> &nbsp; <span class="dir-in">&darr;{in_c}</span></td>
+            <td><span class="dir-out">&uarr;{out_count}</span> <span class="dir-in">&darr;{in_count}</span></td>
             <td>{ts}</td>
-            <td style="color:#8b949e;font-size:12px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{preview}</td>
-        </tr>"""
+        </tr>
+        <tr><td colspan="5" style="padding:0;border:none">
+            <div id="{chat_id}" class="chat-box">
+                <div class="msg-container">"""
+
+        # Build chat messages
+        for ev in evs:
+            p = ev.raw_payload or {}
+            direction = _extract_direction(p)
+            content = html_mod.escape(_extract_content_preview(p) or "")
+            if not content:
+                continue
+            msg_ts = ev.received_at.astimezone(BRASILIA).strftime("%d/%m %H:%M") if ev.received_at else ""
+            if direction == "OUT":
+                rows_html += f'<div class="msg msg-out">{content}<div class="msg-time">{msg_ts} &uarr;</div></div>'
+            else:
+                rows_html += f'<div class="msg msg-in">{content}<div class="msg-time">{msg_ts} &darr;</div></div>'
+
+        rows_html += """</div></div></td></tr>"""
 
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo</title>{COMMON_CSS}</head><body>
     <nav>
@@ -299,11 +332,21 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
         </div>
         <div class="card">
             <table>
-                <thead><tr><th>Telefone</th><th>Agente</th><th>Msgs</th><th>Ultima</th><th>Preview</th></tr></thead>
+                <thead><tr><th>Cliente</th><th>Telefone</th><th>Agente</th><th>Msgs</th><th>Ultima</th></tr></thead>
                 <tbody>{rows_html}</tbody>
             </table>
         </div>
-    </div></body></html>""")
+    </div>
+    <script>
+    function toggleChat(id) {{
+        var el = document.getElementById(id);
+        el.classList.toggle('open');
+        if (el.classList.contains('open')) {{
+            el.scrollTop = el.scrollHeight;
+        }}
+    }}
+    </script>
+    </body></html>""")
 
 
 # ── Agents Dashboard ─────────────────────────────────────────────────────────

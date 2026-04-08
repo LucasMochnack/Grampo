@@ -53,6 +53,11 @@ def get_agent_mappings(db: Session) -> dict[str, str]:
     return {r.phone: r.agent_name for r in rows}
 
 
+def get_client_names(db: Session) -> dict[str, str]:
+    rows = db.query(AgentMapping).all()
+    return {r.phone: r.client_name for r in rows if r.client_name}
+
+
 def replace_agent_mappings(db: Session, mappings: dict[str, dict[str, str]]) -> int:
     db.query(AgentMapping).delete()
     for phone, data in mappings.items():
