@@ -84,13 +84,27 @@ def _extract_direction(payload: dict) -> str:
 def _extract_content_preview(payload: dict) -> str:
     try:
         msg = payload.get("message", {})
-        for key in ("text", "body"):
-            c = msg.get("contents", [{}])
-            if isinstance(c, list) and c:
-                txt = c[0].get(key, "")
-                if txt:
-                    return txt[:120]
-        return msg.get("text", "")[:120] if msg.get("text") else ""
+        contents = msg.get("contents", [])
+        if isinstance(contents, list):
+            for c in contents:
+                for key in ("text", "body", "payload"):
+                    txt = c.get(key, "")
+                    if txt:
+                        return str(txt)[:200]
+                # File/media messages
+                if c.get("type") in ("image", "audio", "video", "file", "document"):
+                    caption = c.get("caption", "")
+                    fname = c.get("fileName", c.get("filename", ""))
+                    label = c.get("type", "arquivo").upper()
+                    if caption:
+                        return f"[{label}] {caption}"[:200]
+                    if fname:
+                        return f"[{label}] {fname}"[:200]
+                    return f"[{label}]"
+        # Fallback: direct text field
+        if msg.get("text"):
+            return str(msg["text"])[:200]
+        return ""
     except Exception:
         return ""
 
@@ -304,9 +318,12 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
             <div id="{chat_id}" class="chat-box">
                 <div class="msg-container">"""
 
-        # Build chat messages
+        # Build chat messages (skip status events)
         for ev in evs:
             p = ev.raw_payload or {}
+            ev_type = (p.get("type", "") or "").upper()
+            if ev_type == "MESSAGE_STATUS":
+                continue
             direction = _extract_direction(p)
             content = html_mod.escape(_extract_content_preview(p) or "")
             if not content:
