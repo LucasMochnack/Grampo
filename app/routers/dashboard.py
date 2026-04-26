@@ -898,12 +898,35 @@ COMMON_CSS = """
 def login_page():
     if not settings.DASHBOARD_PASSWORD:
         return RedirectResponse("/dashboard", status_code=302)
+    err_html = '<div style="background:rgba(239,68,68,.15);border:1px solid #ef4444;color:#fca5a5;padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:12px;font-weight:600">Senha incorreta. Tente novamente.</div>' if "err=1" in str(request.url) else ""
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo — Login</title>{COMMON_CSS}</head>
-    <body class="login-page"><div class="login-box card">
-    <h2>ALTO <span style="color:#0fa968">VALOR</span></h2>
-    <div class="subtitle">GRAMPO DASHBOARD</div>
-    <form method="post"><input type="password" name="password" placeholder="Senha de acesso" autofocus>
-    <button type="submit">Entrar</button></form></div></body></html>""")
+    <body class="login-page" style="background:radial-gradient(ellipse at top, #111a2e 0%, #0b1120 60%, #070b15 100%);display:flex;align-items:center;justify-content:center;min-height:100vh;padding:40px">
+    <div style="display:flex;flex-direction:column;align-items:center;gap:36px;width:100%;max-width:380px">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:14px">
+        <div style="width:56px;height:56px;border-radius:14px;background:#0fa968;box-shadow:0 8px 32px rgba(15,169,104,.35);display:flex;align-items:center;justify-content:center;font-weight:800;color:#0b1120;font-size:24px;letter-spacing:-1px">AV</div>
+        <div style="text-align:center">
+          <div style="font-size:18px;letter-spacing:4px;font-weight:700;color:#fff">ALTO<span style="color:#0fa968">VALOR</span></div>
+          <div style="font-size:10px;letter-spacing:2.5px;color:#5a6a8a;margin-top:6px;font-weight:600">GRAMPO DASHBOARD</div>
+        </div>
+      </div>
+      <div style="width:100%;background:#111a2e;border:1px solid #1a2540;border-radius:14px;padding:28px;box-shadow:0 20px 60px rgba(0,0,0,.4)">
+        <div style="text-align:center;margin-bottom:20px">
+          <h2 style="font-size:16px;font-weight:700;color:#fff;margin-bottom:4px">Entrar no painel</h2>
+          <p style="font-size:11px;color:#8a96aa">Acesso restrito · Equipe Alto Valor</p>
+        </div>
+        {err_html}
+        <form method="post" style="display:flex;flex-direction:column;gap:14px">
+          <div>
+            <label style="font-size:10px;color:#5a6a8a;letter-spacing:1px;font-weight:700;display:block;margin-bottom:6px">SENHA</label>
+            <input type="password" name="password" placeholder="••••••••••" autofocus style="width:100%;padding:12px 14px;background:#0b1120;border:1px solid #1a2540;color:#e8ecf1;border-radius:8px;font-size:14px;font-family:'Montserrat',sans-serif;letter-spacing:2px;outline:none">
+          </div>
+          <button type="submit" style="background:#0fa968;color:#fff;border:none;padding:12px;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif;letter-spacing:.5px;margin-top:4px">Entrar</button>
+        </form>
+        <div style="font-size:10.5px;color:#5a6a8a;text-align:center;margin-top:16px">Sessão válida por 7 dias</div>
+      </div>
+      <div style="font-size:10px;color:#3a4a6a;letter-spacing:1px;font-weight:600">ALTO VALOR INVESTIMENTOS</div>
+    </div>
+    </body></html>""")
 
 
 @router.post("/dashboard/login", response_class=HTMLResponse, include_in_schema=False)
@@ -999,8 +1022,16 @@ def dashboard_acessos(request: Request, db: Session = Depends(get_db)):
     </head><body>
     {nav}
     <div class="container">
+        <div class="kpi-row">
+            <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{len(accesses)}</div><div class="label">Acessos configurados</div></div>
+            <div class="kpi" style="border-top:3px solid #8b5cf6"><div class="val" style="color:#8b5cf6">{sum(1 for a in accesses if a.get('role')=='admin')}</div><div class="label">Administradores</div></div>
+            <div class="kpi" style="border-top:3px solid #4a9eff"><div class="val" style="color:#4a9eff">{sum(1 for a in accesses if a.get('role')!='admin')}</div><div class="label">Viewers</div></div>
+        </div>
         <div class="card">
-            <h2 style="margin-bottom:4px">Gerenciar Acessos</h2>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+                <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
+                <h2 style="margin:0;font-size:15px">Gerenciar Acessos</h2>
+            </div>
             <p style="font-size:12px;color:#5a6a8a;margin-bottom:20px;font-weight:500">
                 Cada senha configurada abaixo libera um conjunto específico de agentes.<br>
                 A senha master (do Railway) continua funcionando e vê <strong>todos</strong> os agentes.
@@ -1497,14 +1528,23 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
             </table>
         </div>"""
 
+    # Totals for KPIs
+    _total_out = sum(1 for ev in filtered_events if _extract_direction(ev.raw_payload or {}) == "OUT")
+    _total_in  = sum(1 for ev in filtered_events if _extract_direction(ev.raw_payload or {}) == "IN")
+    _active_agents = len({
+        (phone_learned.get(cn) or client_agent_map.get(_real_phone(cn)) or phone_learned.get(_real_phone(cn)) or "Sem atendente")
+        for cn in groups
+    } - {"Sem atendente"})
+
     nav = _nav_html("conversas", canal=canal, unacked_alerts=unacked_alert_count, acked_alerts=len(acked_alerts), is_admin=(access or {}).get('role')=='admin', title="Conversas")
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo — Conversas</title>{COMMON_CSS}</head><body>
     {nav}
     <div class="container">
         <div class="kpi-row">
-            <div class="kpi"><div class="val">{total}</div><div class="label">Eventos totais</div></div>
-            <div class="kpi"><div class="val">{len(groups)}</div><div class="label">Clientes</div></div>
-            <div class="kpi"><div class="val">{len(set(client_agent_map.values()))}</div><div class="label">Agentes mapeados</div></div>
+            <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{len(groups)}</div><div class="label">Conversas</div></div>
+            <div class="kpi" style="border-top:3px solid #0fa968"><div class="val" style="font-size:20px">&uarr;{_total_out}&nbsp;<span style="color:#5a6a8a;font-size:14px">/</span>&nbsp;&darr;{_total_in}</div><div class="label">Msgs enviadas / recebidas</div></div>
+            <div class="kpi" style="border-top:3px solid {'#ef4444' if unacked_alert_count > 0 else '#1a2540'}"><div class="val" style="color:{'#ef4444' if unacked_alert_count > 0 else '#5a6a8a'}">{unacked_alert_count}</div><div class="label">Alertas ativos</div></div>
+            <div class="kpi" style="border-top:3px solid #4a9eff"><div class="val" style="color:#4a9eff">{_active_agents}</div><div class="label">Agentes com conv.</div></div>
         </div>
         {analysis_html}
         {filter_html}
@@ -1993,7 +2033,6 @@ function toggleDrill(id) {{
 {_nav_html("temas", canal=canal, is_admin=(access or {}).get('role')=='admin', title="Temas")}
 <div class="container">
   <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
-    <h2 style="margin:0">Temas abordados</h2>
     <div class="period-btns">
       <a href="?{_base_qs}&dias=1" class="{_d1_cls}">Hoje</a>
       <a href="?{_base_qs}&dias=7" class="{_d7_cls}">7 dias</a>
@@ -2003,9 +2042,19 @@ function toggleDrill(id) {{
     <span style="color:#4a5a7a;font-size:12px">{_period_label}</span>
   </div>
 
+  <div class="kpi-row">
+    <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{sum(d[1] for d in chart_data)}</div><div class="label">Ocorrências totais</div></div>
+    <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{len(chart_data)}</div><div class="label">Temas com dados</div></div>
+    <div class="kpi" style="border-top:3px solid {'#d4af37' if chart_data else '#1a2540'}"><div class="val" style="font-size:14px;color:#d4af37">{chart_data[0][0] if chart_data else '—'}</div><div class="label">Tema mais frequente</div></div>
+  </div>
+
   <!-- Bar chart -->
   <div class="card" style="margin-bottom:20px">
-    <h2 style="margin-bottom:14px;font-size:14px">Ocorrências por tema (clientes únicos)</h2>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+      <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
+      <h2 style="margin:0;font-size:15px">Ocorrências por tema</h2>
+      <span style="font-size:11px;color:#5a6a8a">clientes únicos · {_period_label.lower()}</span>
+    </div>
     <canvas id="temas-chart" height="{_chart_h}" style="width:100%;display:block"></canvas>
     <script>
     (function(){{
@@ -2078,8 +2127,13 @@ function toggleDrill(id) {{
 
   <!-- Table -->
   <div class="card">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
+      <h2 style="margin:0;font-size:15px">Heatmap — Temas × Agentes</h2>
+      <span style="font-size:11px;color:#5a6a8a">clientes únicos por tema</span>
+    </div>
     <p style="font-size:11px;color:#4a5a7a;margin-bottom:16px">
-      Clientes únicos por tema. Clique em uma linha para ver os clientes por tema.
+      Clique em uma linha para ver os clientes por tema.
     </p>
     <div class="temas-scroll">
       <table>
@@ -2181,10 +2235,19 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo — Alertas</title>{COMMON_CSS}</head><body>
     {nav}
     <div class="container">
+        <div class="kpi-row">
+            <div class="kpi" style="border-top:3px solid #ef4444"><div class="val" style="color:#ef4444">0</div><div class="label">Ativos · aguardando triagem</div></div>
+            <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{len(acked)}</div><div class="label">Revisados · marcados OK</div></div>
+            <div class="kpi" style="border-top:3px solid #1a2540"><div class="val" style="color:#5a6a8a">{len(acked)}</div><div class="label">Total disparado</div></div>
+        </div>
         <div class="card">
-            <h2 style="margin-bottom:16px">Alertas Revisados <span style="font-size:13px;color:#5a6a8a;font-weight:500">— {len(acked)} conversas marcadas como OK</span></h2>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+                <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
+                <h2 style="margin:0;font-size:15px">Revisados</h2>
+                <span style="font-size:12px;color:#5a6a8a;font-weight:500">{len(acked)} conversas marcadas como OK</span>
+            </div>
             <p style="font-size:11px;color:#4a5a7a;margin-bottom:16px;font-weight:500">
-                Conversas com alerta que foram revisadas. Clique em <strong style="color:#ef4444">Reabrir</strong> para devolvê-las à aba Conversas.
+                Clique em <strong style="color:#ef4444">Reabrir</strong> para devolver à aba Conversas.
             </p>
             <table>
                 <thead><tr><th>Cliente</th><th>Telefone</th><th>Agente</th><th>Trecho do alerta</th><th>Revisado em</th><th style="width:80px"></th></tr></thead>
@@ -2653,6 +2716,11 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
     else:
         gabarito_alert = '<div style="background:#ef4444;color:#fff;padding:10px 18px;border-radius:8px;margin-bottom:16px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px">&#9888; Gabarito nunca foi enviado! Faca upload do CSV.</div>'
 
+    _ag_active  = sum(1 for _, s in active_agents_stats if (s['out'] + s['in']) > 0)
+    _ag_clients = len(set().union(*(s['clients'] for _, s in active_agents_stats)) if active_agents_stats else set())
+    _ag_out     = sum(s['out'] for _, s in active_agents_stats)
+    _ag_in      = sum(s['in']  for _, s in active_agents_stats)
+
     nav = _nav_html("agentes", period_html, canal=canal, is_admin=(access or {}).get('role')=='admin', title="Agentes")
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo — Agentes</title>{COMMON_CSS}</head><body>
     {nav}
@@ -2660,6 +2728,15 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         {msg_html}
         {gabarito_alert}
 
+        <!-- KPI strip -->
+        <div class="kpi-row">
+            <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{_ag_active}</div><div class="label">Agentes ativos</div></div>
+            <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{_ag_clients}</div><div class="label">Clientes únicos</div></div>
+            <div class="kpi" style="border-top:3px solid #ef6b73"><div class="val" style="color:#ef6b73">{_ag_out}</div><div class="label">Msgs enviadas ↑</div></div>
+            <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{_ag_in}</div><div class="label">Msgs recebidas ↓</div></div>
+        </div>
+
+        <!-- Gabarito upload (collapsible) -->
         <div class="card" style="padding:14px 22px">
             <form action="/dashboard/upload-csv" method="post" enctype="multipart/form-data" class="upload-section">
                 <input type="file" name="csv_file" accept=".csv">
@@ -2673,82 +2750,90 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
 
         {seg_filter_html}
 
+        <!-- Heatmap por hora -->
         <div class="card" id="hourly-section">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
-                <h2 style="margin:0">Mapa de calor (06h &mdash; 19h)</h2>
+                <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
+                <h2 style="margin:0;font-size:15px">Mapa de calor — Atividade por hora (06h&ndash;19h)</h2>
                 <div class="period-btns" style="margin-left:0">
                     <a href="#" onclick="toggleHeatmap('msgs');return false" id="hm-btn-msgs">Mensagens</a>
-                    <a href="#" class="active" onclick="toggleHeatmap('clients');return false" id="hm-btn-clients">Clientes unicos</a>
+                    <a href="#" class="active" onclick="toggleHeatmap('clients');return false" id="hm-btn-clients">Clientes únicos</a>
                 </div>
                 <button class="fs-btn" onclick="toggleFullscreen('hourly-section')" style="margin-left:auto">&#x26F6; Tela cheia</button>
             </div>
             <p style="font-size:11px;color:#4a5a7a;margin-bottom:10px;font-weight:500;display:none" id="hm-desc-msgs">
-                Total de mensagens (IN + OUT) por agente em cada faixa horaria.
-                Quanto mais <strong style="color:#0fa968">verde</strong>, maior o volume.
+                Total de mensagens (IN + OUT) por agente em cada faixa horária.
             </p>
             <p style="font-size:11px;color:#4a5a7a;margin-bottom:10px;font-weight:500" id="hm-desc-clients">
-                Clientes unicos (telefones distintos) atendidos por agente em cada faixa horaria.
+                Clientes únicos (telefones distintos) por agente em cada faixa horária.
             </p>
             <div style="overflow-x:auto;display:none" id="hm-table-msgs">
-                <table style="min-width:700px">
-                    <thead><tr><th style="min-width:180px">Agente</th>{hour_headers}</tr></thead>
+                <table style="min-width:700px;border-collapse:separate;border-spacing:2px">
+                    <thead><tr><th style="min-width:180px;font-family:'Montserrat',sans-serif">Agente</th>{hour_headers}</tr></thead>
                     <tbody>{hourly_rows_msgs}</tbody>
                 </table>
             </div>
             <div style="overflow-x:auto" id="hm-table-clients">
-                <table style="min-width:700px">
-                    <thead><tr><th style="min-width:180px">Agente</th>{hour_headers}</tr></thead>
+                <table style="min-width:700px;border-collapse:separate;border-spacing:2px">
+                    <thead><tr><th style="min-width:180px;font-family:'Montserrat',sans-serif">Agente</th>{hour_headers}</tr></thead>
                     <tbody>{hourly_rows_clients}</tbody>
                 </table>
             </div>
-            <p style="font-size:10px;color:#3a4a6a;margin-top:10px;margin-bottom:0;font-style:italic">
-                💡 Cada célula mostra clientes únicos naquele horário. O total é o número de clientes únicos no período — mesmo cliente em horas diferentes conta apenas 1 vez.
-            </p>
-            {seg_legend}
+            <div style="display:flex;align-items:center;gap:8px;margin-top:14px;font-size:10px;color:#5a6a8a;font-weight:600;letter-spacing:.5px">
+                <span>MENOS</span>
+                <span style="width:16px;height:10px;border-radius:2px;background:#141e35;display:inline-block"></span>
+                <span style="width:16px;height:10px;border-radius:2px;background:rgba(15,169,104,0.35);display:inline-block"></span>
+                <span style="width:16px;height:10px;border-radius:2px;background:rgba(15,169,104,0.65);display:inline-block"></span>
+                <span style="width:16px;height:10px;border-radius:2px;background:rgba(15,169,104,0.9);display:inline-block"></span>
+                <span>MAIS</span>
+                <span style="margin-left:16px">{seg_legend}</span>
+            </div>
         </div>
 
+        <!-- Heatmap por dia -->
         <div class="card" id="wday-section">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap">
-                <h2 style="margin:0">Clientes únicos por dia</h2>
+                <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
+                <h2 style="margin:0;font-size:15px">Clientes únicos por dia do período</h2>
                 <button class="fs-btn" onclick="toggleFullscreen('wday-section')" style="margin-left:auto">&#x26F6; Tela cheia</button>
             </div>
             <p style="font-size:11px;color:#4a5a7a;margin-bottom:10px;font-weight:500">
-                Clientes únicos contatados (OUT) por agente em cada dia do período selecionado.
+                Clientes únicos contatados (OUT) por agente em cada dia do período.
             </p>
             <div style="overflow-x:auto">
-                <table style="min-width:500px">
+                <table style="min-width:500px;border-collapse:separate;border-spacing:2px">
                     <thead><tr><th style="min-width:180px">Agente</th>{_wday_headers}</tr></thead>
                     <tbody>{weekday_heatmap_rows}</tbody>
                 </table>
             </div>
             <p style="font-size:10px;color:#3a4a6a;margin-top:10px;margin-bottom:0;font-style:italic">
-                💡 Cada cliente conta <strong>1 vez por dia</strong>. O total da linha é a soma dos dias — se o mesmo cliente foi contatado em dias diferentes, ele aparece em cada dia.
+                💡 Cada cliente conta <strong>1 vez por dia</strong>. Mesmo cliente em dias diferentes: aparece em cada dia, mas o total da linha deduplica.
             </p>
-            {seg_legend}
         </div>
 
-        <div class="kpi-row">
-            <div class="kpi"><div class="val">{sum(1 for _, s in active_agents_stats if (s['out'] + s['in']) > 0)}</div><div class="label">Agentes ativos</div></div>
-            <div class="kpi"><div class="val">{len(set().union(*(s['clients'] for _, s in active_agents_stats)) if active_agents_stats else set())}</div><div class="label">Clientes únicos</div></div>
-            <div class="kpi"><div class="val">{sum(s['out'] for _, s in active_agents_stats)}</div><div class="label">Msgs enviadas</div></div>
-            <div class="kpi"><div class="val">{sum(s['in'] for _, s in active_agents_stats)}</div><div class="label">Msgs recebidas</div></div>
-        </div>
-
+        <!-- Ranking -->
         <div class="card">
-            <h2>Ranking de Agentes</h2>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+                <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
+                <h2 style="margin:0;font-size:15px">Ranking de Agentes</h2>
+            </div>
             <p style="font-size:11px;color:#4a5a7a;margin-bottom:12px;font-weight:500">
-                Clientes = telefones unicos atendidos &bull; OUT = msgs enviadas &bull; IN = msgs recebidas
+                Clientes = telefones únicos &bull; OUT = msgs enviadas &bull; IN = msgs recebidas
             </p>
             <table>
-                <thead><tr><th style="width:40px">#</th><th>Agente</th><th style="text-align:center">Clientes</th><th style="text-align:center">OUT</th><th style="text-align:center">IN</th><th style="text-align:center">Total</th></tr></thead>
+                <thead><tr><th style="width:40px">#</th><th>Agente</th><th style="text-align:center">Clientes</th><th style="text-align:center">OUT ↑</th><th style="text-align:center">IN ↓</th><th style="text-align:center">Total</th></tr></thead>
                 <tbody>{ranking_html}</tbody>
             </table>
         </div>
 
+        <!-- Daily bar charts -->
         <div class="card">
-            <h2>Clientes unicos contatados por dia</h2>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+                <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
+                <h2 style="margin:0;font-size:15px">Clientes únicos por dia</h2>
+            </div>
             <p style="font-size:11px;color:#4a5a7a;margin-bottom:10px;font-weight:500">
-                <span style="color:#ef6b73">&block;</span> Clientes contatados (OUT) &nbsp; <span style="color:#0fa968">&block;</span> Clientes que responderam (IN)
+                <span style="color:#ef6b73">&block;</span> Contatados (OUT) &nbsp; <span style="color:#0fa968">&block;</span> Responderam (IN)
             </p>
             <div style="overflow-x:auto">{daily_charts_html}</div>
         </div>
@@ -3130,15 +3215,18 @@ def dashboard_mensagens(request: Request, db: Session = Depends(get_db)):
     {nav}
     <div class="container">
         <div class="kpi-row">
-            <div class="kpi"><div class="val">{total_convs_with_first_out}</div><div class="label">Conversas com msg inicial</div></div>
-            <div class="kpi"><div class="val">{total_replies}</div><div class="label">Clientes responderam</div></div>
-            <div class="kpi"><div class="val" style="color:{"#0fa968" if overall_rate >= 50 else "#f59e0b" if overall_rate >= 25 else "#ef4444"}">{overall_rate}%</div><div class="label">Taxa de retorno geral</div></div>
-            <div class="kpi"><div class="val">{unique_templates}</div><div class="label">Templates unicos</div></div>
+            <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{total_convs_with_first_out}</div><div class="label">Conversas c/ msg inicial</div></div>
+            <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{total_replies}</div><div class="label">Clientes responderam</div></div>
+            <div class="kpi" style="border-top:3px solid {'#0fa968' if overall_rate >= 50 else '#f59e0b' if overall_rate >= 25 else '#ef4444'}"><div class="val" style="color:{'#0fa968' if overall_rate >= 50 else '#f59e0b' if overall_rate >= 25 else '#ef4444'}">{overall_rate}%</div><div class="label">Taxa de retorno geral</div></div>
+            <div class="kpi" style="border-top:3px solid #4a9eff"><div class="val" style="color:#4a9eff">{unique_templates}</div><div class="label">Templates únicos</div></div>
         </div>
 
         <div class="card" style="margin-bottom:20px">
-            <h2>Taxa de Retorno por Assessor</h2>
-            <p style="color:#5a6a8a;font-size:11px;margin-bottom:14px">Primeira mensagem enviada pelo assessor em cada conversa vs. cliente respondeu</p>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+                <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
+                <h2 style="margin:0;font-size:15px">Taxa de Retorno por Assessor</h2>
+            </div>
+            <p style="color:#5a6a8a;font-size:11px;margin-bottom:14px">Primeira mensagem enviada pelo assessor vs. cliente respondeu</p>
             <table>
                 <thead><tr><th>Assessor</th><th style="text-align:center">Enviadas</th><th style="text-align:center">Respondidas</th><th style="text-align:center">Taxa de Retorno</th></tr></thead>
                 <tbody>{agent_summary_rows}</tbody>
@@ -3146,8 +3234,11 @@ def dashboard_mensagens(request: Request, db: Session = Depends(get_db)):
         </div>
 
         <div class="card">
-            <h2>Mensagens Iniciais (Templates)</h2>
-            <p style="color:#5a6a8a;font-size:11px;margin-bottom:14px">Apenas templates com 10+ envios. Clique para ver quais assessores usam cada mensagem. Mensagens similares sao agrupadas.</p>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+                <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
+                <h2 style="margin:0;font-size:15px">Templates de Abertura</h2>
+            </div>
+            <p style="color:#5a6a8a;font-size:11px;margin-bottom:14px">Apenas templates com 10+ envios. Clique para ver quais assessores usam cada mensagem. Mensagens similares são agrupadas.</p>
             <table>
                 <thead><tr><th>Mensagem</th><th style="text-align:center">Envios</th><th style="text-align:center">Respostas</th><th style="text-align:center">Retorno</th><th style="text-align:center">Assessores</th></tr></thead>
                 <tbody>{template_rows}</tbody>
@@ -3373,17 +3464,20 @@ def dashboard_evolucao(request: Request, db: Session = Depends(get_db)):
 
   <!-- KPIs -->
   <div class="kpi-row">
-    <div class="kpi"><div class="val">{_total_weeks}</div><div class="label">Semanas analisadas</div></div>
-    <div class="kpi"><div class="val">{_max_week_total}</div><div class="label">Pico semanal</div></div>
-    <div class="kpi"><div class="val">{_avg_week_total}</div><div class="label">Média semanal</div></div>
-    <div class="kpi"><div class="val" style="font-size:18px">{_peak_week}</div><div class="label">Semana de pico</div></div>
+    <div class="kpi" style="border-top:3px solid #4a9eff"><div class="val" style="color:#4a9eff">{_total_weeks}</div><div class="label">Semanas analisadas</div></div>
+    <div class="kpi" style="border-top:3px solid #d4af37"><div class="val" style="color:#d4af37">{_max_week_total}</div><div class="label">Pico semanal</div></div>
+    <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{_avg_week_total}</div><div class="label">Média semanal</div></div>
+    <div class="kpi" style="border-top:3px solid #d4af37"><div class="val" style="font-size:16px;color:#d4af37">{_peak_week}</div><div class="label">Semana de pico</div></div>
   </div>
 
   <!-- SECTION 1: Heatmap agents × weeks -->
   <div class="card" style="margin-bottom:20px">
-    <h2 style="margin-bottom:6px">Clientes únicos por semana por agente</h2>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
+      <h2 style="margin:0;font-size:15px">Clientes únicos por semana × agente</h2>
+    </div>
     <p style="font-size:11px;color:#4a5a7a;margin-bottom:16px">
-      Clientes únicos contactados (OUT) por agente em cada semana ISO. Total = clientes únicos no período inteiro.
+      Clientes únicos contactados (OUT) por agente em cada semana. Total = clientes únicos no período inteiro.
     </p>
     {seg_legend}
     <div class="evol-scroll">
@@ -3396,7 +3490,10 @@ def dashboard_evolucao(request: Request, db: Session = Depends(get_db)):
 
   <!-- SECTION 2: Team volume line chart -->
   <div class="card" style="margin-bottom:20px">
-    <h2 style="margin-bottom:6px">Volume geral do time por semana</h2>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
+      <h2 style="margin:0;font-size:15px">Volume geral do time por semana</h2>
+    </div>
     <p style="font-size:11px;color:#4a5a7a;margin-bottom:16px">
       Clientes únicos totais (linha branca tracejada) e por agente por semana.
     </p>
