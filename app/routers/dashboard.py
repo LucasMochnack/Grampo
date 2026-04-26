@@ -1,6 +1,7 @@
 """
 Grampo Dashboard — server-rendered HTML pages for monitoring Zenvia webhooks.
 Brand: Alto Valor Investimentos (Montserrat, navy #0b1120, teal #0fa968).
+Sidebar + topbar shell (v3). Build: 2026-04-26.
 """
 
 import csv
