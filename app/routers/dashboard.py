@@ -3433,14 +3433,23 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
 
     online_cards = ""; idle_cards = ""; offline_list = ""
     _n_online_cards = _n_idle_cards = _n_offline_cards = 0
+    _offline_by_seg: dict[str, list] = defaultdict(list)
+    _idle_by_seg: dict[str, list] = defaultdict(list)
     for ag, stats in sorted_agents:
+        if ag == "Sem atendente":
+            continue
         st = _ag_status(ag)
+        seg = _get_segment(ag) or "Outros"
         if st == "online":
             online_cards += _agent_card(ag, stats, st); _n_online_cards += 1
         elif st == "idle":
-            idle_cards += _agent_card(ag, stats, st); _n_idle_cards += 1
+            idle_cards += _agent_card(ag, stats, st)
+            _idle_by_seg[seg].append((ag, stats))
+            _n_idle_cards += 1
         else:
-            offline_list += _agent_card(ag, stats, st, compact=True); _n_offline_cards += 1
+            offline_list += _agent_card(ag, stats, st, compact=True)
+            _offline_by_seg[seg].append((ag, stats))
+            _n_offline_cards += 1
 
     # KPI counts — ALWAYS today, from ALL known agents (independent of period filter)
     _seg_kpi = [a for a in AGENT_SEGMENT
@@ -3677,10 +3686,56 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
     _ag_clients = len(_ag_clients_set)
     _ag_out = sum(_today_out_by_agent.get(_a, 0) for _a in _seg_kpi)
 
+    # ── Helper: compact agent row for grouped offline/idle display ───────────
+    def _compact_row(ag: str, stats: dict, status: str) -> str:
+        av_col = _AG_AV_COLORS[abs(hash(ag)) % len(_AG_AV_COLORS)]
+        parts = ag.split(); initials = "".join(w[0].upper() for w in parts[:2])
+        last = _last_event_time_today.get(ag)
+        last_str = last.strftime("%H:%M") if last else "—"
+        sc = _ST_COLOR[status]
+        n_out = stats.get("out", 0); n_in = stats.get("in", 0)
+        stats_str = f'↑{n_out} ↓{n_in}' if (n_out or n_in) else "sem msgs hoje"
+        return (
+            f'<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;'
+            f'border-bottom:1px solid #0f1629">'
+            f'<div style="position:relative;flex-shrink:0">'
+            f'<div style="width:32px;height:32px;border-radius:50%;background:{av_col};display:flex;'
+            f'align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#0b1120">{initials}</div>'
+            f'<span style="position:absolute;bottom:0;right:0;width:8px;height:8px;border-radius:50%;'
+            f'background:{sc};border:2px solid #111a2e"></span>'
+            f'</div>'
+            f'<div style="flex:1;min-width:0">'
+            f'<div style="font-size:12px;font-weight:600;color:#c0c8d8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
+            f'{html_mod.escape(_short_agent_name(ag))}</div>'
+            f'<div style="font-size:10px;color:#5a6a8a;margin-top:1px">{stats_str} &middot; {last_str}</div>'
+            f'</div>'
+            f'</div>'
+        )
+
+    # ── Build segment panels ──────────────────────────────────────────────────
+    _SEG_ORDER = ["Alta Renda", "On Demand", "Externo"]
+
+    def _seg_panel(seg: str, agents_list: list, status: str, st_color: str, st_label: str) -> str:
+        seg_col = SEGMENT_COLORS.get(seg, "#3a4a6a")
+        rows_html = "".join(_compact_row(ag, st, status) for ag, st in agents_list)
+        n = len(agents_list)
+        return (
+            f'<div style="background:#111a2e;border:1px solid #1a2540;border-radius:10px;overflow:hidden">'
+            f'<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;'
+            f'border-bottom:2px solid {seg_col};background:#0d1526">'
+            f'<span style="width:8px;height:8px;border-radius:50%;background:{seg_col};display:inline-block"></span>'
+            f'<span style="font-size:11px;font-weight:700;color:#fff;letter-spacing:.5px">{seg.upper()}</span>'
+            f'<span style="font-size:10px;color:{st_color};font-weight:600;margin-left:auto">'
+            f'<span style="width:6px;height:6px;border-radius:50%;background:{st_color};display:inline-block;margin-right:4px"></span>'
+            f'{n} {st_label}</span>'
+            f'</div>'
+            f'{rows_html if rows_html else "<div style=\'padding:14px;color:#3a4a6a;font-size:11px;text-align:center\'>—</div>"}'
+            f'</div>'
+        )
+
     # Pre-compute agent card sections
-    _no_offline_msg = '<div style="padding:18px;color:#5a6a8a;font-size:12px;font-style:italic">Nenhum agente offline</div>'
     _online_section = (
-        f'<div style="margin-bottom:22px">'
+        f'<div style="margin-bottom:20px">'
         f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
         f'<span style="width:8px;height:8px;border-radius:50%;background:#0fa968;box-shadow:0 0 10px #0fa968;display:inline-block"></span>'
         f'<h3 style="font-size:14px;font-weight:700;color:#fff;letter-spacing:.3px;margin:0">TRABALHANDO AGORA</h3>'
@@ -3689,26 +3744,46 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px">{online_cards}</div>'
         f'</div>'
     ) if online_cards else ""
-    _idleoffline_section = (
-        f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-bottom:22px">'
-        f'<div>'
-        f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
-        f'<span style="width:8px;height:8px;border-radius:50%;background:#f59e0b;display:inline-block"></span>'
-        f'<h3 style="font-size:14px;font-weight:700;color:#fff;letter-spacing:.3px;margin:0">OCIOSOS</h3>'
-        f'<span style="font-size:11px;color:#8a96aa;font-weight:500">{_n_idle_cards} agentes</span>'
-        f'</div>'
-        f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">{idle_cards}</div>'
-        f'</div>'
-        f'<div>'
-        f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
-        f'<span style="width:8px;height:8px;border-radius:50%;background:#5a6a8a;display:inline-block"></span>'
-        f'<h3 style="font-size:14px;font-weight:700;color:#8a96aa;letter-spacing:.3px;margin:0">OFFLINE HOJE</h3>'
-        f'<span style="font-size:11px;color:#5a6a8a;font-weight:500">{_n_offline_cards} agentes</span>'
-        f'</div>'
-        f'<div style="background:#111a2e;border:1px solid #1a2540;border-radius:10px;overflow:hidden">{offline_list or _no_offline_msg}</div>'
-        f'</div>'
-        f'</div>'
-    ) if (idle_cards or offline_list) else ""
+
+    # OCIOSOS: compact rows grouped by segment (same 3-col grid)
+    _idle_panels = ""
+    _has_idle = any(_idle_by_seg.get(s) for s in _SEG_ORDER)
+    if _has_idle or _n_idle_cards:
+        _idle_grid = "".join(
+            _seg_panel(seg, _idle_by_seg.get(seg, []), "idle", "#f59e0b", "ociosos")
+            for seg in _SEG_ORDER
+        )
+        _idle_panels = (
+            f'<div style="margin-bottom:20px">'
+            f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
+            f'<span style="width:8px;height:8px;border-radius:50%;background:#f59e0b;display:inline-block"></span>'
+            f'<h3 style="font-size:14px;font-weight:700;color:#fff;letter-spacing:.3px;margin:0">OCIOSOS</h3>'
+            f'<span style="font-size:11px;color:#8a96aa;font-weight:500">{_n_idle_cards} agentes &middot; sem msgs há 30–240 min</span>'
+            f'</div>'
+            f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px">{_idle_grid}</div>'
+            f'</div>'
+        )
+
+    # OFFLINE: compact rows grouped by segment (3-col grid)
+    _offline_panels = ""
+    _has_offline = any(_offline_by_seg.get(s) for s in _SEG_ORDER)
+    if _has_offline or _n_offline_cards:
+        _off_grid = "".join(
+            _seg_panel(seg, _offline_by_seg.get(seg, []), "offline", "#5a6a8a", "offline")
+            for seg in _SEG_ORDER
+        )
+        _offline_panels = (
+            f'<div style="margin-bottom:20px">'
+            f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
+            f'<span style="width:8px;height:8px;border-radius:50%;background:#5a6a8a;display:inline-block"></span>'
+            f'<h3 style="font-size:14px;font-weight:700;color:#8a96aa;letter-spacing:.3px;margin:0">OFFLINE HOJE</h3>'
+            f'<span style="font-size:11px;color:#5a6a8a;font-weight:500">{_n_offline_cards} agentes</span>'
+            f'</div>'
+            f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px">{_off_grid}</div>'
+            f'</div>'
+        )
+
+    _idleoffline_section = _idle_panels + _offline_panels
 
     nav = _nav_html("agentes", "", canal=canal, is_admin=(access or {}).get('role')=='admin', title="Agentes")
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo — Agentes</title>{COMMON_CSS}</head><body>
