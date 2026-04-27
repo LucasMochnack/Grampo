@@ -3686,48 +3686,73 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
     _ag_clients = len(_ag_clients_set)
     _ag_out = sum(_today_out_by_agent.get(_a, 0) for _a in _seg_kpi)
 
-    # ── Helper: compact agent row for grouped offline/idle display ───────────
-    def _compact_row(ag: str, stats: dict, status: str) -> str:
+    # ── Helper: compact agent row ─────────────────────────────────────────────
+    def _compact_row(ag: str, stats: dict, status: str, worked_today: bool = False) -> str:
         av_col = _AG_AV_COLORS[abs(hash(ag)) % len(_AG_AV_COLORS)]
         parts = ag.split(); initials = "".join(w[0].upper() for w in parts[:2])
         last = _last_event_time_today.get(ag)
-        last_str = last.strftime("%H:%M") if last else "—"
+        last_str = last.strftime("%H:%M") if last else ""
         sc = _ST_COLOR[status]
         n_out = stats.get("out", 0); n_in = stats.get("in", 0)
-        stats_str = f'↑{n_out} ↓{n_in}' if (n_out or n_in) else "sem msgs hoje"
+        opacity = "1" if worked_today else "0.45"
+        sub = f'<span style="color:#0fa968;font-weight:600">↑{n_out}</span> <span style="color:#6ee7b7">↓{n_in}</span> &middot; enc. {last_str}' if worked_today and last_str else (f'<span style="color:#3a4a6a">sem atividade hoje</span>')
         return (
-            f'<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;'
-            f'border-bottom:1px solid #0f1629">'
+            f'<div style="display:flex;align-items:center;gap:10px;padding:9px 14px;'
+            f'border-bottom:1px solid #0f1629;opacity:{opacity}">'
             f'<div style="position:relative;flex-shrink:0">'
-            f'<div style="width:32px;height:32px;border-radius:50%;background:{av_col};display:flex;'
-            f'align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#0b1120">{initials}</div>'
-            f'<span style="position:absolute;bottom:0;right:0;width:8px;height:8px;border-radius:50%;'
+            f'<div style="width:30px;height:30px;border-radius:50%;background:{av_col};display:flex;'
+            f'align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#0b1120">{initials}</div>'
+            f'<span style="position:absolute;bottom:0;right:0;width:7px;height:7px;border-radius:50%;'
             f'background:{sc};border:2px solid #111a2e"></span>'
             f'</div>'
             f'<div style="flex:1;min-width:0">'
             f'<div style="font-size:12px;font-weight:600;color:#c0c8d8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
             f'{html_mod.escape(_short_agent_name(ag))}</div>'
-            f'<div style="font-size:10px;color:#5a6a8a;margin-top:1px">{stats_str} &middot; {last_str}</div>'
+            f'<div style="font-size:10px;color:#5a6a8a;margin-top:1px">{sub}</div>'
             f'</div>'
             f'</div>'
         )
 
-    # ── Build segment panels ──────────────────────────────────────────────────
+    # ── Build segment panel (with worked-today / no-activity split) ───────────
     _SEG_ORDER = ["Alta Renda", "On Demand", "Externo"]
 
-    def _seg_panel(seg: str, agents_list: list, status: str, st_color: str, st_label: str) -> str:
+    def _seg_panel_offline(seg: str, agents_list: list) -> str:
         seg_col = SEGMENT_COLORS.get(seg, "#3a4a6a")
-        rows_html = "".join(_compact_row(ag, st, status) for ag, st in agents_list)
+        worked = [(ag, st) for ag, st in agents_list if _last_event_time_today.get(ag)]
+        inactive = [(ag, st) for ag, st in agents_list if not _last_event_time_today.get(ag)]
+        rows_html = ""
+        if worked:
+            rows_html += f'<div style="padding:6px 14px 2px;font-size:9px;letter-spacing:1px;font-weight:700;color:#4a5a7a">ENCERRARAM</div>'
+            rows_html += "".join(_compact_row(ag, st, "offline", True) for ag, st in worked)
+        if inactive:
+            rows_html += f'<div style="padding:6px 14px 2px;font-size:9px;letter-spacing:1px;font-weight:700;color:#2a3a5a">SEM ATIVIDADE</div>'
+            rows_html += "".join(_compact_row(ag, st, "offline", False) for ag, st in inactive)
+        n = len(agents_list)
+        n_worked = len(worked)
+        counter = f'{n_worked}/{n}' if n else '0'
+        return (
+            f'<div style="background:#111a2e;border:1px solid #1a2540;border-radius:10px;overflow:hidden">'
+            f'<div style="display:flex;align-items:center;gap:8px;padding:9px 14px;'
+            f'border-bottom:2px solid {seg_col};background:#0d1526">'
+            f'<span style="width:7px;height:7px;border-radius:50%;background:{seg_col};display:inline-block"></span>'
+            f'<span style="font-size:11px;font-weight:700;color:#fff;letter-spacing:.5px">{seg.upper()}</span>'
+            f'<span style="font-size:10px;color:#5a6a8a;font-weight:600;margin-left:auto">{counter} ativos</span>'
+            f'</div>'
+            f'{rows_html if rows_html else "<div style=\'padding:14px;color:#3a4a6a;font-size:11px;text-align:center\'>—</div>"}'
+            f'</div>'
+        )
+
+    def _seg_panel_idle(seg: str, agents_list: list) -> str:
+        seg_col = SEGMENT_COLORS.get(seg, "#3a4a6a")
+        rows_html = "".join(_compact_row(ag, st, "idle", True) for ag, st in agents_list)
         n = len(agents_list)
         return (
             f'<div style="background:#111a2e;border:1px solid #1a2540;border-radius:10px;overflow:hidden">'
-            f'<div style="display:flex;align-items:center;gap:8px;padding:10px 14px;'
+            f'<div style="display:flex;align-items:center;gap:8px;padding:9px 14px;'
             f'border-bottom:2px solid {seg_col};background:#0d1526">'
-            f'<span style="width:8px;height:8px;border-radius:50%;background:{seg_col};display:inline-block"></span>'
+            f'<span style="width:7px;height:7px;border-radius:50%;background:{seg_col};display:inline-block"></span>'
             f'<span style="font-size:11px;font-weight:700;color:#fff;letter-spacing:.5px">{seg.upper()}</span>'
-            f'<span style="font-size:10px;color:{st_color};font-weight:600;margin-left:auto">'
-            f'<span style="width:6px;height:6px;border-radius:50%;background:{st_color};display:inline-block;margin-right:4px"></span>'
-            f'{n} {st_label}</span>'
+            f'<span style="font-size:10px;color:#f59e0b;font-weight:600;margin-left:auto">{n} ociosos</span>'
             f'</div>'
             f'{rows_html if rows_html else "<div style=\'padding:14px;color:#3a4a6a;font-size:11px;text-align:center\'>—</div>"}'
             f'</div>'
@@ -3745,14 +3770,11 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         f'</div>'
     ) if online_cards else ""
 
-    # OCIOSOS: compact rows grouped by segment (same 3-col grid)
+    # OCIOSOS: compact rows grouped by segment
     _idle_panels = ""
     _has_idle = any(_idle_by_seg.get(s) for s in _SEG_ORDER)
     if _has_idle or _n_idle_cards:
-        _idle_grid = "".join(
-            _seg_panel(seg, _idle_by_seg.get(seg, []), "idle", "#f59e0b", "ociosos")
-            for seg in _SEG_ORDER
-        )
+        _idle_grid = "".join(_seg_panel_idle(seg, _idle_by_seg.get(seg, [])) for seg in _SEG_ORDER)
         _idle_panels = (
             f'<div style="margin-bottom:20px">'
             f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
@@ -3764,20 +3786,18 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
             f'</div>'
         )
 
-    # OFFLINE: compact rows grouped by segment (3-col grid)
+    # OFFLINE: split worked-today / inactive, grouped by segment
     _offline_panels = ""
     _has_offline = any(_offline_by_seg.get(s) for s in _SEG_ORDER)
     if _has_offline or _n_offline_cards:
-        _off_grid = "".join(
-            _seg_panel(seg, _offline_by_seg.get(seg, []), "offline", "#5a6a8a", "offline")
-            for seg in _SEG_ORDER
-        )
+        n_worked_off = sum(1 for s in _SEG_ORDER for ag, _ in _offline_by_seg.get(s, []) if _last_event_time_today.get(ag))
+        _off_grid = "".join(_seg_panel_offline(seg, _offline_by_seg.get(seg, [])) for seg in _SEG_ORDER)
         _offline_panels = (
             f'<div style="margin-bottom:20px">'
             f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
             f'<span style="width:8px;height:8px;border-radius:50%;background:#5a6a8a;display:inline-block"></span>'
             f'<h3 style="font-size:14px;font-weight:700;color:#8a96aa;letter-spacing:.3px;margin:0">OFFLINE HOJE</h3>'
-            f'<span style="font-size:11px;color:#5a6a8a;font-weight:500">{_n_offline_cards} agentes</span>'
+            f'<span style="font-size:11px;color:#5a6a8a;font-weight:500">{n_worked_off} encerraram &middot; {_n_offline_cards - n_worked_off} sem atividade</span>'
             f'</div>'
             f'<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px">{_off_grid}</div>'
             f'</div>'
