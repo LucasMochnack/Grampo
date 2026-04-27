@@ -3142,26 +3142,29 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         _rk = _real_phone(_k)
         if _rk and _rk not in _combined_agent_map:
             _combined_agent_map[_rk] = _v
+    # Built from groups (same approach as hourly_clients) so that OUT events
+    # without from/to fields (Zenvia template messages) are correctly attributed.
     date_clients_period: dict[str, dict[str, set]] = defaultdict(lambda: defaultdict(set))
-    for _ev in events:
-        if not _ev.received_at:
+    for _grp_key_d, _grp_evs_d in groups.items():
+        _grp_ph_d = _real_phone(_grp_key_d)
+        if not _grp_ph_d or _grp_ph_d in COMPANY_CHANNELS or _grp_ph_d == _real_phone(canal):
             continue
-        _ts_br = _ev.received_at.astimezone(BRASILIA)
-        _dk = _ts_br.strftime(_date_key_fmt)
-        if _dk not in period_date_set:
+        _grp_ag_d = (_combined_agent_map.get(_grp_ph_d)
+                     or _extract_agent_from_payload(next((e.raw_payload for e in _grp_evs_d if e.raw_payload), {}))
+                     or "Sem atendente")
+        if _grp_ag_d == "Sem atendente" or not _user_sees(access, _grp_ag_d):
             continue
-        _p = _ev.raw_payload or {}
-        _cn = _extract_client_number(_p)
-        if not _cn:
-            continue
-        if _extract_direction(_p) != "OUT":
-            continue
-        _ag = _combined_agent_map.get(_cn, "") or _extract_agent_from_payload(_p) or "Sem atendente"
-        if _ag == "Sem atendente":
-            continue
-        if not _user_sees(access, _ag):
-            continue
-        date_clients_period[_ag][_dk].add(_cn)
+        for _ev_d in _grp_evs_d:
+            if not _ev_d.received_at:
+                continue
+            _p_d = _ev_d.raw_payload or {}
+            if _extract_direction(_p_d) != "OUT":
+                continue
+            _ts_br_d = _ev_d.received_at.astimezone(BRASILIA)
+            _dk_d = _ts_br_d.strftime(_date_key_fmt)
+            if _dk_d not in period_date_set:
+                continue
+            date_clients_period[_grp_ag_d][_dk_d].add(_grp_ph_d)
     # ──────────────────────────────────────────────────────────────────────────
 
     agent_stats: dict[str, dict] = defaultdict(lambda: {"out": 0, "in": 0, "clients": set(), "days_out": defaultdict(int), "days_in": defaultdict(int), "days_clients_out": defaultdict(set), "days_clients_in": defaultdict(set)})
