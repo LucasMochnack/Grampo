@@ -1883,6 +1883,86 @@ function switchCanal(val) {{
 
 # ── Conversations Dashboard ─────────────────────────────────────────────────
 
+@router.get("/dashboard/export", include_in_schema=False)
+def dashboard_conversas_export(request: Request, db: Session = Depends(get_db)):
+    """CSV export for Conversas tab: Agente, Telefone, Nome, Data, Hora, Msgs OUT, Msgs IN."""
+    from fastapi.responses import StreamingResponse
+
+    access = _get_access(request, db)
+    if access is None:
+        return RedirectResponse("/dashboard/login", status_code=302)
+
+    canal = request.query_params.get("canal", "5519997733651")
+    all_events_raw, _ = get_events(db, limit=50000, offset=0)
+    all_events_f = _filter_events_by_channel(all_events_raw, canal)
+    client_agent_map = get_agent_mappings(db)
+    client_name_map = get_client_names(db)
+    db.close()
+
+    now_br = datetime.now(BRASILIA)
+    today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # Default: today only; optionally accept ?periodo=7dias
+    periodo_exp = request.query_params.get("periodo", "hoje")
+    if periodo_exp == "7dias":
+        cutoff = today_start - timedelta(days=6)
+    else:
+        cutoff = today_start
+    cutoff_end = today_start + timedelta(days=1)
+
+    filtered = [ev for ev in all_events_f
+                if ev.received_at and cutoff <= ev.received_at.astimezone(BRASILIA) < cutoff_end]
+
+    groups, phone_learned = _group_events(filtered, client_agent_map)
+    _cp = _real_phone(canal)
+    groups = {k: v for k, v in groups.items() if _real_phone(k) != _cp}
+
+    _combined = dict(client_agent_map)
+    for _k, _v in phone_learned.items():
+        _rk = _real_phone(_k)
+        if _rk and _rk not in _combined:
+            _combined[_rk] = _v
+
+    rows = []
+    for client_num, evs in groups.items():
+        ph = _real_phone(client_num)
+        ag = _combined.get(ph) or phone_learned.get(client_num) or _extract_agent_from_payload(
+            next((e.raw_payload for e in evs if e.raw_payload), {})) or "Sem atendente"
+        if ag == "Sem atendente" or not _user_sees(access, ag):
+            continue
+        evs_sorted = sorted(evs, key=lambda e: e.received_at or datetime.min.replace(tzinfo=timezone.utc))
+        first_ts = next((e.received_at for e in evs_sorted if e.received_at), None)
+        last_ts  = next((e.received_at for e in reversed(evs_sorted) if e.received_at), None)
+        n_out = sum(1 for e in evs if _extract_direction(e.raw_payload or {}) == "OUT")
+        n_in  = sum(1 for e in evs if _extract_direction(e.raw_payload or {}) == "IN")
+        name  = client_name_map.get(ph, "")
+        first_br = first_ts.astimezone(BRASILIA) if first_ts else None
+        last_br  = last_ts.astimezone(BRASILIA)  if last_ts  else None
+        rows.append((
+            ag, ph, name,
+            first_br.strftime("%d/%m/%Y") if first_br else "",
+            first_br.strftime("%H:%M")    if first_br else "",
+            last_br.strftime("%H:%M")     if last_br  else "",
+            n_out, n_in,
+        ))
+
+    rows.sort(key=lambda r: (r[0], r[3], r[4]))
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Agente", "Telefone", "Nome Cliente", "Data", "Hora Início", "Hora Última Msg", "Msgs Enviadas", "Msgs Recebidas"])
+    for row in rows:
+        writer.writerow(row)
+    output.seek(0)
+
+    filename = f"conversas-{periodo_exp}-{now_br.strftime('%Y%m%d%H%M')}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
 def dashboard_main(request: Request, db: Session = Depends(get_db)):
     access = _get_access(request, db)
@@ -2128,7 +2208,7 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
     <div style="padding:14px 18px 10px;border-bottom:1px solid #1a2540;flex-shrink:0">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <span id="list-count" style="font-size:10px;color:#5a6a8a;letter-spacing:1.2px;font-weight:700">{len(groups)} CONVERSAS · HOJE</span>
-        <span style="font-size:11px;color:#0fa968;font-weight:600;cursor:pointer">Filtros</span>
+        <a href="/dashboard/export?canal={canal}&periodo=hoje" style="font-size:10px;color:#0fa968;font-weight:700;text-decoration:none;display:flex;align-items:center;gap:4px" title="Exportar lista de conversas (Agente, Cliente, Horário)">⬇ CSV</a>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         <span class="gp-chip active" onclick="filterCards('',this)">Todas</span>
@@ -3633,42 +3713,6 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
     <div class="container">
         {msg_html}
         {gabarito_alert}
-
-        <!-- KPI strip V3 -->
-        <div class="kpi-row">
-            <div class="kpi" style="border-top:3px solid #0fa968;position:relative;overflow:hidden">
-                <div style="display:flex;align-items:center;gap:10px">
-                    <span style="width:10px;height:10px;border-radius:50%;background:#0fa968;box-shadow:0 0 10px #0fa968;flex-shrink:0"></span>
-                    <div><div style="font-size:10px;color:#5a6a8a;letter-spacing:1.5px;font-weight:700">ONLINE</div>
-                    <div style="font-size:30px;font-weight:700;color:#fff;font-family:'JetBrains Mono',monospace;letter-spacing:-.5px">{n_online}</div>
-                    <div style="font-size:11px;color:#8a96aa;font-weight:500">Trabalhando agora</div></div>
-                </div>
-            </div>
-            <div class="kpi" style="border-top:3px solid #f59e0b">
-                <div style="display:flex;align-items:center;gap:10px">
-                    <span style="width:10px;height:10px;border-radius:50%;background:#f59e0b;flex-shrink:0"></span>
-                    <div><div style="font-size:10px;color:#5a6a8a;letter-spacing:1.5px;font-weight:700">OCIOSOS</div>
-                    <div style="font-size:30px;font-weight:700;color:#fff;font-family:'JetBrains Mono',monospace;letter-spacing:-.5px">{n_idle}</div>
-                    <div style="font-size:11px;color:#8a96aa;font-weight:500">Sem msgs há 30+ min</div></div>
-                </div>
-            </div>
-            <div class="kpi" style="border-top:3px solid #5a6a8a">
-                <div style="display:flex;align-items:center;gap:10px">
-                    <span style="width:10px;height:10px;border-radius:50%;background:#5a6a8a;flex-shrink:0"></span>
-                    <div><div style="font-size:10px;color:#5a6a8a;letter-spacing:1.5px;font-weight:700">OFFLINE</div>
-                    <div style="font-size:30px;font-weight:700;color:#fff;font-family:'JetBrains Mono',monospace;letter-spacing:-.5px">{n_offline}</div>
-                    <div style="font-size:11px;color:#8a96aa;font-weight:500">Sem atividade hoje</div></div>
-                </div>
-            </div>
-            <div class="kpi" style="border-top:3px solid #0fa968">
-                <div style="display:flex;align-items:center;gap:10px">
-                    <span style="width:10px;height:10px;border-radius:50%;background:#0fa968;box-shadow:0 0 10px #0fa968;flex-shrink:0"></span>
-                    <div><div style="font-size:10px;color:#5a6a8a;letter-spacing:1.5px;font-weight:700">EQUIPE</div>
-                    <div style="font-size:30px;font-weight:700;color:#fff;font-family:'JetBrains Mono',monospace;letter-spacing:-.5px">{_ag_active}</div>
-                    <div style="font-size:11px;color:#8a96aa;font-weight:500">{_ag_clients} clientes · {_ag_out} msgs</div></div>
-                </div>
-            </div>
-        </div>
 
         <!-- Agent cards: TRABALHANDO AGORA -->
         {_online_section}
