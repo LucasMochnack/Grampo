@@ -229,6 +229,25 @@ def _save_accesses(db: Session, accesses: list[dict]) -> None:
     set_setting(db, _ACCESSES_SETTING_KEY, json.dumps(cleaned, ensure_ascii=False))
 
 
+_ACCESS_LOG_KEY = "access_log"
+_ACCESS_LOG_MAX = 50
+
+
+def _record_login(db, who: str, ip: str, ua: str, success: bool) -> None:
+    """Append a login attempt to the access log stored in DB (capped at _ACCESS_LOG_MAX)."""
+    try:
+        raw = get_setting(db, _ACCESS_LOG_KEY) or "[]"
+        log = json.loads(raw) if raw and raw.strip() else []
+        if not isinstance(log, list):
+            log = []
+        now_str = datetime.now(BRASILIA).strftime("%d/%m/%Y %H:%M")
+        log.append({"who": who, "ip": ip, "ua": ua[:80], "when": now_str, "success": success})
+        log = log[-_ACCESS_LOG_MAX:]
+        set_setting(db, _ACCESS_LOG_KEY, json.dumps(log, ensure_ascii=False))
+    except Exception:
+        pass  # logging failure must never break login flow
+
+
 def _session_secret() -> bytes:
     s = settings.SESSION_SECRET or settings.DASHBOARD_PASSWORD or "grampo-default-secret"
     return s.encode("utf-8")
@@ -303,6 +322,28 @@ def _auth_redirect():
 
 # ── Payload helpers ──────────────────────────────────────────────────────────
 
+def _extract_phone_from_conversation(payload: dict) -> str:
+    """Extract client phone from payload.conversation.contact.channels when
+    from/to fields are absent (e.g. outbound template messages via Zenvia)."""
+    try:
+        conv = payload.get("conversation", {}) or {}
+        contact = conv.get("contact", {}) or {}
+        # Try channels list first: [{type, value}]
+        for ch in (contact.get("channels", []) or []):
+            if not isinstance(ch, dict):
+                continue
+            val = (ch.get("value", "") or "").lstrip("+").replace(" ", "").replace("-", "")
+            if val and val not in COMPANY_CHANNELS:
+                return val
+        # Fallback: contact id may be the phone itself
+        contact_id = str(contact.get("id", "") or "").lstrip("+").replace(" ", "").replace("-", "")
+        if contact_id and contact_id.isdigit() and contact_id not in COMPANY_CHANNELS:
+            return contact_id
+    except Exception:
+        pass
+    return ""
+
+
 def _extract_client_number(payload: dict) -> str:
     try:
         msg = payload.get("message", {}) or {}
@@ -310,7 +351,9 @@ def _extract_client_number(payload: dict) -> str:
         from_num = msg.get("from", "") or payload.get("from", "")
         to_num = msg.get("to", "") or payload.get("to", "")
         if not from_num and not to_num:
-            return ""
+            # OUT template messages (Zenvia CONVERSATION_MESSAGE) often omit from/to.
+            # Fall back to conversation.contact.channels to recover the client phone.
+            return _extract_phone_from_conversation(payload)
 
         # Primary strategy: use direction. Zenvia Conversations API:
         # - IN  (client → company): from=client, to=company → client is `from`
@@ -644,10 +687,9 @@ def _group_events(events, client_agent_map):
     # Track the "addressed name" per group to detect cross-talk
     group_addressed_names: dict[str, set] = defaultdict(set)
 
-    # Proximity with time limit (max 10 min gap) for rare orphan events
-    # without from/to/conversationId. The cap exists to avoid mixing two
-    # different conversations into one if a long pause occurs.
-    PROXIMITY_MAX_SECONDS = 600
+    # Proximity with time limit (max 3 min gap) for rare orphan events
+    # without from/to/conversationId. Tight cap to minimise cross-conversation mixing.
+    PROXIMITY_MAX_SECONDS = 180
     last_known_client = ""
     last_known_time = None
 
@@ -663,9 +705,17 @@ def _group_events(events, client_agent_map):
         # Track whether this client_num came from explicit from/to vs inferred
         has_explicit_fromto = bool(client_num)
 
+        # Belt-and-suspenders: never treat a company channel as a client
+        if client_num and _real_phone(client_num) in COMPANY_CHANNELS:
+            client_num = ""
+            has_explicit_fromto = False
+
         # If no from/to, try conversationId mapping
         if not client_num and conv_id:
             client_num = conv_to_client.get(conv_id, "")
+            # Validate resolved phone is not a company channel
+            if client_num and _real_phone(client_num) in COMPANY_CHANNELS:
+                client_num = ""
 
         # If still no client, use time-limited proximity (only within 3 min of last known)
         if not client_num and direction == "OUT" and last_known_client and last_known_time and ev.received_at:
@@ -893,10 +943,410 @@ COMMON_CSS = """
 
 
 
+@router.get("/dashboard/debug-events", response_class=HTMLResponse, include_in_schema=False)
+def dashboard_debug_events(request: Request, db: Session = Depends(get_db)):
+    access = _get_access(request, db)
+    if access is None:
+        return _auth_redirect()
+    events = get_events_only(db, limit=30)
+    rows = ""
+    for ev in reversed(events):
+        p = ev.raw_payload or {}
+        ev_type = p.get("type", "—")
+        direction = (p.get("message", {}) or {}).get("direction", "") or p.get("direction", "—")
+        from_n = (p.get("message", {}) or {}).get("from", "") or p.get("from", "—")
+        to_n   = (p.get("message", {}) or {}).get("to",   "") or p.get("to",   "—")
+        ts = ev.received_at.astimezone(BRASILIA).strftime("%d/%m %H:%M:%S") if ev.received_at else "—"
+        contents = (p.get("message", {}) or {}).get("contents", [])
+        text_preview = ""
+        if isinstance(contents, list) and contents:
+            c = contents[0]
+            inner = c.get("payload") if isinstance(c, dict) else None
+            if isinstance(inner, dict):
+                text_preview = (inner.get("text") or "")[:80]
+            if not text_preview and isinstance(c, dict):
+                text_preview = (c.get("text") or c.get("body") or "")[:80]
+        raw_keys = json.dumps(list(p.keys()))
+        rows += (
+            f'<tr style="border-bottom:1px solid #1a2540">'
+            f'<td style="padding:6px 10px;font-size:11px;color:#8a96aa">{ts}</td>'
+            f'<td style="padding:6px 10px;font-size:11px;font-weight:700;color:#f59e0b">{html_mod.escape(str(ev_type))}</td>'
+            f'<td style="padding:6px 10px;font-size:11px;color:#0fa968">{html_mod.escape(str(direction))}</td>'
+            f'<td style="padding:6px 10px;font-size:11px">{html_mod.escape(str(from_n))}</td>'
+            f'<td style="padding:6px 10px;font-size:11px">{html_mod.escape(str(to_n))}</td>'
+            f'<td style="padding:6px 10px;font-size:11px;color:#c0c8d8;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{html_mod.escape(text_preview)}</td>'
+            f'<td style="padding:6px 10px;font-size:10px;color:#3a4a6a">{html_mod.escape(raw_keys)}</td>'
+            f'</tr>'
+        )
+    nav = _nav_html("debug", "", canal="5519997733651", is_admin=(access or {}).get('role') == 'admin', title="Debug Events")
+    return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Debug Events</title>{COMMON_CSS}
+    <meta http-equiv="refresh" content="10"></head><body>{nav}
+    <div class="container">
+    <div class="card">
+    <h2 style="font-size:15px;margin-bottom:14px">Últimos 30 eventos recebidos (atualiza a cada 10s)</h2>
+    <div style="overflow-x:auto">
+    <table style="width:100%;border-collapse:collapse">
+    <thead><tr style="background:#0b1120">
+    <th style="padding:8px 10px;text-align:left;font-size:10px;color:#5a6a8a">QUANDO</th>
+    <th style="padding:8px 10px;text-align:left;font-size:10px;color:#5a6a8a">TYPE</th>
+    <th style="padding:8px 10px;text-align:left;font-size:10px;color:#5a6a8a">DIRECTION</th>
+    <th style="padding:8px 10px;text-align:left;font-size:10px;color:#5a6a8a">FROM</th>
+    <th style="padding:8px 10px;text-align:left;font-size:10px;color:#5a6a8a">TO</th>
+    <th style="padding:8px 10px;text-align:left;font-size:10px;color:#5a6a8a">TEXTO</th>
+    <th style="padding:8px 10px;text-align:left;font-size:10px;color:#5a6a8a">KEYS</th>
+    </tr></thead>
+    <tbody>{rows}</tbody>
+    </table>
+    </div></div></div></body></html>""")
+
+
+@router.get("/dashboard/overview", response_class=HTMLResponse, include_in_schema=False)
+def dashboard_overview(request: Request, db: Session = Depends(get_db)):
+    access = _get_access(request, db)
+    if access is None:
+        return _auth_redirect()
+
+    canal = request.query_params.get("canal", "5519997733651")
+    all_evs_raw, _ = get_events(db, limit=50000, offset=0)
+    all_evs = _filter_events_by_channel(all_evs_raw, canal)
+    client_agent_map = get_agent_mappings(db)
+    client_name_map = get_client_names(db)
+    acked_alerts = _get_acked_alerts(db)
+    db.close()
+
+    now_br = datetime.now(BRASILIA)
+    today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
+    _cp = _real_phone(canal)
+
+    # ── Today groups ──────────────────────────────────────────────────────────
+    today_evs = [ev for ev in all_evs
+                 if ev.received_at and ev.received_at.astimezone(BRASILIA) >= today_start]
+    grps, pl = _group_events(today_evs, client_agent_map)
+    grps = {k: v for k, v in grps.items() if _real_phone(k) != _cp}
+
+    n_convs = 0
+    n_in = 0
+    n_out = 0
+    active_ag: set = set()
+    n_alerts = 0
+
+    for client_num, evs in grps.items():
+        ph = _real_phone(client_num)
+        ag = pl.get(client_num) or client_agent_map.get(ph) or "Sem atendente"
+        if not _user_sees(access, ag):
+            continue
+        n_convs += 1
+        if ag and ag != "Sem atendente":
+            active_ag.add(ag)
+        for ev in evs:
+            p = ev.raw_payload or {}
+            if (p.get("type", "") or "").upper() in ("MESSAGE_STATUS", "CONVERSATION_STATUS"):
+                continue
+            d = _extract_direction(p)
+            if d == "IN":
+                n_in += 1
+            elif d == "OUT":
+                n_out += 1
+        ctexts = [(_extract_direction(ev.raw_payload or {}),
+                   _extract_content_preview(ev.raw_payload or {}) or "")
+                  for ev in evs if _extract_content_preview(ev.raw_payload or {})]
+        if any(i[0] == "alerta" for i in _classify_conversation(ctexts)):
+            if ph not in acked_alerts:
+                n_alerts += 1
+
+    n_ag_total = len(AGENT_SEGMENT)
+
+    # ── Hourly volume bars ────────────────────────────────────────────────────
+    h_in = [0] * 24
+    h_out = [0] * 24
+    for ev in today_evs:
+        if not ev.received_at:
+            continue
+        p = ev.raw_payload or {}
+        if (p.get("type", "") or "").upper() in ("MESSAGE_STATUS", "CONVERSATION_STATUS"):
+            continue
+        hh = ev.received_at.astimezone(BRASILIA).hour
+        d = _extract_direction(p)
+        if d == "IN":
+            h_in[hh] += 1
+        elif d == "OUT":
+            h_out[hh] += 1
+
+    hrs = list(range(HOUR_START, HOUR_END + 1))
+    in_v  = [h_in[h]  for h in hrs]
+    out_v = [h_out[h] for h in hrs]
+    bmax = max(max(in_v, default=0), max(out_v, default=0), 1)
+    bar_max_label = bmax
+
+    vol_bars = ""
+    for i, hh in enumerate(hrs):
+        ip2 = max(2, round(in_v[i]  / bmax * 140)) if in_v[i]  else 2
+        op2 = max(2, round(out_v[i] / bmax * 140)) if out_v[i] else 2
+        ic = "#0fa968" if in_v[i]  else "#1a2540"
+        oc = "#ef6b73" if out_v[i] else "#1a2540"
+        vol_bars += (
+            f'<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">'
+            f'<div style="display:flex;align-items:flex-end;gap:3px;height:142px">'
+            f'<div style="width:9px;height:{ip2}px;background:{ic};border-radius:3px 3px 0 0"></div>'
+            f'<div style="width:9px;height:{op2}px;background:{oc};border-radius:3px 3px 0 0"></div>'
+            f'</div>'
+            f'<div style="font-size:9.5px;color:#5a6a8a;font-family:\'JetBrains Mono\',monospace">{hh:02d}</div>'
+            f'</div>'
+        )
+
+    # ── Temas mini heatmap (7 days) ───────────────────────────────────────────
+    d7 = today_start - timedelta(days=6)
+    e7 = [ev for ev in all_evs if ev.received_at and ev.received_at.astimezone(BRASILIA) >= d7]
+    g7, p7 = _group_events(e7, client_agent_map)
+    g7 = {k: v for k, v in g7.items() if _real_phone(k) != _cp}
+
+    td7: dict[str, dict[str, set]] = {tid: defaultdict(set) for tid, *_ in TOPIC_RULES}
+    s7:  dict[str, set] = {tid: set() for tid, *_ in TOPIC_RULES}
+    for client_num, evs in g7.items():
+        ph = _real_phone(client_num)
+        ag = p7.get(client_num) or client_agent_map.get(ph) or "Sem atendente"
+        if not _user_sees(access, ag):
+            continue
+        ft = " ".join((_extract_content_preview(ev.raw_payload or {}) or "") for ev in evs).lower()
+        for tid, _, _, kws in TOPIC_RULES:
+            for kw in kws:
+                if kw in ft and ph not in s7[tid]:
+                    td7[tid][ag].add(ph)
+                    s7[tid].add(ph)
+                    break
+
+    top_ags = sorted(
+        [ag for ag in AGENT_SEGMENT if any(td7[tid].get(ag) for tid in td7)],
+        key=lambda a: sum(len(td7[tid].get(a, set())) for tid in td7), reverse=True
+    )[:8]
+    top_tps = sorted(
+        [(tid, tl, tc) for tid, tl, tc, _ in TOPIC_RULES if s7[tid]],
+        key=lambda x: len(s7[x[0]]), reverse=True
+    )[:8]
+    mx7 = max((len(s7[tid]) for tid, *_ in top_tps), default=1) or 1
+
+    if top_ags and top_tps:
+        gcols = f'160px repeat({len(top_tps)}, 1fr)'
+        heat_h = f'<div style="display:grid;grid-template-columns:{gcols};gap:2px"><div></div>'
+        for _, tl, tc in top_tps:
+            heat_h += (f'<div style="padding:4px 0;text-align:center;color:#8a96aa;font-size:9px;'
+                       f'font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+                       f'<span style="display:inline-block;width:5px;height:5px;border-radius:50%;'
+                       f'background:{tc};margin-right:3px;vertical-align:middle"></span>'
+                       f'{html_mod.escape(tl)}</div>')
+        heat_h += '</div>'
+        for ag in top_ags:
+            seg = _get_segment(ag)
+            sc = SEGMENT_COLORS.get(seg, "#1a2540")
+            heat_h += f'<div style="display:grid;grid-template-columns:{gcols};gap:2px;margin-top:2px">'
+            heat_h += (f'<div style="display:flex;align-items:center;padding:4px 8px;font-size:10.5px;'
+                       f'color:#e8ecf1;font-weight:600;border-left:2px solid {sc};'
+                       f'white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'
+                       f'{html_mod.escape(_short_agent_name(ag))}</div>')
+            for tid, _, _ in top_tps:
+                v = len(td7[tid].get(ag, set()))
+                t = min(v / mx7, 1.0) if v else 0
+                bg = f"rgba(15,169,104,{0.15 + t*0.75:.2f})" if v else "#141e35"
+                fg = "#fff" if t > 0.5 else "#a8e6cf" if v else "#1a2540"
+                heat_h += (f'<div style="height:32px;background:{bg};border:1px solid #0b1120;'
+                           f'display:flex;align-items:center;justify-content:center;'
+                           f'font-size:11px;font-weight:700;color:{fg};'
+                           f'font-family:\'JetBrains Mono\',monospace">'
+                           f'{"&middot;" if not v else v}</div>')
+            heat_h += '</div>'
+    else:
+        heat_h = '<div style="color:#3a4a6a;font-size:12px;padding:20px;text-align:center">Sem dados no período</div>'
+
+    # ── Alertas card ──────────────────────────────────────────────────────────
+    al_items = ""
+    _al_shown = 0
+    _al_kws = ["absurdo","vergonha","procon","fraude","roubando","reclamação","reclamacao",
+               "imbecil","idiota","merda","porra","caralho"]
+    for client_num, evs in sorted(grps.items(),
+                                  key=lambda x: max((e.received_at for e in x[1] if e.received_at),
+                                                    default=datetime.min.replace(tzinfo=timezone.utc)),
+                                  reverse=True):
+        if _al_shown >= 3:
+            break
+        ph = _real_phone(client_num)
+        if ph in acked_alerts:
+            continue
+        ag = pl.get(client_num) or client_agent_map.get(ph) or "Sem atendente"
+        if not _user_sees(access, ag):
+            continue
+        ctexts = [(_extract_direction(ev.raw_payload or {}),
+                   _extract_content_preview(ev.raw_payload or {}) or "")
+                  for ev in evs if _extract_content_preview(ev.raw_payload or {})]
+        if not any(i[0] == "alerta" for i in _classify_conversation(ctexts)):
+            continue
+        _al_shown += 1
+        cn = client_name_map.get(ph, "")
+        disp = html_mod.escape(cn if cn else ph[-6:])
+        sag = html_mod.escape(_short_agent_name(ag))
+        seg = _get_segment(ag); sc2 = SEGMENT_COLORS.get(seg, "")
+        sb = (f'<span style="font-size:9px;padding:1px 6px;border-radius:3px;background:{sc2};'
+              f'color:#fff;font-weight:700">{seg}</span>') if sc2 else ""
+        snip = ""
+        for _, txt in ctexts:
+            for kw in _al_kws:
+                if kw in txt.lower():
+                    snip = txt[:80]
+                    break
+            if snip:
+                break
+        lts = max((ev.received_at for ev in evs if ev.received_at),
+                  default=None)
+        ts_s = lts.astimezone(BRASILIA).strftime("%H:%M") if lts else ""
+        al_items += (
+            f'<div style="padding:12px;background:#1a0e0e;border:1px solid #5a2424;'
+            f'border-radius:8px;margin-bottom:8px">'
+            f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">'
+            f'<span style="color:#ef4444;font-size:13px">&#9888;</span>'
+            f'<span style="font-size:13px;font-weight:700;color:#fff">{disp}</span>{sb}</div>'
+            f'<div style="font-size:11.5px;color:#c0c8d8;font-style:italic;margin-bottom:8px;line-height:1.5">'
+            f'&ldquo;{html_mod.escape(snip[:80]) if snip else "..."}&rdquo;</div>'
+            f'<div style="display:flex;justify-content:space-between;align-items:center">'
+            f'<span style="font-size:10.5px;color:#8a96aa">com {sag} &middot; {ts_s}</span>'
+            f'<a href="/dashboard/alertas?canal={canal}" style="background:#0fa968;color:#fff;'
+            f'padding:3px 11px;border-radius:5px;font-size:10.5px;font-weight:700;text-decoration:none">'
+            f'&#8594; Ver</a></div></div>'
+        )
+    if not al_items:
+        al_items = '<div style="padding:16px;text-align:center;color:#3a4a6a;font-size:12px">Nenhum alerta ativo &#10003;</div>'
+
+    al_badge = (
+        f'<span style="background:#3a1414;color:#ef4444;padding:2px 9px;border-radius:10px;'
+        f'font-size:10px;font-weight:700;border:1px solid #5a2424">{n_alerts} ATIVO{"S" if n_alerts!=1 else ""}</span>'
+        if n_alerts else
+        '<span style="background:#0c2e1f;color:#0fa968;padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700">OK</span>'
+    )
+
+    # ── Por segmento ──────────────────────────────────────────────────────────
+    seg_v: dict[str, int] = defaultdict(int)
+    for client_num, evs in grps.items():
+        ph = _real_phone(client_num)
+        ag = pl.get(client_num) or client_agent_map.get(ph) or "Sem atendente"
+        if not _user_sees(access, ag):
+            continue
+        sg = _get_segment(ag)
+        if sg:
+            seg_v[sg] += 1
+    sg_max = max(seg_v.values(), default=1) or 1
+    seg_bars = ""
+    for sn, sc3 in SEGMENT_COLORS.items():
+        sv = seg_v.get(sn, 0)
+        sw = round(sv / sg_max * 100)
+        seg_bars += (
+            f'<div style="margin-bottom:12px">'
+            f'<div style="display:flex;justify-content:space-between;margin-bottom:5px;font-size:11.5px">'
+            f'<span style="color:#e8ecf1;font-weight:600">{sn}</span>'
+            f'<span style="color:#8a96aa;font-family:\'JetBrains Mono\',monospace">{sv} conv.</span></div>'
+            f'<div style="height:6px;background:#141e35;border-radius:3px;overflow:hidden">'
+            f'<div style="height:100%;width:{sw}%;background:{sc3};border-radius:3px"></div></div>'
+            f'</div>'
+        )
+    if not seg_bars:
+        seg_bars = '<div style="color:#3a4a6a;font-size:11px">Sem dados hoje</div>'
+
+    nav = _nav_html("overview", canal=canal, unacked_alerts=n_alerts,
+                    is_admin=(access or {}).get('role') == 'admin', title="Visão Geral")
+
+    return HTMLResponse(
+        f'<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo &mdash; Visão Geral</title>'
+        f'{COMMON_CSS}</head><body>'
+        f'{nav}'
+        f'<div class="container">'
+
+        # ── KPIs ──
+        f'<div class="kpi-row">'
+        f'<div class="kpi" style="border-top:3px solid #0fa968">'
+        f'<div style="font-size:10px;color:#5a6a8a;letter-spacing:1.5px;font-weight:700">CONVERSAS HOJE</div>'
+        f'<div style="font-size:28px;font-weight:700;color:#fff;letter-spacing:-.5px;margin:4px 0">{n_convs}</div>'
+        f'<div style="font-size:11px;color:#0fa968;font-weight:600">contatos ativos</div></div>'
+
+        f'<div class="kpi" style="border-top:3px solid #0fa968">'
+        f'<div style="font-size:10px;color:#5a6a8a;letter-spacing:1.5px;font-weight:700">MENSAGENS</div>'
+        f'<div style="font-size:22px;font-weight:700;color:#fff;letter-spacing:-.5px;margin:4px 0;'
+        f'font-family:\'JetBrains Mono\',monospace">{n_in + n_out}</div>'
+        f'<div style="font-size:11px;color:#0fa968;font-weight:600">'
+        f'&#8595; {n_in} / &#8593; {n_out}</div></div>'
+
+        f'<div class="kpi" style="border-top:3px solid #f59e0b">'
+        f'<div style="font-size:10px;color:#5a6a8a;letter-spacing:1.5px;font-weight:700">AGENTES ATIVOS</div>'
+        f'<div style="font-size:28px;font-weight:700;color:#fff;letter-spacing:-.5px;margin:4px 0">'
+        f'{len(active_ag)} / {n_ag_total}</div>'
+        f'<div style="font-size:11px;color:#f59e0b;font-weight:600">'
+        f'{n_ag_total - len(active_ag)} sem atividade</div></div>'
+
+        f'<div class="kpi" style="border-top:3px solid {"#ef4444" if n_alerts else "#0fa968"}">'
+        f'<div style="font-size:10px;color:#5a6a8a;letter-spacing:1.5px;font-weight:700">ALERTAS ABERTOS</div>'
+        f'<div style="font-size:28px;font-weight:700;color:{"#ef4444" if n_alerts else "#fff"};'
+        f'letter-spacing:-.5px;margin:4px 0">{n_alerts}</div>'
+        f'<div style="font-size:11px;color:{"#ef4444" if n_alerts else "#0fa968"};font-weight:600">'
+        f'{"aguardando triagem" if n_alerts else "sem alertas ativos"}</div></div>'
+
+        f'<div class="kpi" style="border-top:3px solid #8b5cf6">'
+        f'<div style="font-size:10px;color:#5a6a8a;letter-spacing:1.5px;font-weight:700">TEMAS (7 DIAS)</div>'
+        f'<div style="font-size:28px;font-weight:700;color:#fff;letter-spacing:-.5px;margin:4px 0">'
+        f'{len(top_tps)}</div>'
+        f'<div style="font-size:11px;color:#8b5cf6;font-weight:600">temas identificados</div></div>'
+        f'</div>'
+
+        # ── Volume por hora ──
+        f'<div class="card" style="margin-bottom:20px">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+        f'<div><h2 style="margin:0;font-size:15px">Volume de mensagens por hora</h2>'
+        f'<p style="font-size:11px;color:#5a6a8a;margin-top:2px">Hoje &middot; {HOUR_START:02d}h &agrave;s {HOUR_END:02d}h</p></div>'
+        f'<div style="display:flex;gap:14px;font-size:11px">'
+        f'<span style="display:flex;align-items:center;gap:6px;color:#c0c8d8;font-weight:600">'
+        f'<span style="width:10px;height:10px;border-radius:2px;background:#0fa968;display:inline-block"></span>Recebidas</span>'
+        f'<span style="display:flex;align-items:center;gap:6px;color:#c0c8d8;font-weight:600">'
+        f'<span style="width:10px;height:10px;border-radius:2px;background:#ef6b73;display:inline-block"></span>Enviadas</span>'
+        f'</div></div>'
+        f'<div style="display:flex;align-items:flex-end;gap:10px;height:160px;padding-left:30px;position:relative">'
+        f'<div style="position:absolute;left:0;top:0;bottom:18px;display:flex;flex-direction:column;'
+        f'justify-content:space-between;font-size:9px;color:#5a6a8a;font-family:\'JetBrains Mono\',monospace">'
+        f'<span>{bar_max_label}</span><span>{bar_max_label//2}</span><span>0</span></div>'
+        f'{vol_bars}</div></div>'
+
+        # ── Bottom 2-col ──
+        f'<div style="display:grid;grid-template-columns:1.6fr 1fr;gap:20px">'
+
+        # Left: temas heatmap
+        f'<div class="card">'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">'
+        f'<div><h2 style="margin:0;font-size:15px">Temas &times; Agentes</h2>'
+        f'<p style="font-size:11px;color:#5a6a8a;margin-top:2px">Clientes &uacute;nicos por tema &middot; &uacute;ltimos 7 dias</p></div>'
+        f'<a href="/dashboard/temas?canal={canal}" style="font-size:11px;color:#0fa968;font-weight:700;text-decoration:none">Ver completo &rarr;</a>'
+        f'</div>'
+        f'<div style="overflow-x:auto">{heat_h}</div></div>'
+
+        # Right: alerts + segments
+        f'<div style="display:flex;flex-direction:column;gap:20px">'
+        f'<div class="card">'
+        f'<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">'
+        f'<h2 style="margin:0;font-size:15px">Alertas abertos</h2>{al_badge}</div>'
+        f'{al_items}'
+        f'<a href="/dashboard/alertas?canal={canal}" style="display:block;text-align:center;'
+        f'background:transparent;border:1px solid #1a2540;color:#8a96aa;padding:7px 0;border-radius:6px;'
+        f'font-size:11px;font-weight:600;text-decoration:none;margin-top:4px">Ver todos os alertas</a>'
+        f'</div>'
+
+        f'<div class="card">'
+        f'<h2 style="margin-bottom:14px;font-size:15px">Por segmento</h2>'
+        f'{seg_bars}</div>'
+        f'</div>'  # right col
+
+        f'</div>'  # 2-col grid
+        f'</div>'  # container
+        f'</body></html>'
+    )
+
+
 # ── Login ────────────────────────────────────────────────────────────────────
 
 @router.get("/dashboard/login", response_class=HTMLResponse, include_in_schema=False)
-def login_page():
+def login_page(request: Request):
     if not settings.DASHBOARD_PASSWORD:
         return RedirectResponse("/dashboard", status_code=302)
     err_html = '<div style="background:rgba(239,68,68,.15);border:1px solid #ef4444;color:#fca5a5;padding:10px 14px;border-radius:8px;margin-bottom:12px;font-size:12px;font-weight:600">Senha incorreta. Tente novamente.</div>' if "err=1" in str(request.url) else ""
@@ -945,8 +1395,15 @@ async def login_submit(request: Request, db: Session = Depends(get_db)):
                 token = f"idx:{i}"
                 break
 
+    ip = request.client.host if request.client else "?"
+    ua = request.headers.get("user-agent", "")
+
     if token is None:
+        _record_login(db, "(falha)", ip, ua, False)
         return RedirectResponse("/dashboard/login?err=1", status_code=302)
+
+    who = "Admin" if token == _MASTER_TOKEN else f"Viewer"
+    _record_login(db, who, ip, ua, True)
 
     resp = RedirectResponse("/dashboard", status_code=302)
     resp.set_cookie(AUTH_COOKIE, _sign_token(token), httponly=True, max_age=86400 * 7)
@@ -999,6 +1456,60 @@ def dashboard_acessos(request: Request, db: Session = Depends(get_db)):
     data_json = json.dumps(accesses, ensure_ascii=False)
     agents_json = json.dumps(agents, ensure_ascii=False)
 
+    # Access log
+    try:
+        _raw_log = get_setting(db, _ACCESS_LOG_KEY) or "[]"
+        _access_log = list(reversed(json.loads(_raw_log) if _raw_log.strip() else []))[:20]
+    except Exception:
+        _access_log = []
+
+    _log_rows = ""
+    for _le in _access_log:
+        _suc = _le.get("success", True)
+        _bg = "rgba(239,68,68,0.04)" if not _suc else "transparent"
+        _border = "3px solid #ef4444" if not _suc else "3px solid transparent"
+        _who_col = "#ef4444" if not _suc else "#fff"
+        _log_rows += (
+            f'<div style="display:grid;grid-template-columns:160px 100px 160px 1fr 150px;'
+            f'gap:14px;padding:12px 18px;border-bottom:1px solid #141e35;'
+            f'background:{_bg};border-left:{_border};align-items:center">'
+            f'<div style="display:flex;align-items:center;gap:8px">'
+            f'<div style="width:24px;height:24px;border-radius:50%;background:{"#3a1414" if not _suc else "#0c2e1f"};'
+            f'display:flex;align-items:center;justify-content:center;font-size:11px;'
+            f'color:{"#ef4444" if not _suc else "#0fa968"};font-weight:700;flex-shrink:0">{"!" if not _suc else "&#10003;"}</div>'
+            f'<span style="font-size:12.5px;color:{_who_col};font-weight:600">'
+            f'{html_mod.escape(str(_le.get("who","?")))}</span></div>'
+            f'<span style="font-size:11px;color:#8a96aa">{"Sucesso" if _suc else "Falha"}</span>'
+            f'<span style="font-size:11px;color:#c0c8d8;font-family:\'JetBrains Mono\',monospace">'
+            f'{html_mod.escape(str(_le.get("ip","?")))}</span>'
+            f'<span style="font-size:11px;color:#8a96aa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'
+            f'{html_mod.escape(str(_le.get("ua","?")))}</span>'
+            f'<span style="font-size:11px;color:#5a6a8a">{html_mod.escape(str(_le.get("when","?")))}</span>'
+            f'</div>'
+        )
+
+    _log_section = ""
+    if _log_rows:
+        _log_section = (
+            f'<div class="card" style="margin-top:20px">'
+            f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
+            f'<span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>'
+            f'<h2 style="margin:0;font-size:15px">Log de Acessos</h2>'
+            f'<span style="font-size:11px;color:#5a6a8a">últimos 20 registros</span></div>'
+            f'<div style="background:#111a2e;border:1px solid #1a2540;border-radius:10px;overflow:hidden">'
+            f'<div style="display:grid;grid-template-columns:160px 100px 160px 1fr 150px;gap:14px;'
+            f'padding:10px 18px;font-size:9.5px;color:#5a6a8a;letter-spacing:1px;font-weight:700;'
+            f'border-bottom:1px solid #1a2540;background:#0b1120">'
+            f'<span>USUÁRIO</span><span>STATUS</span><span>IP</span><span>USER AGENT</span><span>QUANDO</span></div>'
+            f'{_log_rows}</div></div>'
+        )
+    else:
+        _log_section = (
+            f'<div class="card" style="margin-top:20px">'
+            f'<h2 style="font-size:15px;margin-bottom:8px">Log de Acessos</h2>'
+            f'<p style="color:#3a4a6a;font-size:12px">Nenhum acesso registrado ainda.</p></div>'
+        )
+
     msg_html = ""
     if msg == "saved":
         msg_html = '<div style="background:rgba(15,169,104,.15);border:1px solid #0fa968;color:#0fa968;padding:10px 14px;border-radius:8px;margin-bottom:16px;font-size:12px;font-weight:600">Acessos salvos com sucesso.</div>'
@@ -1047,6 +1558,7 @@ def dashboard_acessos(request: Request, db: Session = Depends(get_db)):
                 </div>
             </form>
         </div>
+        {_log_section}
     </div>
     <script>
     var KNOWN_AGENTS = {agents_json};
@@ -1197,6 +1709,7 @@ def _save_acked_alerts(db, acked: dict) -> None:
 # ── Nav HTML ─────────────────────────────────────────────────────────────────
 
 _PAGE_TITLES: dict[str, str] = {
+    "overview":   "Visão Geral",
     "conversas":  "Conversas",
     "agentes":    "Agentes",
     "mensagens":  "Mensagens Iniciais",
@@ -1247,6 +1760,7 @@ def _nav_html(active: str, extra: str = "", canal: str = "", unacked_alerts: int
   </div>
   <div class="nav-group">
     <div class="nav-group-label">MONITORAMENTO</div>
+    {_ni("overview", "Visão Geral", f"/dashboard/overview{canal_qs}")}
     {_ni("conversas", "Conversas", f"/dashboard{canal_qs}", unacked_b)}
     <a href="/dashboard/alertas{canal_qs}" class="nav-item {'active' if active == 'alertas' else ''}">Alertas{acked_b_html}</a>
     {_ni("agentes", "Agentes", f"/dashboard/agentes{canal_qs}")}
@@ -1317,13 +1831,18 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
     acked_alerts = _get_acked_alerts(db)   # {phone_key: {agent, snippet, display_name, acked_at}}
     db.close()  # release connection before heavy processing
     groups, phone_learned = _group_events(filtered_events, client_agent_map)
+    # Remove the canal's own phone number from client conversations
+    _canal_phone = _real_phone(canal)
+    groups = {k: v for k, v in groups.items() if _real_phone(k) != _canal_phone}
 
-    rows_html = ""
-    alerts_html = ""
+    conv_cards_html = ""
+    chat_panels_html = ""
+    context_panels_html = ""
     unacked_alert_count = 0
     intent_counts: dict[str, int] = defaultdict(int)
     intent_by_agent: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     convs_with_any_intent = 0
+    _AV_COLORS = ["#0fa968","#3b82f6","#8b5cf6","#f59e0b","#ef4444","#06b6d4","#ec4899","#14b8a6"]
     idx = 0
     for client_num, evs in sorted(groups.items(), key=lambda x: max(e.received_at for e in x[1]), reverse=True):
         evs.sort(key=lambda e: e.received_at)
@@ -1357,13 +1876,10 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
             intent_counts[iid] += 1
             intent_by_agent[agent][iid] += 1
 
-        # Build alert if flagged
+        # Alert detection
         has_alert = any(i[0] == "alerta" for i in intents)
         alert_snippet = ""
         if has_alert:
-            display_name_raw = client_name if client_name else phone
-            display_name = html_mod.escape(display_name_raw)
-            # Find the offending message snippet
             _alert_kws = ["absurdo", "vergonha", "ridiculo", "ridículo", "palhaçada",
                 "incompetente", "lixo", "péssimo", "pessimo", "horrível", "horrivel", "merda", "porra",
                 "caralho", "puta", "fdp", "vai se foder", "idiota", "imbecil", "babaca",
@@ -1371,259 +1887,251 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
                 "fraude", "roubando", "desrespeit", "falta de respeito", "abuso", "descaso"]
             for _dir, text in conv_texts:
                 lower = text.lower()
-                matched = False
                 for kw in _alert_kws:
-                    if " " in kw:
-                        if kw in lower:
-                            matched = True
-                            break
-                    else:
-                        if _re.search(r'\b' + _re.escape(kw), lower):
-                            matched = True
-                            break
-                if matched:
-                    alert_snippet = text[:120]
+                    matched = (kw in lower) if " " in kw else bool(_re.search(r'\b' + _re.escape(kw), lower))
+                    if matched:
+                        alert_snippet = text[:120]
+                        break
+                if alert_snippet:
                     break
-
-            # Skip if already acked — it belongs in the Alertas tab now
             if phone in acked_alerts:
                 continue
-
             unacked_alert_count += 1
-            snippet_html = f' — <em style="font-weight:400;opacity:.85">"{html_mod.escape(alert_snippet)}..."</em>' if alert_snippet else ""
-            alerts_html += f'<div onclick="openAlert(\'{chat_id}\')" style="cursor:pointer;background:rgba(239,68,68,.15);border:1px solid #ef4444;color:#fca5a5;padding:10px 16px;border-radius:8px;margin-bottom:8px;font-size:12px;font-weight:600;display:flex;align-items:center;gap:8px;transition:.2s" onmouseover="this.style.background=\'rgba(239,68,68,.25)\'" onmouseout="this.style.background=\'rgba(239,68,68,.15)\'"><span style="font-size:16px">⚠</span> <span><strong>{display_name}</strong> ({agent}){snippet_html}</span></div>'
 
-        client_display = html_mod.escape(client_name) if client_name else '<span style="color:#4a5a7a">Desconhecido</span>'
-
+        client_display = html_mod.escape(client_name) if client_name else "Desconhecido"
         segment = _get_segment(agent)
         safe_agent = html_mod.escape(agent)
-        safe_segment = html_mod.escape(segment) if segment else ""
         safe_phone = html_mod.escape(phone)
         safe_snippet = html_mod.escape(alert_snippet).replace("'", "&#39;")
         safe_display_name = html_mod.escape(client_name if client_name else phone).replace("'", "&#39;")
 
-        # OK button — only on alert rows, stops row toggle click
-        ok_btn = ""
-        if has_alert:
-            ok_btn = f'''<button onclick="event.stopPropagation();ackAlert('{safe_phone}','{html_mod.escape(agent).replace("'","&#39;")}','{safe_snippet}','{safe_display_name}','{chat_id}')" style="background:#0fa968;color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap">✓ OK</button>'''
+        # Avatar
+        av_color = _AV_COLORS[abs(hash(client_num)) % len(_AV_COLORS)]
+        name_for_av = client_name if client_name else phone
+        initials = "".join(w[0].upper() for w in name_for_av.split()[:2]) if name_for_av.strip() else "?"
 
-        rows_html += f"""
-        <tr id="conv-row-{chat_id}" class="conv-row" data-agent="{safe_agent}" data-segment="{safe_segment}" onclick="toggleChat('{chat_id}')" {"style='background:rgba(239,68,68,.08)'" if has_alert else ""}>
-            <td style="font-weight:600">{client_display}</td>
-            <td style="font-family:monospace;font-size:12px;color:#4a5a7a">{safe_phone}</td>
-            <td>{_short_agent_name(agent)}{badge}{intent_tags}</td>
-            <td style="text-align:center"><span class="dir-out">&uarr;{out_count}</span> &nbsp;<span class="dir-in">&darr;{in_count}</span></td>
-            <td style="color:#5a6a8a">{ts}</td>
-            <td style="text-align:center;width:70px">{ok_btn}</td>
-        </tr>
-        <tr id="chat-row-{chat_id}" class="chat-row" data-agent="{safe_agent}" data-segment="{safe_segment}"><td colspan="6" style="padding:0;border:none">
-            <div id="{chat_id}" class="chat-box"><div class="msg-container">"""
+        # Last snippet for list card
+        last_text = ""
+        for ev in reversed(evs):
+            p = ev.raw_payload or {}
+            if (p.get("type","") or "").upper() not in ("MESSAGE_STATUS","CONVERSATION_STATUS"):
+                t = _extract_content_preview(p)
+                if t:
+                    last_text = t[:80]
+                    break
 
+        # ── Conversation card (left panel) ──────────────────────────────────
+        unread_badge_html = f'<span style="margin-left:auto;background:#0fa968;color:#fff;font-size:10px;font-weight:700;min-width:18px;text-align:center;padding:1px 6px;border-radius:9px">{in_count}</span>' if in_count > 0 else ""
+        alert_dot = '<span style="color:#ef4444;margin-right:4px;font-size:13px">⚠</span>' if has_alert else ""
+        snippet_color = "#fca5a5" if has_alert else "#8a96aa"
+
+        conv_cards_html += f"""<div class="gp-conv-card" id="card-{chat_id}" data-type="{'alerta' if has_alert else 'normal'}" onclick="selectConv('{chat_id}')">
+  <div class="gp-av" style="width:36px;height:36px;background:{av_color};font-size:13px">{initials}</div>
+  <div style="flex:1;min-width:0">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+      <span style="font-weight:600;font-size:13px;color:#e8ecf1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{client_display}</span>
+      <span style="font-size:10.5px;color:{'#0fa968' if in_count else '#5a6a8a'};flex-shrink:0;font-weight:{'700' if in_count else '500'}">{ts}</span>
+    </div>
+    <div style="font-size:11px;color:#8a96aa;margin-top:2px;display:flex;align-items:center;gap:6px">
+      <span>{_short_agent_name(agent)}</span>{badge}
+    </div>
+    <div style="font-size:12px;color:{snippet_color};margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+      {alert_dot}{html_mod.escape(last_text or "—")}
+    </div>
+    <div style="display:flex;gap:5px;margin-top:7px;align-items:center">
+      {intent_tags}{unread_badge_html}
+    </div>
+  </div>
+</div>"""
+
+        # ── Chat panel (center) ──────────────────────────────────────────────
+        msgs_html = ""
+        _prev_day = None
         for ev in evs:
             p = ev.raw_payload or {}
-            ev_type = (p.get("type", "") or "").upper()
-            if ev_type in ("MESSAGE_STATUS", "CONVERSATION_STATUS"):
+            ev_type = (p.get("type","") or "").upper()
+            if ev_type in ("MESSAGE_STATUS","CONVERSATION_STATUS"):
                 continue
             direction = _extract_direction(p)
             raw_content = _extract_content_preview(p) or ""
-            content = html_mod.escape(raw_content) if raw_content else '<em style="opacity:.5">[mensagem sem conteúdo legível]</em>'
-            msg_ts = ev.received_at.astimezone(BRASILIA).strftime("%d/%m %H:%M") if ev.received_at else ""
+            content = html_mod.escape(raw_content) if raw_content else '<em style="opacity:.5">[sem conteúdo legível]</em>'
+            if ev.received_at:
+                _ev_br = ev.received_at.astimezone(BRASILIA)
+                msg_ts = _ev_br.strftime("%H:%M")
+                _msg_day = _ev_br.date()
+                if _msg_day != _prev_day:
+                    _day_str = _ev_br.strftime("%d/%m/%Y")
+                    msgs_html += (f'<div style="text-align:center;font-size:10px;color:#3a4a6a;'
+                                  f'letter-spacing:1.5px;margin:8px 0 6px;font-weight:700">'
+                                  f'— {_day_str} —</div>')
+                    _prev_day = _msg_day
+            else:
+                msg_ts = ""
             if direction == "OUT":
-                rows_html += f'<div class="msg msg-out">{content}<div class="msg-time">{msg_ts} &uarr;</div></div>'
+                msgs_html += f'<div class="gp-msg out">{content}<div class="gp-msg-t">{msg_ts} ↑</div></div>'
             else:
-                rows_html += f'<div class="msg msg-in">{content}<div class="msg-time">{msg_ts} &darr;</div></div>'
+                msgs_html += f'<div class="gp-msg in">{content}<div class="gp-msg-t">{msg_ts} ↓</div></div>'
 
-        rows_html += """</div></div></td></tr>"""
+        alert_badge_chat = '<span style="background:#3a1414;color:#ef4444;border:1px solid #5a2424;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:.5px">⚠ ALERTA</span>' if has_alert else ""
+        ok_btn_chat = f'<button onclick="ackAlert(\'{safe_phone}\',\'{html_mod.escape(agent).replace(chr(39),"&#39;")}\',\'{safe_snippet}\',\'{safe_display_name}\',\'{chat_id}\')" style="background:#0fa968;color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:11px;font-weight:700;cursor:pointer;font-family:\'Montserrat\',sans-serif">✓ OK</button>' if has_alert else ""
 
-    # Collect unique agents and segments for filters
-    all_agents_set = set()
-    all_segments_set = set()
-    for client_num, evs in groups.items():
-        _ph = _real_phone(client_num)
-        ag = phone_learned.get(client_num) or client_agent_map.get(_ph) or phone_learned.get(_ph) or "Sem atendente"
-        all_agents_set.add(ag)
-        seg = _get_segment(ag)
-        if seg:
-            all_segments_set.add(seg)
-    agent_options = "".join(f'<option value="{html_mod.escape(a)}">{html_mod.escape(a)}</option>' for a in sorted(all_agents_set))
-    segment_options = "".join(f'<option value="{html_mod.escape(s)}">{html_mod.escape(s)}</option>' for s in sorted(all_segments_set))
+        today_label = datetime.now(BRASILIA).strftime("%d %b %Y").upper()
+        chat_panels_html += f"""<div class="gp-chat-panel" id="cpanel-{chat_id}">
+  <div style="padding:14px 24px;border-bottom:1px solid #1a2540;display:flex;align-items:center;justify-content:space-between;background:#0b1120;flex-shrink:0">
+    <div style="display:flex;align-items:center;gap:12px">
+      <div class="gp-av" style="width:40px;height:40px;background:{av_color};font-size:14px">{initials}</div>
+      <div>
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:15px;font-weight:700;color:#fff">{client_display}</span>{badge}
+        </div>
+        <div style="font-size:11px;color:#5a6a8a;margin-top:2px;font-family:'JetBrains Mono',monospace">{safe_phone} · com {safe_agent}</div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">{alert_badge_chat}{ok_btn_chat}</div>
+  </div>
+  <div class="gp-chat-msgs">
+    {msgs_html}
+  </div>
+  <div style="padding:10px 24px;border-top:1px solid #1a2540;font-size:11px;color:#5a6a8a;text-align:center;background:#0b1120;font-style:italic;flex-shrink:0">
+    🔒 Visualização somente leitura · monitoramento Zenvia
+  </div>
+</div>"""
 
-    filter_html = f"""
-    <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;align-items:center">
-        <select id="filter-segment" onchange="applyFilters()" style="background:#0f1629;color:#e8ecf1;border:1px solid #1a2540;padding:8px 14px;border-radius:8px;font-family:'Montserrat',sans-serif;font-size:12px;font-weight:600;cursor:pointer">
-            <option value="">Todos os segmentos</option>
-            {segment_options}
-        </select>
-        <select id="filter-agent" onchange="applyFilters()" style="background:#0f1629;color:#e8ecf1;border:1px solid #1a2540;padding:8px 14px;border-radius:8px;font-family:'Montserrat',sans-serif;font-size:12px;font-weight:600;cursor:pointer">
-            <option value="">Todos os agentes</option>
-            {agent_options}
-        </select>
-        <span id="filter-count" style="font-size:11px;color:#5a6a8a;font-weight:500;margin-left:4px"></span>
-    </div>"""
+        # ── Context panel (right) ────────────────────────────────────────────
+        seg_name = _get_segment(agent)
+        context_panels_html += f"""<div id="ctx-{chat_id}" style="display:none">
+  <div style="font-size:9px;color:#5a6a8a;letter-spacing:1.5px;font-weight:700;margin-bottom:14px">CONTEXTO</div>
+  <div style="display:flex;flex-direction:column;gap:14px">
+    <div>
+      <div style="font-size:10px;color:#5a6a8a;margin-bottom:4px;font-weight:600">Mensagens (conv.)</div>
+      <div style="display:flex;align-items:baseline;gap:8px">
+        <span style="font-size:22px;font-weight:700;color:#0fa968;font-family:'JetBrains Mono',monospace">{msg_count}</span>
+        <span style="font-size:11px;color:#ef6b73;font-weight:600">↑ {out_count}</span>
+        <span style="font-size:11px;color:#0fa968;font-weight:600">↓ {in_count}</span>
+      </div>
+    </div>
+    <div>
+      <div style="font-size:10px;color:#5a6a8a;margin-bottom:6px;font-weight:600">Temas</div>
+      <div style="display:flex;flex-wrap:wrap;gap:5px">{intent_tags or '<span style="font-size:11px;color:#3a4a6a">—</span>'}</div>
+    </div>
+    <div>
+      <div style="font-size:10px;color:#5a6a8a;margin-bottom:4px;font-weight:600">Agente</div>
+      <div style="font-size:13px;color:#e8ecf1;font-weight:600">{safe_agent}</div>
+      {f'<div style="font-size:11px;color:#5a6a8a;margin-top:2px">{html_mod.escape(seg_name)}</div>' if seg_name else ''}
+    </div>
+    <div>
+      <div style="font-size:10px;color:#5a6a8a;margin-bottom:4px;font-weight:600">Telefone</div>
+      <div style="font-size:12px;color:#c0c8d8;font-family:'JetBrains Mono',monospace">{safe_phone}</div>
+    </div>
+    <div style="margin-top:4px;padding:14px;background:#111a2e;border:1px solid #1a2540;border-radius:8px">
+      <div style="font-size:10px;color:#0fa968;letter-spacing:1px;font-weight:700;margin-bottom:6px">COMPARTILHAR</div>
+      <div style="font-size:11.5px;color:#c0c8d8;line-height:1.5">Enviar resumo desta conversa por e-mail.</div>
+      <button style="margin-top:10px;width:100%;background:#0fa968;color:#fff;border:none;padding:8px 0;border-radius:6px;font-size:11.5px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif">Gerar link</button>
+    </div>
+  </div>
+</div>"""
 
-    # Build intent analysis panel
-    intent_meta = {
-        "alerta": ("⚠ Alertas", "#ef4444"),
-        "reuniao": ("Reunião", "#3b82f6"),
-        "resgate": ("Movimentação", "#f59e0b"),
-        "duvida": ("Dúvida", "#8b5cf6"),
-        "followup": ("Follow-up", "#06b6d4"),
-        "geral": ("Geral", "#5a6a8a"),
-    }
-    # Count conversations with no intent as "geral"
-    intent_counts["geral"] = max(len(groups) - convs_with_any_intent, 0)
-
-    # KPI cards for intents
-    intent_kpis = ""
-    for iid, (ilabel, icolor) in intent_meta.items():
-        cnt = intent_counts.get(iid, 0)
-        intent_kpis += f'<div class="kpi" style="border-top:3px solid {icolor}"><div class="val" style="color:{icolor}">{cnt}</div><div class="label">{ilabel}</div></div>'
-
-    # Breakdown by agent table
-    # Get agents that have at least one intent
-    agents_with_intents = sorted(intent_by_agent.keys(), key=lambda a: sum(intent_by_agent[a].values()), reverse=True)
-    agent_breakdown_rows = ""
-    for ag in agents_with_intents:
-        if ag == "Sem atendente":
-            continue
-        cells = ""
-        row_total = 0
-        for iid, (ilabel, icolor) in intent_meta.items():
-            v = intent_by_agent[ag].get(iid, 0)
-            row_total += v
-            if v == 0:
-                cells += f'<td style="text-align:center;color:#1a2540">-</td>'
-            elif iid == "alerta":
-                cells += f'<td style="text-align:center;color:{icolor};font-weight:700">{v}</td>'
-            else:
-                cells += f'<td style="text-align:center;color:{icolor};font-weight:600">{v}</td>'
-        seg = _get_segment(ag)
-        seg_color = SEGMENT_COLORS.get(seg, "#1a2540")
-        dot = f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{seg_color};margin-right:6px;vertical-align:middle"></span>' if seg else ''
-        agent_breakdown_rows += f'<tr><td style="font-size:12px;font-weight:600">{dot}{_short_agent_name(ag)}</td>{cells}<td style="text-align:center;font-weight:700;color:#e8ecf1">{row_total}</td></tr>'
-
-    # Sem atendente row
-    if "Sem atendente" in intent_by_agent:
-        cells = ""
-        row_total = 0
-        for iid, (ilabel, icolor) in intent_meta.items():
-            v = intent_by_agent["Sem atendente"].get(iid, 0)
-            row_total += v
-            if v == 0:
-                cells += f'<td style="text-align:center;color:#1a2540">-</td>'
-            else:
-                cells += f'<td style="text-align:center;color:{icolor};font-weight:600">{v}</td>'
-        agent_breakdown_rows += f'<tr><td style="font-size:12px;font-weight:600;color:#5a6a8a">Sem atendente</td>{cells}<td style="text-align:center;font-weight:700;color:#e8ecf1">{row_total}</td></tr>'
-
-    intent_headers = "".join(f'<th style="text-align:center;font-size:10px;color:{icolor}">{ilabel}</th>' for iid, (ilabel, icolor) in intent_meta.items())
-
-    analysis_html = f"""
-        <div class="card" style="margin-bottom:16px">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-                <h2 style="margin:0">Analise por tipo de conversa</h2>
-            </div>
-            <div class="kpi-row" style="margin-bottom:16px">{intent_kpis}</div>
-            <table>
-                <thead><tr><th style="min-width:180px">Agente</th>{intent_headers}<th style="text-align:center">Total</th></tr></thead>
-                <tbody>{agent_breakdown_rows}</tbody>
-            </table>
-        </div>"""
-
-    # Totals for KPIs
-    _total_out = sum(1 for ev in filtered_events if _extract_direction(ev.raw_payload or {}) == "OUT")
-    _total_in  = sum(1 for ev in filtered_events if _extract_direction(ev.raw_payload or {}) == "IN")
-    _active_agents = len({
-        (phone_learned.get(cn) or client_agent_map.get(_real_phone(cn)) or phone_learned.get(_real_phone(cn)) or "Sem atendente")
-        for cn in groups
-    } - {"Sem atendente"})
+    # ── Chips para filtros na lista ──────────────────────────────────────────
+    alert_chip = f'<span class="gp-chip" onclick="filterCards(\'alerta\',this)" style="color:#ef4444;border-color:#5a2424">⚠ Alertas {unacked_alert_count}</span>' if unacked_alert_count else ""
 
     nav = _nav_html("conversas", canal=canal, unacked_alerts=unacked_alert_count, acked_alerts=len(acked_alerts), is_admin=(access or {}).get('role')=='admin', title="Conversas")
-    return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo — Conversas</title>{COMMON_CSS}</head><body>
-    {nav}
-    <div class="container">
-        <div class="kpi-row">
-            <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{len(groups)}</div><div class="label">Conversas</div></div>
-            <div class="kpi" style="border-top:3px solid #0fa968"><div class="val" style="font-size:20px">&uarr;{_total_out}&nbsp;<span style="color:#5a6a8a;font-size:14px">/</span>&nbsp;&darr;{_total_in}</div><div class="label">Msgs enviadas / recebidas</div></div>
-            <div class="kpi" style="border-top:3px solid {'#ef4444' if unacked_alert_count > 0 else '#1a2540'}"><div class="val" style="color:{'#ef4444' if unacked_alert_count > 0 else '#5a6a8a'}">{unacked_alert_count}</div><div class="label">Alertas ativos</div></div>
-            <div class="kpi" style="border-top:3px solid #4a9eff"><div class="val" style="color:#4a9eff">{_active_agents}</div><div class="label">Agentes com conv.</div></div>
-        </div>
-        {analysis_html}
-        {filter_html}
-        {alerts_html}
-        <div class="card">
-            <table>
-                <thead><tr><th>Cliente</th><th>Telefone</th><th>Agente</th><th style="text-align:center">Msgs</th><th>Ultima</th><th style="width:70px"></th></tr></thead>
-                <tbody>{rows_html}</tbody>
-            </table>
-        </div>
+    return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo — Conversas</title>{COMMON_CSS}
+<style>
+.gp-conv-card{{padding:13px 18px 13px 16px;display:flex;gap:12px;cursor:pointer;border-bottom:1px solid #111a2e;border-left:2px solid transparent;transition:.15s}}
+.gp-conv-card:hover{{background:rgba(255,255,255,.03)}}
+.gp-conv-card.active{{background:#141e35;border-left-color:#0fa968}}
+.gp-chip{{padding:4px 12px;border-radius:20px;font-size:10.5px;font-weight:700;cursor:pointer;border:1px solid #1a2540;color:#8a96aa;background:transparent;transition:.15s;white-space:nowrap}}
+.gp-chip.active{{background:#0fa968;color:#fff;border-color:#0fa968}}
+.gp-chip:hover{{background:rgba(255,255,255,.06)}}
+.gp-chat-panel{{display:none;flex-direction:column;height:100%;overflow:hidden}}
+.gp-chat-msgs{{flex:1;overflow-y:auto;padding:24px 32px;display:flex;flex-direction:column;gap:8px}}
+.gp-msg{{max-width:70%;padding:10px 14px;font-size:13px;line-height:1.5}}
+.gp-msg.out{{align-self:flex-end;background:#0c2e1f;color:#a8e6cf;border:1px solid #0c7d4f;border-radius:14px 14px 4px 14px}}
+.gp-msg.in{{align-self:flex-start;background:#141e35;color:#c8d6e5;border:1px solid #1a2540;border-radius:14px 14px 14px 4px}}
+.gp-msg-t{{font-size:10px;margin-top:4px;font-family:'JetBrains Mono',monospace}}
+.gp-msg.out .gp-msg-t{{color:#5a8a6a;text-align:right}}
+.gp-msg.in .gp-msg-t{{color:#5a6a8a}}
+.gp-av{{border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;flex-shrink:0}}
+</style>
+</head><body>
+{nav}
+<div style="display:flex;height:calc(100vh - 60px);overflow:hidden">
+
+  <!-- LEFT: lista de conversas -->
+  <div style="width:380px;border-right:1px solid #1a2540;display:flex;flex-direction:column;flex-shrink:0;overflow:hidden">
+    <div style="padding:14px 18px 10px;border-bottom:1px solid #1a2540;flex-shrink:0">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <span id="list-count" style="font-size:10px;color:#5a6a8a;letter-spacing:1.2px;font-weight:700">{len(groups)} CONVERSAS · HOJE</span>
+        <span style="font-size:11px;color:#0fa968;font-weight:600;cursor:pointer">Filtros</span>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <span class="gp-chip active" onclick="filterCards('',this)">Todas</span>
+        {alert_chip}
+        <span class="gp-chip" onclick="filterCards('unread',this)">Não lidas</span>
+      </div>
     </div>
-    <script>
-    function toggleChat(id) {{
-        var el = document.getElementById(id);
-        el.classList.toggle('open');
-        if (el.classList.contains('open')) {{
-            el.scrollTop = el.scrollHeight;
-        }}
+    <div style="flex:1;overflow-y:auto">
+      {conv_cards_html}
+    </div>
+  </div>
+
+  <!-- CENTER: chat -->
+  <div style="flex:1;min-width:0;display:flex;flex-direction:column;background:#0a0f1a;overflow:hidden">
+    <div id="chat-ph" style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:10px;color:#3a4a6a">
+      <div style="font-size:40px;opacity:.25">💬</div>
+      <div style="font-size:13px;font-style:italic">Selecione uma conversa para visualizar</div>
+    </div>
+    {chat_panels_html}
+  </div>
+
+  <!-- RIGHT: contexto -->
+  <div style="width:280px;border-left:1px solid #1a2540;background:#0b1120;overflow-y:auto;flex-shrink:0;padding:18px">
+    <div id="ctx-ph" style="color:#3a4a6a;font-size:12px;font-style:italic">Selecione uma conversa</div>
+    {context_panels_html}
+  </div>
+</div>
+
+<script>
+var _activeId=null;
+function selectConv(id){{
+  if(_activeId){{
+    var pc=document.getElementById('card-'+_activeId);if(pc)pc.classList.remove('active');
+    var pp=document.getElementById('cpanel-'+_activeId);if(pp)pp.style.display='none';
+    var px=document.getElementById('ctx-'+_activeId);if(px)px.style.display='none';
+  }}
+  _activeId=id;
+  var card=document.getElementById('card-'+id);if(card)card.classList.add('active');
+  document.getElementById('chat-ph').style.display='none';
+  var panel=document.getElementById('cpanel-'+id);
+  if(panel){{panel.style.display='flex';var m=panel.querySelector('.gp-chat-msgs');if(m)setTimeout(function(){{m.scrollTop=m.scrollHeight;}},10);}}
+  document.getElementById('ctx-ph').style.display='none';
+  var ctx=document.getElementById('ctx-'+id);if(ctx)ctx.style.display='block';
+}}
+async function ackAlert(phoneKey,agent,snippet,displayName,cardId){{
+  try{{
+    var resp=await fetch('/dashboard/ack-alert',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{phone_key:phoneKey,agent:agent,snippet:snippet,display_name:displayName}})}});
+    if(resp.ok){{
+      var card=document.getElementById('card-'+cardId);if(card)card.remove();
+      var panel=document.getElementById('cpanel-'+cardId);if(panel)panel.remove();
+      var ctx=document.getElementById('ctx-'+cardId);if(ctx)ctx.remove();
+      if(_activeId===cardId){{_activeId=null;document.getElementById('chat-ph').style.display='flex';document.getElementById('ctx-ph').style.display='block';}}
     }}
-    function openAlert(chatId) {{
-        document.getElementById('filter-segment').value = '';
-        document.getElementById('filter-agent').value = '';
-        applyFilters();
-        var el = document.getElementById(chatId);
-        if (!el.classList.contains('open')) {{ el.classList.add('open'); }}
-        el.scrollTop = el.scrollHeight;
-        el.closest('tr').previousElementSibling.scrollIntoView({{ behavior: 'smooth', block: 'center' }});
-    }}
-    async function ackAlert(phoneKey, agent, snippet, displayName, chatId) {{
-        try {{
-            var resp = await fetch('/dashboard/ack-alert', {{
-                method: 'POST',
-                headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{phone_key: phoneKey, agent: agent, snippet: snippet, display_name: displayName}})
-            }});
-            if (resp.ok) {{
-                var convRow = document.getElementById('conv-row-' + chatId);
-                var chatRow = document.getElementById('chat-row-' + chatId);
-                if (convRow) convRow.remove();
-                if (chatRow) chatRow.remove();
-                // Update badge
-                var badge = document.getElementById('alert-badge');
-                if (badge) {{
-                    var n = Math.max(0, parseInt(badge.textContent || '0') - 1);
-                    if (n > 0) {{ badge.textContent = n; badge.style.display = ''; }}
-                    else {{ badge.style.display = 'none'; }}
-                }}
-                document.getElementById('filter-count').textContent = document.querySelectorAll('tr.conv-row:not([style*="display: none"])').length + ' conversas';
-            }}
-        }} catch(e) {{ console.error(e); }}
-    }}
-    function applyFilters() {{
-        var seg = document.getElementById('filter-segment').value;
-        var agent = document.getElementById('filter-agent').value;
-        var rows = document.querySelectorAll('tr.conv-row');
-        var chatRows = document.querySelectorAll('tr.chat-row');
-        var visible = 0;
-        rows.forEach(function(row, i) {{
-            var rSeg = row.getAttribute('data-segment') || '';
-            var rAgent = row.getAttribute('data-agent') || '';
-            var show = true;
-            if (seg && rSeg !== seg) show = false;
-            if (agent && rAgent !== agent) show = false;
-            row.style.display = show ? '' : 'none';
-            if (chatRows[i]) {{
-                chatRows[i].style.display = show ? '' : 'none';
-                if (!show) {{
-                    var chatBox = chatRows[i].querySelector('.chat-box');
-                    if (chatBox) chatBox.classList.remove('open');
-                }}
-            }}
-            if (show) visible++;
-        }});
-        document.getElementById('filter-count').textContent = visible + ' conversas';
-    }}
-    applyFilters();
-    </script>
-    </body></html>""")
+  }}catch(e){{console.error(e);}}
+}}
+function filterCards(type,el){{
+  document.querySelectorAll('.gp-chip').forEach(c=>c.classList.remove('active'));
+  if(el)el.classList.add('active');
+  var cards=document.querySelectorAll('.gp-conv-card');
+  var count=0;
+  cards.forEach(function(c){{
+    var show=!type||c.getAttribute('data-type')===type||(type==='unread'&&c.querySelector('[style*="border-radius:9px"]'));
+    c.style.display=show?'flex':'none';
+    if(show)count++;
+  }});
+  document.getElementById('list-count').textContent=count+' CONVERSAS · HOJE';
+}}
+</script>
+</body></html>""")
 
 
 # ── Alert triage endpoints ───────────────────────────────────────────────────
@@ -1856,6 +2364,7 @@ def dashboard_temas(request: Request, db: Session = Depends(get_db)):
 
     period_events = [ev for ev in all_events if ev.received_at and ev.received_at.astimezone(BRASILIA) >= period_start]
     groups, phone_learned = _group_events(period_events, client_agent_map)
+    _cp = _real_phone(canal); groups = {k: v for k, v in groups.items() if _real_phone(k) != _cp}
 
     # ── Build topic × agent matrix ───────────────────────────────────────────
     # topic_data[topic_id][agent] = set of client phones that mentioned the topic
@@ -2010,10 +2519,24 @@ def dashboard_temas(request: Request, db: Session = Depends(get_db)):
         [(tlabel, len(_seen_topic_client[tid]), tcolor) for tid, tlabel, tcolor, _ in TOPIC_RULES if _seen_topic_client[tid]],
         key=lambda x: x[1], reverse=True
     )
-    _chart_labels = json.dumps([d[0] for d in chart_data])
-    _chart_values = json.dumps([d[1] for d in chart_data])
-    _chart_colors = json.dumps([d[2] for d in chart_data])
-    _chart_h = max(180, len(chart_data) * 36)
+    _chart_max = chart_data[0][1] if chart_data else 1
+    # CSS horizontal bars (no canvas needed)
+    _bars_html = ""
+    for _tlabel, _v, _tcolor in chart_data:
+        _pct = round(_v / _chart_max * 100, 1) if _chart_max > 0 else 0
+        _bars_html += (
+            f'<div style="display:grid;grid-template-columns:160px 1fr 52px;align-items:center;gap:14px;padding:5px 0">'
+            f'<div style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:#c0c8d8;font-weight:600">'
+            f'<span style="width:8px;height:8px;border-radius:50%;background:{_tcolor};flex-shrink:0"></span>'
+            f'{html_mod.escape(_tlabel)}</div>'
+            f'<div style="height:18px;background:#141e35;border-radius:3px;overflow:hidden">'
+            f'<div style="width:{_pct}%;height:100%;background:{_tcolor};opacity:.85;border-radius:3px 0 0 3px"></div></div>'
+            f'<div style="text-align:right;font-size:13px;font-weight:700;color:#0fa968;'
+            f'font-family:\'JetBrains Mono\',monospace">{_v}</div>'
+            f'</div>'
+        )
+    if not _bars_html:
+        _bars_html = '<p style="color:#4a5a7a;text-align:center;padding:20px">Nenhum tema identificado no período.</p>'
 
     page = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Temas — Alto Valor</title>{COMMON_CSS}
@@ -2056,74 +2579,7 @@ function toggleDrill(id) {{
       <h2 style="margin:0;font-size:15px">Ocorrências por tema</h2>
       <span style="font-size:11px;color:#5a6a8a">clientes únicos · {_period_label.lower()}</span>
     </div>
-    <canvas id="temas-chart" height="{_chart_h}" style="width:100%;display:block"></canvas>
-    <script>
-    (function(){{
-      var labels = {_chart_labels};
-      var values = {_chart_values};
-      var colors = {_chart_colors};
-      var canvas = document.getElementById('temas-chart');
-      var W = canvas.parentElement.offsetWidth - 32;
-      canvas.width = W;
-      var H = canvas.height;
-      var ctx = canvas.getContext('2d');
-      var padL = 180, padR = 50, padT = 10, padB = 10;
-      var plotW = W - padL - padR;
-      var n = labels.length;
-      var barH = Math.floor((H - padT - padB) / n);
-      var gap = Math.max(4, Math.floor(barH * 0.25));
-      var bH = barH - gap;
-      var maxVal = Math.max.apply(null, values) || 1;
-      ctx.clearRect(0, 0, W, H);
-      // Grid lines
-      var steps = Math.min(maxVal, 6);
-      ctx.strokeStyle = '#1a2540';
-      ctx.lineWidth = 1;
-      for (var s = 0; s <= steps; s++) {{
-        var gx = padL + Math.round(s / steps * plotW);
-        ctx.beginPath(); ctx.moveTo(gx, padT); ctx.lineTo(gx, H - padB); ctx.stroke();
-        if (s > 0) {{
-          ctx.fillStyle = '#3a4a6a';
-          ctx.font = '10px Montserrat,sans-serif';
-          ctx.textAlign = 'center';
-          ctx.fillText(Math.round(s / steps * maxVal), gx, padT + 9);
-        }}
-      }}
-      for (var i = 0; i < n; i++) {{
-        var y = padT + i * barH + gap / 2;
-        var bw = Math.round(values[i] / maxVal * plotW);
-        // Bar
-        ctx.fillStyle = colors[i];
-        ctx.globalAlpha = 0.85;
-        ctx.beginPath();
-        var radius = 4;
-        ctx.moveTo(padL + radius, y);
-        ctx.lineTo(padL + bw - radius, y);
-        ctx.quadraticCurveTo(padL + bw, y, padL + bw, y + radius);
-        ctx.lineTo(padL + bw, y + bH - radius);
-        ctx.quadraticCurveTo(padL + bw, y + bH, padL + bw - radius, y + bH);
-        ctx.lineTo(padL + radius, y + bH);
-        ctx.quadraticCurveTo(padL, y + bH, padL, y + bH - radius);
-        ctx.lineTo(padL, y + radius);
-        ctx.quadraticCurveTo(padL, y, padL + radius, y);
-        ctx.closePath();
-        ctx.fill();
-        ctx.globalAlpha = 1.0;
-        // Label (left)
-        ctx.fillStyle = '#c0c8d8';
-        ctx.font = '11px Montserrat,sans-serif';
-        ctx.textAlign = 'right';
-        ctx.fillText(labels[i], padL - 8, y + bH / 2 + 4);
-        // Value (inside or right of bar)
-        if (values[i] > 0) {{
-          ctx.fillStyle = bw > 30 ? '#fff' : '#c0c8d8';
-          ctx.font = 'bold 12px Montserrat,sans-serif';
-          ctx.textAlign = bw > 30 ? 'right' : 'left';
-          ctx.fillText(values[i], bw > 30 ? padL + bw - 8 : padL + bw + 6, y + bH / 2 + 4);
-        }}
-      }}
-    }})();
-    </script>
+    <div style="display:flex;flex-direction:column;gap:2px">{_bars_html}</div>
   </div>
 
   <!-- Table -->
@@ -2201,12 +2657,72 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
     acked = _get_acked_alerts(db)
     client_name_map = get_client_names(db)
 
-    # Filter out alerts for agents the user can't see
+    # Compute active (unacked) alerts from today's events
+    all_events, _ = get_events(db, limit=50000, offset=0)
+    client_agent_map = get_agent_mappings(db)
+    db.close()
+    filtered_events = _filter_events_by_channel(all_events, canal)
+    groups, phone_learned = _group_events(filtered_events, client_agent_map)
+    _cp = _real_phone(canal); groups = {k: v for k, v in groups.items() if _real_phone(k) != _cp}
+
+    _alert_kws_al = ["absurdo", "vergonha", "ridiculo", "ridículo", "palhaçada",
+        "incompetente", "lixo", "péssimo", "pessimo", "horrível", "horrivel", "merda", "porra",
+        "caralho", "puta", "fdp", "vai se foder", "idiota", "imbecil", "babaca",
+        "reclamação", "reclamacao", "reclamo", "procon", "advogado",
+        "fraude", "roubando", "desrespeit", "falta de respeito", "abuso", "descaso"]
+
+    active_alerts_html = ""
+    n_active = 0
+    for client_num, evs in sorted(groups.items(), key=lambda x: max(e.received_at for e in x[1]), reverse=True):
+        phone = _real_phone(client_num)
+        if phone in acked:
+            continue
+        agent = phone_learned.get(client_num) or client_agent_map.get(phone) or phone_learned.get(phone) or "Sem atendente"
+        if not _user_sees(access, agent):
+            continue
+        conv_texts = []
+        for ev in evs:
+            p = ev.raw_payload or {}
+            d = _extract_direction(p); c = _extract_content_preview(p) or ""
+            if c: conv_texts.append((d, c))
+        intents = _classify_conversation(conv_texts)
+        if not any(i[0] == "alerta" for i in intents):
+            continue
+        alert_snippet = ""
+        for _d, text in conv_texts:
+            for kw in _alert_kws_al:
+                if (kw in text.lower()) if " " in kw else bool(_re.search(r'\b' + _re.escape(kw), text.lower())):
+                    alert_snippet = text[:120]; break
+            if alert_snippet: break
+        client_name = client_name_map.get(phone, "")
+        display = html_mod.escape(client_name if client_name else phone)
+        badge = _segment_badge(agent)
+        last_ev = max(evs, key=lambda e: e.received_at)
+        ts_str = last_ev.received_at.astimezone(BRASILIA).strftime("%d/%m %H:%M") if last_ev.received_at else ""
+        safe_phone = html_mod.escape(phone)
+        safe_agent = html_mod.escape(agent)
+        safe_snippet = html_mod.escape(alert_snippet).replace("'", "&#39;")
+        safe_display = html_mod.escape(client_name if client_name else phone).replace("'", "&#39;")
+        n_active += 1
+        active_alerts_html += f"""<div style="background:#1a0e0e;border:1px solid #5a2424;border-radius:8px;padding:12px 16px;margin-bottom:8px;display:flex;align-items:center;gap:12px">
+  <span style="color:#ef4444;font-size:18px;flex-shrink:0">⚠</span>
+  <div style="flex:1;min-width:0">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+      <span style="font-size:13px;font-weight:700;color:#fff">{display}</span>{badge}
+      <span style="font-size:11px;color:#8a96aa;margin-left:4px">com {safe_agent}</span>
+      <span style="font-size:10.5px;color:#5a6a8a;margin-left:auto;flex-shrink:0;font-family:'JetBrains Mono',monospace">{ts_str}</span>
+    </div>
+    <div style="font-size:11.5px;color:#fca5a5;font-style:italic">"{html_mod.escape(alert_snippet)}..."</div>
+  </div>
+  <button onclick="ackAlertPage('{safe_phone}','{safe_agent}','{safe_snippet}','{safe_display}',this)" style="background:#0fa968;border:none;color:#fff;padding:5px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif;flex-shrink:0">✓ OK</button>
+</div>"""
+
+    # Filter reviewed alerts for visibility
     acked = {k: v for k, v in acked.items() if _user_sees(access, v.get("agent", ""))}
 
     rows_html = ""
     if not acked:
-        rows_html = '<tr><td colspan="5" style="text-align:center;color:#4a5a7a;padding:32px;font-size:13px">Nenhum alerta revisado ainda. Clique em <strong>✓ OK</strong> em uma conversa para movê-la aqui.</td></tr>'
+        rows_html = '<tr><td colspan="6" style="text-align:center;color:#4a5a7a;padding:32px;font-size:13px">Nenhum alerta revisado ainda. Clique em <strong>✓ OK</strong> em um alerta ativo para movê-lo aqui.</td></tr>'
     else:
         for phone_key, info in sorted(acked.items(), key=lambda x: x[1].get("acked_at", ""), reverse=True):
             agent = html_mod.escape(info.get("agent", ""))
@@ -2232,15 +2748,36 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                 </td>
             </tr>"""
 
-    nav = _nav_html("alertas", canal=canal, acked_alerts=len(acked), is_admin=(access or {}).get('role')=='admin', title="Alertas")
+    _active_top_color = "#ef4444" if n_active > 0 else "#1a2540"
+    _active_val_color = "#ef4444" if n_active > 0 else "#5a6a8a"
+    nav = _nav_html("alertas", canal=canal, unacked_alerts=n_active, acked_alerts=len(acked), is_admin=(access or {}).get('role')=='admin', title="Alertas")
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo — Alertas</title>{COMMON_CSS}</head><body>
     {nav}
     <div class="container">
         <div class="kpi-row">
-            <div class="kpi" style="border-top:3px solid #ef4444"><div class="val" style="color:#ef4444">0</div><div class="label">Ativos · aguardando triagem</div></div>
-            <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{len(acked)}</div><div class="label">Revisados · marcados OK</div></div>
-            <div class="kpi" style="border-top:3px solid #1a2540"><div class="val" style="color:#5a6a8a">{len(acked)}</div><div class="label">Total disparado</div></div>
+            <div class="kpi" style="border-top:3px solid {_active_top_color}">
+                <div class="val" style="color:{_active_val_color}">{n_active}</div>
+                <div class="label">Ativos · aguardando triagem</div>
+            </div>
+            <div class="kpi" style="border-top:3px solid #0fa968">
+                <div class="val">{len(acked)}</div>
+                <div class="label">Revisados · marcados OK</div>
+            </div>
+            <div class="kpi" style="border-top:3px solid #f59e0b">
+                <div class="val" style="color:#f59e0b">{n_active + len(acked)}</div>
+                <div class="label">Total identificados</div>
+            </div>
         </div>
+
+        {f'''<div class="card" style="border:1px solid #5a2424;background:rgba(239,68,68,.06);margin-bottom:16px">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+            <span style="width:8px;height:8px;border-radius:50%;background:#ef4444;box-shadow:0 0 10px #ef4444;display:inline-block"></span>
+            <h2 style="margin:0;font-size:15px;color:#fca5a5">ATIVOS</h2>
+            <span style="background:#3a1414;color:#ef4444;padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;border:1px solid #5a2424;letter-spacing:.5px">{n_active} NOVO{"S" if n_active != 1 else ""}</span>
+          </div>
+          {active_alerts_html}
+        </div>''' if n_active > 0 else ""}
+
         <div class="card">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
                 <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
@@ -2257,6 +2794,16 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
         </div>
     </div>
     <script>
+    async function ackAlertPage(phoneKey, agent, snippet, displayName, btn) {{
+        try {{
+            var resp = await fetch('/dashboard/ack-alert', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{phone_key: phoneKey, agent: agent, snippet: snippet, display_name: displayName}})
+            }});
+            if (resp.ok) {{ btn.closest('div[style]').remove(); }}
+        }} catch(e) {{ console.error(e); }}
+    }}
     async function unackAlert(phoneKey, btn) {{
         try {{
             var resp = await fetch('/dashboard/unack-alert', {{
@@ -2275,6 +2822,116 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
 
 
 # ── Agents Dashboard ─────────────────────────────────────────────────────────
+
+@router.get("/dashboard/agentes/export", include_in_schema=False)
+def dashboard_agentes_export(request: Request, db: Session = Depends(get_db)):
+    """CSV export: Agente, Telefone, Nome Cliente, Data, Hora 1º contato."""
+    from fastapi.responses import StreamingResponse
+
+    access = _get_access(request, db)
+    if access is None:
+        return RedirectResponse("/dashboard/login", status_code=302)
+
+    periodo = request.query_params.get("periodo", "hoje")
+    if periodo not in ("hoje", "7dias", "custom"):
+        periodo = "hoje"
+    inicio_raw = request.query_params.get("inicio", "")
+    fim_raw = request.query_params.get("fim", "")
+    segmento = request.query_params.get("segmento", "")
+    canal = request.query_params.get("canal", "5519997733651")
+
+    now_br = datetime.now(BRASILIA)
+    today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    if periodo == "hoje":
+        cutoff = today_start
+        cutoff_end = today_start + timedelta(days=1)
+    elif periodo == "7dias":
+        cutoff = today_start - timedelta(days=6)
+        cutoff_end = today_start + timedelta(days=1)
+    else:
+        try:
+            cutoff = datetime.strptime(inicio_raw, "%Y-%m-%d").replace(tzinfo=BRASILIA)
+            _end = datetime.strptime(fim_raw, "%Y-%m-%d").replace(tzinfo=BRASILIA)
+            cutoff_end = _end + timedelta(days=1)
+            if cutoff_end <= cutoff:
+                raise ValueError
+        except ValueError:
+            cutoff = today_start
+            cutoff_end = today_start + timedelta(days=1)
+
+    all_events = get_events_only(db, limit=50000)
+    all_events = _filter_events_by_channel(all_events, canal)
+    client_agent_map = get_agent_mappings(db)
+    client_name_map = get_client_names(db)
+    db.close()
+
+    events = [ev for ev in all_events if ev.received_at and cutoff <= ev.received_at.astimezone(BRASILIA) < cutoff_end]
+    groups, phone_learned = _group_events(events, client_agent_map)
+    _cp = _real_phone(canal)
+    groups = {k: v for k, v in groups.items() if _real_phone(k) != _cp}
+
+    _combined_agent_map = dict(client_agent_map)
+    for _k, _v in phone_learned.items():
+        _rk = _real_phone(_k)
+        if _rk and _rk not in _combined_agent_map:
+            _combined_agent_map[_rk] = _v
+
+    _date_key_fmt = "%d/%m"
+    # Collect rows: one per (agent, phone, day) — first OUT contact that day
+    # _hm_seen maps fk → (hour, datetime) for dedup
+    _rows: list[tuple] = []  # (agent, phone, name, date_br, hour)
+    _hm_seen: dict[str, datetime] = {}
+
+    for _grp_key, _grp_evs in groups.items():
+        _grp_ph = _real_phone(_grp_key)
+        if not _grp_ph or _grp_ph in COMPANY_CHANNELS or _grp_ph == _real_phone(canal):
+            continue
+        _grp_ag = (_combined_agent_map.get(_grp_ph)
+                   or _extract_agent_from_payload(next((e.raw_payload for e in _grp_evs if e.raw_payload), {}))
+                   or "Sem atendente")
+        if _grp_ag == "Sem atendente":
+            continue
+        if not _user_sees(access, _grp_ag):
+            continue
+        if segmento and _get_segment(_grp_ag) != segmento:
+            continue
+        for _ev in sorted(_grp_evs, key=lambda e: e.received_at or datetime.min.replace(tzinfo=timezone.utc)):
+            if not _ev.received_at:
+                continue
+            _p = _ev.raw_payload or {}
+            if _extract_direction(_p) != "OUT":
+                continue
+            _ts_br = _ev.received_at.astimezone(BRASILIA)
+            _h = _ts_br.hour
+            if not (HOUR_START <= _h <= HOUR_END):
+                continue
+            _dk = _ts_br.strftime(_date_key_fmt)
+            _fk = f"{_grp_ag}|{_grp_ph}|{_dk}"
+            if _fk not in _hm_seen:
+                _hm_seen[_fk] = _ts_br
+                _name = client_name_map.get(_grp_ph, "")
+                _date_str = _ts_br.strftime("%d/%m/%Y")
+                _hour_str = _ts_br.strftime("%H:%M")
+                _rows.append((_grp_ag, _grp_ph, _name, _date_str, _hour_str))
+
+    # Sort by agent name, then date, then hour
+    _rows.sort(key=lambda r: (r[0], r[3], r[4]))
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Agente", "Telefone", "Nome Cliente", "Data", "Hora 1º Contato"])
+    for row in _rows:
+        writer.writerow(row)
+    output.seek(0)
+
+    filename = f"agentes-{periodo}-{now_br.strftime('%Y%m%d%H%M')}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
 
 @router.get("/dashboard/agentes", response_class=HTMLResponse, include_in_schema=False)
 def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
@@ -2330,6 +2987,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
     events = [ev for ev in all_events if ev.received_at and cutoff <= ev.received_at.astimezone(BRASILIA) < cutoff_end]
 
     groups, phone_learned = _group_events(events, client_agent_map)
+    _cp = _real_phone(canal); groups = {k: v for k, v in groups.items() if _real_phone(k) != _cp}
 
     # ── Daily heatmap data (built here so phone_learned is available) ──────────
     # Combined agent map: gabarito + learned from main-period grouping
@@ -2363,8 +3021,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
     agent_stats: dict[str, dict] = defaultdict(lambda: {"out": 0, "in": 0, "clients": set(), "days_out": defaultdict(int), "days_in": defaultdict(int), "days_clients_out": defaultdict(set), "days_clients_in": defaultdict(set)})
     hourly_msgs: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
     hourly_clients: dict[str, dict[int, set]] = defaultdict(lambda: defaultdict(set))
-    # Track first OUT contact hour per (agent, client) so each client counts only once
-    _first_out_hour: dict[str, int] = {}  # key: "agent|phone"
+    _last_event_time: dict[str, datetime] = {}  # most recent OUT ts per agent
 
     for client_num, evs in groups.items():
         _ph = _real_phone(client_num)
@@ -2380,23 +3037,54 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
             day_key = ts.strftime("%d/%m")
             hour = ts.hour
             if direction == "OUT":
+                # Track last agent-sent message time (used for online/idle/offline status)
+                if agent not in _last_event_time or ts > _last_event_time[agent]:
+                    _last_event_time[agent] = ts
                 agent_stats[agent]["out"] += 1
                 agent_stats[agent]["days_out"][day_key] += 1
                 agent_stats[agent]["days_clients_out"][day_key].add(_ph)
                 if HOUR_START <= hour <= HOUR_END:
                     hourly_msgs[agent][hour] += 1
-                    # Only add to hourly_clients on first OUT contact for this client
-                    _fk = f"{agent}|{_ph}"
-                    if _fk not in _first_out_hour:
-                        _first_out_hour[_fk] = hour
-                        hourly_clients[agent][hour].add(_ph)
             elif direction == "IN":
                 agent_stats[agent]["in"] += 1
                 agent_stats[agent]["days_in"][day_key] += 1
                 agent_stats[agent]["days_clients_in"][day_key].add(_ph)
-                if HOUR_START <= hour <= HOUR_END:
-                    hourly_msgs[agent][hour] += 1
+                # IN messages are NOT counted in hourly_msgs (only agent-sent messages)
         agent_stats[agent]["clients"].add(_ph)
+
+    # ── Hourly unique-clients heatmap ─────────────────────────────────────────
+    # Built from groups (reliable client ↔ phone association via conversationId /
+    # proximity, so OUT-only events without from/to are still linked to the right
+    # client). Agent attribution uses _combined_agent_map (gabarito) for consistency
+    # with the daily heatmap. Per-day dedup: each client appears once per day at the
+    # hour of their first outbound contact that day.
+    _hm_seen: dict[str, int] = {}
+    for _grp_key, _grp_evs in groups.items():
+        _grp_ph = _real_phone(_grp_key)
+        if not _grp_ph or _grp_ph in COMPANY_CHANNELS or _grp_ph == _real_phone(canal):
+            continue
+        # Use gabarito for consistent agent attribution (same source as daily heatmap)
+        _grp_ag = (_combined_agent_map.get(_grp_ph)
+                   or _extract_agent_from_payload(next((e.raw_payload for e in _grp_evs if e.raw_payload), {}))
+                   or "Sem atendente")
+        if _grp_ag == "Sem atendente" or not _user_sees(access, _grp_ag):
+            continue
+        for _ev in sorted(_grp_evs, key=lambda e: e.received_at or datetime.min.replace(tzinfo=timezone.utc)):
+            if not _ev.received_at:
+                continue
+            _p = _ev.raw_payload or {}
+            if _extract_direction(_p) != "OUT":
+                continue
+            _ts_br = _ev.received_at.astimezone(BRASILIA)
+            _h = _ts_br.hour
+            if not (HOUR_START <= _h <= HOUR_END):
+                continue
+            _dk = _ts_br.strftime(_date_key_fmt)
+            _fk_hm = f"{_grp_ag}|{_grp_ph}|{_dk}"
+            if _fk_hm not in _hm_seen:
+                _hm_seen[_fk_hm] = _h
+                hourly_clients[_grp_ag][_h].add(_grp_ph)
+    # ──────────────────────────────────────────────────────────────────────────
 
     sorted_agents = sorted(agent_stats.items(), key=lambda x: x[1]["out"] + x[1]["in"], reverse=True)
 
@@ -2494,9 +3182,114 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
             </div>"""
 
     # Snapshot active agents (with messages) for accurate KPI counts.
-    # `sorted_agents` is then expanded below to include zero-stat agents
-    # so the heatmap shows a complete grid — but KPIs use this snapshot.
     active_agents_stats = list(sorted_agents)
+
+    # ── KPI status always reflects TODAY, regardless of selected period ──────
+    _now_br = datetime.now(BRASILIA)
+    if periodo != "hoje":
+        # Compute last OUT time per agent from today's events (uses already-loaded all_events)
+        _last_event_time_today: dict[str, datetime] = {}
+        for _ev in all_events:
+            if not _ev.received_at:
+                continue
+            _ts = _ev.received_at.astimezone(BRASILIA)
+            if not (today_start <= _ts < today_start + timedelta(days=1)):
+                continue
+            _p_t = _ev.raw_payload or {}
+            if _extract_direction(_p_t) != "OUT":
+                continue
+            if canal and _extract_channel(_p_t) != canal:
+                continue
+            _rp_t = _real_phone(_extract_client_number(_p_t))
+            if not _rp_t or _rp_t in COMPANY_CHANNELS:
+                continue
+            _ag_t = _combined_agent_map.get(_rp_t) or _extract_agent_from_payload(_p_t) or ""
+            if not _ag_t or _ag_t == "Sem atendente":
+                continue
+            if _ag_t not in _last_event_time_today or _ts > _last_event_time_today[_ag_t]:
+                _last_event_time_today[_ag_t] = _ts
+    else:
+        _last_event_time_today = _last_event_time  # already computed for today
+
+    # ── Agent status cards (V3 design) ──────────────────────────────────────
+    _AG_AV_COLORS = ["#0fa968","#3b82f6","#8b5cf6","#f59e0b","#06b6d4","#ec4899","#14b8a6","#f97316"]
+    _ST_COLOR = {"online": "#0fa968", "idle": "#f59e0b", "offline": "#5a6a8a"}
+
+    def _ag_status(ag_name):
+        last = _last_event_time_today.get(ag_name)
+        if not last:
+            return "offline"
+        mins = (_now_br - last).total_seconds() / 60
+        return "online" if mins <= 30 else ("idle" if mins <= 240 else "offline")
+
+    def _agent_card(ag, stats, status, compact=False):
+        av_col = _AG_AV_COLORS[abs(hash(ag)) % len(_AG_AV_COLORS)]
+        parts = ag.split(); initials = "".join(w[0].upper() for w in parts[:2])
+        seg = _get_segment(ag); seg_col = SEGMENT_COLORS.get(seg, "#1a2540")
+        badge = _segment_badge(ag)
+        last = _last_event_time.get(ag)
+        last_str = last.strftime("%H:%M") if last else "—"
+        total = stats["out"] + stats["in"]; clients = len(stats["clients"])
+        sc = _ST_COLOR[status]
+        if compact:  # offline list row
+            return f"""<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid #141e35;opacity:.65">
+  <div style="position:relative;flex-shrink:0">
+    <div style="width:28px;height:28px;border-radius:50%;background:{av_col};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#0b1120">{initials}</div>
+  </div>
+  <div style="flex:1;min-width:0">
+    <div style="font-size:12.5px;color:#c0c8d8;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{html_mod.escape(ag)}</div>
+    <div style="font-size:10.5px;color:#5a6a8a;display:flex;gap:6px;align-items:center;margin-top:2px">{badge}<span>· última atividade {last_str}</span></div>
+  </div>
+</div>"""
+        # Full card
+        mx = max(stats["out"], stats["in"]) or 1
+        in_pct = int((stats["in"] / (stats["out"] + stats["in"])) * 50) if total else 0
+        out_pct = int((stats["out"] / (stats["out"] + stats["in"])) * 50) if total else 0
+        return f"""<div style="background:#111a2e;border:1px solid #1a2540;border-radius:10px;padding:16px 18px;display:flex;flex-direction:column;gap:12px;border-left:3px solid {seg_col}">
+  <div style="display:flex;align-items:center;gap:11px">
+    <div style="position:relative;flex-shrink:0">
+      <div style="width:42px;height:42px;border-radius:50%;background:{av_col};display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:#0b1120">{initials}</div>
+      <span style="position:absolute;bottom:0;right:0;width:10px;height:10px;border-radius:50%;background:{sc};border:2px solid #111a2e;box-shadow:0 0 8px {sc}"></span>
+    </div>
+    <div style="flex:1;min-width:0">
+      <div style="font-size:13.5px;font-weight:700;color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{html_mod.escape(ag)}</div>
+      <div style="display:flex;align-items:center;gap:6px;margin-top:3px">{badge}<span style="font-size:10.5px;color:#8a96aa">· {last_str}</span></div>
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:6px;font-size:10.5px;font-family:'JetBrains Mono',monospace">
+    <span style="color:#0fa968;min-width:28px;text-align:right;font-weight:600">↓{stats['in']}</span>
+    <div style="flex:1;height:5px;display:flex;gap:1px;background:#141e35;border-radius:3px;overflow:hidden">
+      <div style="width:{in_pct}%;background:#0fa968"></div>
+      <div style="width:{out_pct}%;background:#ef6b73"></div>
+    </div>
+    <span style="color:#ef6b73;min-width:28px;font-weight:600">↑{stats['out']}</span>
+  </div>
+  <div style="display:flex;justify-content:space-between;font-size:11px;padding-top:8px;border-top:1px solid #141e35">
+    <div style="display:flex;flex-direction:column">
+      <span style="color:#5a6a8a;font-size:9.5px;letter-spacing:1px;font-weight:700">CLIENTES</span>
+      <span style="color:#fff;font-size:18px;font-weight:700;margin-top:2px;font-family:'JetBrains Mono',monospace">{clients}</span>
+    </div>
+    <div style="display:flex;flex-direction:column;text-align:right">
+      <span style="color:#5a6a8a;font-size:9.5px;letter-spacing:1px;font-weight:700">MSGS TOTAL</span>
+      <span style="color:#0fa968;font-size:18px;font-weight:700;margin-top:2px;font-family:'JetBrains Mono',monospace">{total}</span>
+    </div>
+  </div>
+</div>"""
+
+    online_cards = ""; idle_cards = ""; offline_list = ""
+    n_online = n_idle = n_offline = 0
+    for ag, stats in sorted_agents:
+        st = _ag_status(ag)
+        if st == "online":
+            online_cards += _agent_card(ag, stats, st); n_online += 1
+        elif st == "idle":
+            idle_cards += _agent_card(ag, stats, st); n_idle += 1
+        else:
+            offline_list += _agent_card(ag, stats, st, compact=True); n_offline += 1
+
+    # If periodo != hoje, everyone is "online" — put all in one grid
+    if periodo != "hoje":
+        n_online = len(sorted_agents); n_idle = 0; n_offline = 0
 
     # Hourly heatmap
     hours = list(range(HOUR_START, HOUR_END + 1))
@@ -2722,22 +3515,89 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
     _ag_out     = sum(s['out'] for _, s in active_agents_stats)
     _ag_in      = sum(s['in']  for _, s in active_agents_stats)
 
-    nav = _nav_html("agentes", period_html, canal=canal, is_admin=(access or {}).get('role')=='admin', title="Agentes")
+    # Pre-compute agent card sections
+    _no_offline_msg = '<div style="padding:18px;color:#5a6a8a;font-size:12px;font-style:italic">Nenhum agente offline</div>'
+    _online_section = (
+        f'<div style="margin-bottom:22px">'
+        f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
+        f'<span style="width:8px;height:8px;border-radius:50%;background:#0fa968;box-shadow:0 0 10px #0fa968;display:inline-block"></span>'
+        f'<h3 style="font-size:14px;font-weight:700;color:#fff;letter-spacing:.3px;margin:0">TRABALHANDO AGORA</h3>'
+        f'<span style="font-size:11px;color:#8a96aa;font-weight:500">{n_online} agentes</span>'
+        f'</div>'
+        f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px">{online_cards}</div>'
+        f'</div>'
+    ) if online_cards else ""
+    _idleoffline_section = (
+        f'<div style="display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-bottom:22px">'
+        f'<div>'
+        f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
+        f'<span style="width:8px;height:8px;border-radius:50%;background:#f59e0b;display:inline-block"></span>'
+        f'<h3 style="font-size:14px;font-weight:700;color:#fff;letter-spacing:.3px;margin:0">OCIOSOS</h3>'
+        f'<span style="font-size:11px;color:#8a96aa;font-weight:500">{n_idle} agentes</span>'
+        f'</div>'
+        f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">{idle_cards}</div>'
+        f'</div>'
+        f'<div>'
+        f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
+        f'<span style="width:8px;height:8px;border-radius:50%;background:#5a6a8a;display:inline-block"></span>'
+        f'<h3 style="font-size:14px;font-weight:700;color:#8a96aa;letter-spacing:.3px;margin:0">OFFLINE HOJE</h3>'
+        f'<span style="font-size:11px;color:#5a6a8a;font-weight:500">{n_offline} agentes</span>'
+        f'</div>'
+        f'<div style="background:#111a2e;border:1px solid #1a2540;border-radius:10px;overflow:hidden">{offline_list or _no_offline_msg}</div>'
+        f'</div>'
+        f'</div>'
+    ) if (idle_cards or offline_list) else ""
+
+    nav = _nav_html("agentes", "", canal=canal, is_admin=(access or {}).get('role')=='admin', title="Agentes")
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo — Agentes</title>{COMMON_CSS}</head><body>
     {nav}
     <div class="container">
         {msg_html}
         {gabarito_alert}
 
-        <!-- KPI strip -->
+        <!-- KPI strip V3 -->
         <div class="kpi-row">
-            <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{_ag_active}</div><div class="label">Agentes ativos</div></div>
-            <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{_ag_clients}</div><div class="label">Clientes únicos</div></div>
-            <div class="kpi" style="border-top:3px solid #ef6b73"><div class="val" style="color:#ef6b73">{_ag_out}</div><div class="label">Msgs enviadas ↑</div></div>
-            <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{_ag_in}</div><div class="label">Msgs recebidas ↓</div></div>
+            <div class="kpi" style="border-top:3px solid #0fa968;position:relative;overflow:hidden">
+                <div style="display:flex;align-items:center;gap:10px">
+                    <span style="width:10px;height:10px;border-radius:50%;background:#0fa968;box-shadow:0 0 10px #0fa968;flex-shrink:0"></span>
+                    <div><div style="font-size:10px;color:#5a6a8a;letter-spacing:1.5px;font-weight:700">ONLINE</div>
+                    <div style="font-size:30px;font-weight:700;color:#fff;font-family:'JetBrains Mono',monospace;letter-spacing:-.5px">{n_online}</div>
+                    <div style="font-size:11px;color:#8a96aa;font-weight:500">Trabalhando agora</div></div>
+                </div>
+            </div>
+            <div class="kpi" style="border-top:3px solid #f59e0b">
+                <div style="display:flex;align-items:center;gap:10px">
+                    <span style="width:10px;height:10px;border-radius:50%;background:#f59e0b;flex-shrink:0"></span>
+                    <div><div style="font-size:10px;color:#5a6a8a;letter-spacing:1.5px;font-weight:700">OCIOSOS</div>
+                    <div style="font-size:30px;font-weight:700;color:#fff;font-family:'JetBrains Mono',monospace;letter-spacing:-.5px">{n_idle}</div>
+                    <div style="font-size:11px;color:#8a96aa;font-weight:500">Sem msgs há 30+ min</div></div>
+                </div>
+            </div>
+            <div class="kpi" style="border-top:3px solid #5a6a8a">
+                <div style="display:flex;align-items:center;gap:10px">
+                    <span style="width:10px;height:10px;border-radius:50%;background:#5a6a8a;flex-shrink:0"></span>
+                    <div><div style="font-size:10px;color:#5a6a8a;letter-spacing:1.5px;font-weight:700">OFFLINE</div>
+                    <div style="font-size:30px;font-weight:700;color:#fff;font-family:'JetBrains Mono',monospace;letter-spacing:-.5px">{n_offline}</div>
+                    <div style="font-size:11px;color:#8a96aa;font-weight:500">Sem atividade hoje</div></div>
+                </div>
+            </div>
+            <div class="kpi" style="border-top:3px solid #0fa968">
+                <div style="display:flex;align-items:center;gap:10px">
+                    <span style="width:10px;height:10px;border-radius:50%;background:#0fa968;box-shadow:0 0 10px #0fa968;flex-shrink:0"></span>
+                    <div><div style="font-size:10px;color:#5a6a8a;letter-spacing:1.5px;font-weight:700">EQUIPE</div>
+                    <div style="font-size:30px;font-weight:700;color:#fff;font-family:'JetBrains Mono',monospace;letter-spacing:-.5px">{_ag_active}</div>
+                    <div style="font-size:11px;color:#8a96aa;font-weight:500">{_ag_clients} clientes · {_ag_out} msgs</div></div>
+                </div>
+            </div>
         </div>
 
-        <!-- Gabarito upload (collapsible) -->
+        <!-- Agent cards: TRABALHANDO AGORA -->
+        {_online_section}
+
+        <!-- Agent cards: OCIOSOS + OFFLINE -->
+        {_idleoffline_section}
+
+        <!-- Gabarito upload -->
         <div class="card" style="padding:14px 22px">
             <form action="/dashboard/upload-csv" method="post" enctype="multipart/form-data" class="upload-section">
                 <input type="file" name="csv_file" accept=".csv">
@@ -2749,6 +3609,11 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
             </div>
         </div>
 
+        <!-- Filtro de período + segmento — acima dos heatmaps -->
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px">
+            {period_html}
+            <a href="/dashboard/agentes/export?periodo={periodo}&canal={canal}{seg_qs}{'&inicio=' + inicio_raw if inicio_raw else ''}{'&fim=' + fim_raw if fim_raw else ''}" style="display:inline-flex;align-items:center;gap:6px;background:#111a2e;border:1px solid #1a2540;border-radius:6px;padding:6px 14px;font-size:11px;font-weight:700;color:#0fa968;text-decoration:none;letter-spacing:.3px;white-space:nowrap" title="Exportar lista de clientes contatados (Agente, Telefone, Nome, Data, Hora)">⬇ Exportar CSV</a>
+        </div>
         {seg_filter_html}
 
         <!-- Heatmap por hora -->
@@ -3064,6 +3929,7 @@ def dashboard_mensagens(request: Request, db: Session = Depends(get_db)):
     client_name_map = get_client_names(db)
     db.close()  # release connection before heavy processing
     groups, phone_learned = _group_events(all_events, client_agent_map)
+    _cp = _real_phone(canal); groups = {k: v for k, v in groups.items() if _real_phone(k) != _cp}
 
     # For each conversation, find the first OUT message and check if client replied
     # template_key -> { agent -> { "sent": int, "replied": int, "example": str } }
@@ -3191,19 +4057,30 @@ def dashboard_mensagens(request: Request, db: Session = Depends(get_db)):
             tpl_display = tpl_display.replace(esc_ph, badge)
 
         detail_id = f"tpl_{idx}"
-        template_rows += f"""
-        <tr class="conv-row" onclick="document.getElementById('{detail_id}').classList.toggle('open')" style="cursor:pointer">
-            <td style="max-width:500px"><div style="font-size:12px;line-height:1.6;color:#c0c8d8;word-break:break-word">{tpl_display}</div></td>
-            <td style="text-align:center;font-weight:600">{total_sent}</td>
-            <td style="text-align:center;font-weight:600">{total_replied}</td>
-            <td style="text-align:center;font-weight:700;color:{rate_color}">{rate}%</td>
-            <td style="text-align:center;font-size:12px;color:#5a6a8a">{len(agents_list)}</td>
-        </tr>
-        <tr><td colspan="5" style="padding:0;border:none">
-            <div id="{detail_id}" class="chat-box" style="padding:12px 16px">
-                {agents_html}
-            </div>
-        </td></tr>"""
+        template_rows += (
+            f'<div style="background:#111a2e;border:1px solid #1a2540;border-radius:10px;'
+            f'padding:16px 20px;display:grid;grid-template-columns:48px 1fr auto;gap:16px;'
+            f'align-items:start;border-left:3px solid {rate_color};margin-bottom:10px;cursor:pointer" '
+            f'onclick="var d=document.getElementById(\'{detail_id}\');d.style.display=d.style.display===\'none\'?\'block\':\'none\'">'
+            # rank badge
+            f'<div style="width:40px;height:40px;border-radius:8px;background:#0b1120;display:flex;'
+            f'align-items:center;justify-content:center;font-size:14px;font-weight:700;color:{rate_color};flex-shrink:0">'
+            f'{idx + 1}</div>'
+            # message bubble + agents
+            f'<div style="min-width:0">'
+            f'<div style="font-size:12.5px;line-height:1.6;color:#c0c8d8;font-style:italic;word-break:break-word;'
+            f'background:#0b1120;border-radius:6px;padding:10px 14px;border-left:2px solid {rate_color}">'
+            f'&ldquo;{tpl_display}&rdquo;</div>'
+            f'<div id="{detail_id}" style="display:none;margin-top:10px;font-size:11px;color:#8a96aa">{agents_html}</div>'
+            f'</div>'
+            # stats
+            f'<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">'
+            f'<div style="font-size:22px;font-weight:700;color:{rate_color};font-family:\'JetBrains Mono\',monospace">{rate}%</div>'
+            f'<div style="font-size:11px;color:#5a6a8a">{total_sent} envios</div>'
+            f'<div style="font-size:11px;color:#5a6a8a">{total_replied} respostas</div>'
+            f'</div>'
+            f'</div>'
+        )
 
     # KPIs
     total_convs_with_first_out = sum(agent_totals[a]["sent"] for a in agent_totals)
@@ -3239,11 +4116,8 @@ def dashboard_mensagens(request: Request, db: Session = Depends(get_db)):
                 <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
                 <h2 style="margin:0;font-size:15px">Templates de Abertura</h2>
             </div>
-            <p style="color:#5a6a8a;font-size:11px;margin-bottom:14px">Apenas templates com 10+ envios. Clique para ver quais assessores usam cada mensagem. Mensagens similares são agrupadas.</p>
-            <table>
-                <thead><tr><th>Mensagem</th><th style="text-align:center">Envios</th><th style="text-align:center">Respostas</th><th style="text-align:center">Retorno</th><th style="text-align:center">Assessores</th></tr></thead>
-                <tbody>{template_rows}</tbody>
-            </table>
+            <p style="color:#5a6a8a;font-size:11px;margin-bottom:14px">Apenas templates com 10+ envios. Clique no card para ver detalhes por assessor. Mensagens similares são agrupadas.</p>
+            <div>{template_rows if template_rows else '<p style="color:#4a5a7a;text-align:center;padding:30px">Nenhum template com 10+ envios encontrado.</p>'}</div>
         </div>
     </div>
     </body></html>""")
@@ -3270,8 +4144,41 @@ def dashboard_evolucao(request: Request, db: Session = Depends(get_db)):
     recent_events = [ev for ev in all_events
                      if ev.received_at and ev.received_at.astimezone(BRASILIA) >= cutoff]
 
+    # ── Day-of-week message counts ────────────────────────────────────────────
+    # dow 0=Mon … 6=Sun (Python weekday())
+    _dow_counts = [0] * 7
+    _dow_days: list[set] = [set() for _ in range(7)]
+    for _ev in recent_events:
+        if not _ev.received_at:
+            continue
+        _ev_br = _ev.received_at.astimezone(BRASILIA)
+        _dow = _ev_br.weekday()
+        _dow_counts[_dow] += 1
+        _dow_days[_dow].add(_ev_br.date())
+    _dow_avg = [round(_dow_counts[i] / len(_dow_days[i])) if _dow_days[i] else 0 for i in range(7)]
+    _dow_max = max(_dow_avg) or 1
+    _dow_labels = ["SEG", "TER", "QUA", "QUI", "SEX", "SÁB", "DOM"]
+    _dow_is_week = [True, True, True, True, True, False, False]
+
+    # Build weekday bars HTML
+    _dow_bars_html = ""
+    for _i, (_dl, _dv, _dw) in enumerate(zip(_dow_labels, _dow_avg, _dow_is_week)):
+        _bar_pct = round(_dv / _dow_max * 100) if _dow_max > 0 else 0
+        _bar_color = "#0fa968" if _dw else "#1a2540"
+        _val_color = "#0fa968" if _dw else "#5a6a8a"
+        _dow_bars_html += (
+            f'<div style="display:flex;flex-direction:column;align-items:center;gap:6px;justify-content:flex-end">'
+            f'<span style="font-size:11px;color:{_val_color};font-weight:700;'
+            f'font-family:\'JetBrains Mono\',monospace">{_dv}</span>'
+            f'<div style="width:100%;height:{_bar_pct}%;background:{_bar_color};'
+            f'opacity:{".85" if _dw else "1"};border-radius:4px 4px 0 0;min-height:2px"></div>'
+            f'<span style="font-size:10px;color:#8a96aa;font-weight:600;letter-spacing:.5px">{_dl}</span>'
+            f'</div>'
+        )
+
     # Single _group_events call on recent events only
     groups, phone_learned = _group_events(recent_events, client_agent_map)
+    _cp = _real_phone(canal); groups = {k: v for k, v in groups.items() if _real_phone(k) != _cp}
 
     # ── Aggregate by ISO week ────────────────────────────────────────────────
     # weekly_clients[week_key][agent] = set of phones (unique clients)
@@ -3596,6 +4503,18 @@ def dashboard_evolucao(request: Request, db: Session = Depends(get_db)):
       }});
     }})();
     </script>
+  </div>
+
+  <!-- SECTION 2b: Weekday bar chart -->
+  <div class="card" style="margin-bottom:20px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px">
+      <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
+      <h2 style="margin:0;font-size:15px">MÉDIA POR DIA DA SEMANA</h2>
+      <span style="font-size:11px;color:#8a96aa">mensagens · últimos 90 dias</span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:10px;align-items:end;height:160px">
+      {_dow_bars_html}
+    </div>
   </div>
 
   <!-- SECTION 3: Topics by week stacked bar -->
