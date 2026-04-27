@@ -3187,8 +3187,10 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
     # ── KPI status always reflects TODAY, regardless of selected period ──────
     _now_br = datetime.now(BRASILIA)
     if periodo != "hoje":
-        # Compute last OUT time per agent from today's events (uses already-loaded all_events)
+        # Compute today's stats from all_events — period-independent KPIs
         _last_event_time_today: dict[str, datetime] = {}
+        _today_clients_by_agent: dict[str, set] = defaultdict(set)
+        _today_out_by_agent: dict[str, int] = defaultdict(int)
         for _ev in all_events:
             if not _ev.received_at:
                 continue
@@ -3208,8 +3210,12 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
                 continue
             if _ag_t not in _last_event_time_today or _ts > _last_event_time_today[_ag_t]:
                 _last_event_time_today[_ag_t] = _ts
+            _today_clients_by_agent[_ag_t].add(_rp_t)
+            _today_out_by_agent[_ag_t] += 1
     else:
         _last_event_time_today = _last_event_time  # already computed for today
+        _today_clients_by_agent = {ag: stats["clients"] for ag, stats in agent_stats.items()}
+        _today_out_by_agent = {ag: stats["out"] for ag, stats in agent_stats.items()}
 
     # ── Agent status cards (V3 design) ──────────────────────────────────────
     _AG_AV_COLORS = ["#0fa968","#3b82f6","#8b5cf6","#f59e0b","#06b6d4","#ec4899","#14b8a6","#f97316"]
@@ -3277,19 +3283,23 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
 </div>"""
 
     online_cards = ""; idle_cards = ""; offline_list = ""
-    n_online = n_idle = n_offline = 0
+    _n_online_cards = _n_idle_cards = _n_offline_cards = 0
     for ag, stats in sorted_agents:
         st = _ag_status(ag)
         if st == "online":
-            online_cards += _agent_card(ag, stats, st); n_online += 1
+            online_cards += _agent_card(ag, stats, st); _n_online_cards += 1
         elif st == "idle":
-            idle_cards += _agent_card(ag, stats, st); n_idle += 1
+            idle_cards += _agent_card(ag, stats, st); _n_idle_cards += 1
         else:
-            offline_list += _agent_card(ag, stats, st, compact=True); n_offline += 1
+            offline_list += _agent_card(ag, stats, st, compact=True); _n_offline_cards += 1
 
-    # If periodo != hoje, everyone is "online" — put all in one grid
-    if periodo != "hoje":
-        n_online = len(sorted_agents); n_idle = 0; n_offline = 0
+    # KPI counts — ALWAYS today, from ALL known agents (independent of period filter)
+    _seg_kpi = [a for a in AGENT_SEGMENT
+                if (not segmento or AGENT_SEGMENT.get(a) == segmento)
+                and _user_sees(access, a)]
+    n_online = sum(1 for a in _seg_kpi if _ag_status(a) == "online")
+    n_idle   = sum(1 for a in _seg_kpi if _ag_status(a) == "idle")
+    n_offline = sum(1 for a in _seg_kpi if _ag_status(a) == "offline")
 
     # Hourly heatmap
     hours = list(range(HOUR_START, HOUR_END + 1))
@@ -3510,10 +3520,13 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
     else:
         gabarito_alert = '<div style="background:#ef4444;color:#fff;padding:10px 18px;border-radius:8px;margin-bottom:16px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px">&#9888; Gabarito nunca foi enviado! Faca upload do CSV.</div>'
 
-    _ag_active  = sum(1 for _, s in active_agents_stats if (s['out'] + s['in']) > 0)
-    _ag_clients = len(set().union(*(s['clients'] for _, s in active_agents_stats)) if active_agents_stats else set())
-    _ag_out     = sum(s['out'] for _, s in active_agents_stats)
-    _ag_in      = sum(s['in']  for _, s in active_agents_stats)
+    # EQUIPE — always today, independent of period filter
+    _ag_active = n_online + n_idle  # agents who worked today
+    _ag_clients_set: set = set()
+    for _a in _seg_kpi:
+        _ag_clients_set |= _today_clients_by_agent.get(_a, set())
+    _ag_clients = len(_ag_clients_set)
+    _ag_out = sum(_today_out_by_agent.get(_a, 0) for _a in _seg_kpi)
 
     # Pre-compute agent card sections
     _no_offline_msg = '<div style="padding:18px;color:#5a6a8a;font-size:12px;font-style:italic">Nenhum agente offline</div>'
@@ -3522,7 +3535,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
         f'<span style="width:8px;height:8px;border-radius:50%;background:#0fa968;box-shadow:0 0 10px #0fa968;display:inline-block"></span>'
         f'<h3 style="font-size:14px;font-weight:700;color:#fff;letter-spacing:.3px;margin:0">TRABALHANDO AGORA</h3>'
-        f'<span style="font-size:11px;color:#8a96aa;font-weight:500">{n_online} agentes</span>'
+        f'<span style="font-size:11px;color:#8a96aa;font-weight:500">{_n_online_cards} agentes</span>'
         f'</div>'
         f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px">{online_cards}</div>'
         f'</div>'
@@ -3533,7 +3546,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
         f'<span style="width:8px;height:8px;border-radius:50%;background:#f59e0b;display:inline-block"></span>'
         f'<h3 style="font-size:14px;font-weight:700;color:#fff;letter-spacing:.3px;margin:0">OCIOSOS</h3>'
-        f'<span style="font-size:11px;color:#8a96aa;font-weight:500">{n_idle} agentes</span>'
+        f'<span style="font-size:11px;color:#8a96aa;font-weight:500">{_n_idle_cards} agentes</span>'
         f'</div>'
         f'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">{idle_cards}</div>'
         f'</div>'
@@ -3541,7 +3554,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">'
         f'<span style="width:8px;height:8px;border-radius:50%;background:#5a6a8a;display:inline-block"></span>'
         f'<h3 style="font-size:14px;font-weight:700;color:#8a96aa;letter-spacing:.3px;margin:0">OFFLINE HOJE</h3>'
-        f'<span style="font-size:11px;color:#5a6a8a;font-weight:500">{n_offline} agentes</span>'
+        f'<span style="font-size:11px;color:#5a6a8a;font-weight:500">{_n_offline_cards} agentes</span>'
         f'</div>'
         f'<div style="background:#111a2e;border:1px solid #1a2540;border-radius:10px;overflow:hidden">{offline_list or _no_offline_msg}</div>'
         f'</div>'
