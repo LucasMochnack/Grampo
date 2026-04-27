@@ -1056,7 +1056,38 @@ def dashboard_overview(request: Request, db: Session = Depends(get_db)):
 
     n_ag_total = len(AGENT_SEGMENT)
 
-    # ── Hourly volume bars ────────────────────────────────────────────────────
+    # ── Agent online/idle/offline status (always today) ───────────────────────
+    _last_ev_time_ag: dict[str, datetime] = {}
+    for client_num, evs in grps.items():
+        ph = _real_phone(client_num)
+        ag = pl.get(client_num) or client_agent_map.get(ph) or "Sem atendente"
+        if not _user_sees(access, ag) or ag == "Sem atendente":
+            continue
+        for ev in sorted(evs, key=lambda e: e.received_at or datetime.min.replace(tzinfo=timezone.utc)):
+            if not ev.received_at:
+                continue
+            p = ev.raw_payload or {}
+            if _extract_direction(p) != "OUT":
+                continue
+            ts = ev.received_at.astimezone(BRASILIA)
+            if ag not in _last_ev_time_ag or ts > _last_ev_time_ag[ag]:
+                _last_ev_time_ag[ag] = ts
+
+    _now_br_ov = datetime.now(BRASILIA)
+
+    def _ov_ag_status(ag_name: str) -> str:
+        last = _last_ev_time_ag.get(ag_name)
+        if not last:
+            return "offline"
+        mins = (_now_br_ov - last).total_seconds() / 60
+        return "online" if mins <= 30 else ("idle" if mins <= 240 else "offline")
+
+    _all_seg_agents = list(AGENT_SEGMENT.keys())
+    n_ov_online  = sum(1 for a in _all_seg_agents if _ov_ag_status(a) == "online")
+    n_ov_idle    = sum(1 for a in _all_seg_agents if _ov_ag_status(a) == "idle")
+    n_ov_offline = sum(1 for a in _all_seg_agents if _ov_ag_status(a) == "offline")
+
+    # Hourly volume bars ────────────────────────────────────────────────────
     h_in = [0] * 24
     h_out = [0] * 24
     for ev in today_evs:
@@ -1290,6 +1321,41 @@ def dashboard_overview(request: Request, db: Session = Depends(get_db)):
         f'<div style="font-size:28px;font-weight:700;color:#fff;letter-spacing:-.5px;margin:4px 0">'
         f'{len(top_tps)}</div>'
         f'<div style="font-size:11px;color:#8b5cf6;font-weight:600">temas identificados</div></div>'
+        f'</div>'
+
+        # ── Agent status KPIs ──
+        f'<div class="kpi-row" style="margin-top:0">'
+        f'<div class="kpi" style="border-top:3px solid #0fa968;position:relative;overflow:hidden">'
+        f'<div style="display:flex;align-items:center;gap:10px">'
+        f'<span style="width:10px;height:10px;border-radius:50%;background:#0fa968;box-shadow:0 0 10px #0fa968;flex-shrink:0"></span>'
+        f'<div><div style="font-size:10px;color:#5a6a8a;letter-spacing:1.5px;font-weight:700">ONLINE</div>'
+        f'<div style="font-size:30px;font-weight:700;color:#fff;font-family:\'JetBrains Mono\',monospace;letter-spacing:-.5px">{n_ov_online}</div>'
+        f'<div style="font-size:11px;color:#8a96aa;font-weight:500">Trabalhando agora</div></div>'
+        f'</div></div>'
+
+        f'<div class="kpi" style="border-top:3px solid #f59e0b">'
+        f'<div style="display:flex;align-items:center;gap:10px">'
+        f'<span style="width:10px;height:10px;border-radius:50%;background:#f59e0b;flex-shrink:0"></span>'
+        f'<div><div style="font-size:10px;color:#5a6a8a;letter-spacing:1.5px;font-weight:700">OCIOSOS</div>'
+        f'<div style="font-size:30px;font-weight:700;color:#fff;font-family:\'JetBrains Mono\',monospace;letter-spacing:-.5px">{n_ov_idle}</div>'
+        f'<div style="font-size:11px;color:#8a96aa;font-weight:500">Sem msgs há 30+ min</div></div>'
+        f'</div></div>'
+
+        f'<div class="kpi" style="border-top:3px solid #5a6a8a">'
+        f'<div style="display:flex;align-items:center;gap:10px">'
+        f'<span style="width:10px;height:10px;border-radius:50%;background:#5a6a8a;flex-shrink:0"></span>'
+        f'<div><div style="font-size:10px;color:#5a6a8a;letter-spacing:1.5px;font-weight:700">OFFLINE</div>'
+        f'<div style="font-size:30px;font-weight:700;color:#fff;font-family:\'JetBrains Mono\',monospace;letter-spacing:-.5px">{n_ov_offline}</div>'
+        f'<div style="font-size:11px;color:#8a96aa;font-weight:500">Sem atividade hoje</div></div>'
+        f'</div></div>'
+
+        f'<div class="kpi" style="border-top:3px solid #0fa968">'
+        f'<div style="display:flex;align-items:center;gap:10px">'
+        f'<span style="width:10px;height:10px;border-radius:50%;background:#0fa968;box-shadow:0 0 10px #0fa968;flex-shrink:0"></span>'
+        f'<div><div style="font-size:10px;color:#5a6a8a;letter-spacing:1.5px;font-weight:700">EQUIPE</div>'
+        f'<div style="font-size:30px;font-weight:700;color:#fff;font-family:\'JetBrains Mono\',monospace;letter-spacing:-.5px">{n_ov_online + n_ov_idle}</div>'
+        f'<div style="font-size:11px;color:#8a96aa;font-weight:500">ativos hoje &middot; <a href="/dashboard/agentes?canal={canal}" style="color:#0fa968;text-decoration:none">ver detalhe &rarr;</a></div></div>'
+        f'</div></div>'
         f'</div>'
 
         # ── Volume por hora ──
