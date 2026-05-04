@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.crud import get_events, get_events_only, get_agent_mappings, get_client_names, replace_agent_mappings, get_setting, set_setting
+from app.crud import get_events, get_events_only, get_events_since, get_agent_mappings, get_client_names, replace_agent_mappings, get_setting, set_setting
 from app.dependencies import get_db
 
 router = APIRouter(tags=["dashboard"])
@@ -141,7 +141,7 @@ SEGMENT_COLORS: dict[str, str] = {
 # ── Topic / Theme rules ──────────────────────────────────────────────────────
 # (id, label, color, keywords)
 TOPIC_RULES: list[tuple[str, str, str, list[str]]] = [
-    ("consorcio",   "Consórcio",          "#f59e0b", ["consórcio","consorcio","consorciado","consorciada"]),
+    ("consorcio",   "Consórcio",          "#f59e0b", ["consórcio","consorcio","consorciado","consorciada","contemplação","contemplado","contemplada","lance","cota","administradora","carta de crédito","aquisição de bem","bem imóvel","bem móvel","veículo","veiculo"]),
     ("seguro_vida", "Seguro de Vida",      "#ef4444", ["seguro de vida","seguro vida","proteção familiar","seguro","apólice"]),
     ("previdencia", "Previdência",         "#8b5cf6", ["previdência","previdencia","pgbl","vgbl","aposentadoria","previdenciário"]),
     ("renda_fixa",  "Renda Fixa",          "#06b6d4", ["renda fixa","cdb","lci","lca","tesouro direto","tesouro","debênture","debenture","cri","cra","letras"]),
@@ -153,7 +153,7 @@ TOPIC_RULES: list[tuple[str, str, str, list[str]]] = [
     ("carteira",    "Revisão de Carteira", "#64748b", ["carteira","revisão","revisar","alocação","alocacao","diversificação","diversificacao","rebalanceamento","portfólio","portfolio"]),
     ("resgate",     "Resgate / Saque",     "#f97316", ["resgate","resgatar","saque","sacar","retirada","retirar"]),
     ("reuniao",     "Reunião / Call",      "#0ea5e9", ["reunião","reuniao","call","ligação","ligacao","videoconferência","videoconferencia","agendar","agendamento"]),
-    ("credito",     "Crédito / Empréstimo","#fb7185", ["crédito","credito","empréstimo","emprestimo","financiamento","home equity","ccb"]),
+    ("credito",     "Crédito / Empréstimo","#fb7185", ["crédito","credito","empréstimo","emprestimo","financiamento","home equity","ccb","consignado","antecipação","antecipacao","linha de crédito","capital de giro","refinanciamento","financiar","parcelamento","alienação fiduciária","alienacao fiduciaria"]),
     ("cambio",      "Câmbio",              "#a78bfa", ["câmbio","cambio","remessa","dólar","euro","moeda estrangeira"]),
 ]
 
@@ -322,6 +322,29 @@ def _auth_redirect():
 
 # ── Payload helpers ──────────────────────────────────────────────────────────
 
+def _extract_contact_name(payload: dict) -> str:
+    """Extract client name from Zenvia webhook payload (conversation.contact)."""
+    try:
+        conv = payload.get("conversation", {}) or {}
+        contact = conv.get("contact", {}) or {}
+        name = (contact.get("name", "") or contact.get("displayName", "") or
+                contact.get("firstName", "") or "").strip()
+        if name:
+            return name
+    except Exception:
+        pass
+    return ""
+
+
+def _extract_contact_name_from_events(evs: list) -> str:
+    """Try to get contact name from any event in the conversation."""
+    for ev in evs:
+        n = _extract_contact_name(ev.raw_payload or {})
+        if n:
+            return n
+    return ""
+
+
 def _extract_phone_from_conversation(payload: dict) -> str:
     """Extract client phone from payload.conversation.contact.channels when
     from/to fields are absent (e.g. outbound template messages via Zenvia)."""
@@ -358,9 +381,11 @@ def _extract_client_number(payload: dict) -> str:
         # Primary strategy: use direction. Zenvia Conversations API:
         # - IN  (client → company): from=client, to=company → client is `from`
         # - OUT (company → client): from=company, to=client → client is `to`
+        # NOTE: Zenvia template (CONVERSATION_MESSAGE) OUT events have from/to reversed:
+        #   from=client, to=company_channel. Guard against returning a company number as client.
         if direction == "IN" and from_num:
             return from_num
-        if direction == "OUT" and to_num:
+        if direction == "OUT" and to_num and to_num not in COMPANY_CHANNELS:
             return to_num
 
         # Fallback when direction is missing/unknown: use channel registry.
@@ -497,8 +522,49 @@ def _extract_content_preview(payload: dict) -> str:
                     if fname:
                         return f"[{label}] {fname}"[:300]
                     return f"[{label}]"
+                # WhatsApp special types
+                _WA_LABELS = {
+                    "voice.call.permission.request": "📞 Solicitação de ligação",
+                    "voice.call": "📞 Ligação de voz",
+                    "video.call": "📹 Videochamada",
+                    "call.permission": "📞 Solicitação de ligação",
+                    "missed_call": "📵 Ligação perdida",
+                    "call": "📞 Ligação",
+                    "reaction": "👍 Reação",
+                    "location": "📍 Localização",
+                    "contacts": "👤 Contato",
+                    "contact": "👤 Contato",
+                    "order": "🛒 Pedido",
+                    "interactive": "📋 Interativo",
+                    "button": "🔘 Botão",
+                    "list": "📋 Lista",
+                    "list_reply": "📋 Resposta de lista",
+                    "button_reply": "🔘 Resposta de botão",
+                    "revoked": "🚫 Mensagem apagada",
+                    "deleted": "🚫 Mensagem apagada",
+                    "unsupported": "⚠ Tipo não suportado",
+                    "ephemeral": "⏱ Mensagem temporária",
+                    "poll": "📊 Enquete",
+                    "sticker": "🎭 Figurinha",
+                }
+                for _wk, _wlabel in _WA_LABELS.items():
+                    if _wk in ctype:
+                        emoji_val = c.get("emoji", "") or c.get("reaction", "")
+                        return f"{_wlabel} {emoji_val}".strip()
+                if ctype:
+                    return f"[{ctype}]"
         if msg.get("text"):
             return str(msg["text"])[:300]
+        # Check message-level type for calls and other non-content events
+        _msg_type = (msg.get("type", "") or "").lower()
+        if "call" in _msg_type:
+            _dur = msg.get("duration", "") or msg.get("call_duration", "")
+            _dur_str = f" ({_dur}s)" if _dur else ""
+            return f"📞 Ligação{_dur_str}"
+        # Check top-level event type for special cases
+        ev_type = (payload.get("type", "") or "").upper()
+        if ev_type == "MESSAGE_STATUS":
+            return ""
         # Fallback: try top-level contents
         top_contents = payload.get("contents", [])
         if isinstance(top_contents, list):
@@ -507,9 +573,131 @@ def _extract_content_preview(payload: dict) -> str:
                     txt = c.get("text", "") or c.get("body", "")
                     if txt and isinstance(txt, str):
                         return txt[:300]
+        # Last resort: show raw type so something appears instead of blank
+        msg_type = (msg.get("type", "") or payload.get("type", "") or "").lower()
+        if msg_type and msg_type not in ("message", "conversation_message"):
+            return f"[{msg_type}]"
         return ""
     except Exception:
         return ""
+
+
+_MEDIA_EXT_MAP = {
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+    "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp",
+    "mp4": "video/mp4", "webm": "video/webm", "mov": "video/quicktime",
+    "mp3": "audio/mpeg", "ogg": "audio/ogg", "oga": "audio/ogg",
+    "aac": "audio/aac", "m4a": "audio/mp4", "opus": "audio/ogg",
+    "wav": "audio/wav", "3gp": "audio/3gpp",
+    "pdf": "application/pdf",
+}
+
+def _extract_media_url(payload: dict) -> tuple[str, str]:
+    """Return (url, mime_type) for image/file/audio/video messages, or ('','').
+    Prioritises fileMimeType (real media type) over content type field."""
+    try:
+        msg = payload.get("message", {}) or {}
+        contents = msg.get("contents", []) or []
+        if not isinstance(contents, list):
+            return "", ""
+        for c in contents:
+            if not isinstance(c, dict):
+                continue
+            # Collect url candidates (all possible field names)
+            url = ""
+            for field in ("fileUrl", "url", "mediaUrl", "downloadUrl", "link", "fileLink"):
+                url = c.get(field, "") or ""
+                if url:
+                    break
+            # Collect real mime — prefer fileMimeType over generic type
+            file_mime = (c.get("fileMimeType", "") or c.get("mimeType", "") or "").lower()
+            content_type = (c.get("type", "") or "").lower()
+            # Nested payload (Zenvia Conversations API)
+            inner = c.get("payload") or {}
+            if isinstance(inner, dict):
+                for field in ("fileUrl", "url", "mediaUrl", "downloadUrl", "link"):
+                    url = url or (inner.get(field, "") or "")
+                file_mime = file_mime or (inner.get("fileMimeType", "") or inner.get("mimeType", "") or "").lower()
+                inner_json = inner.get("json") or {}
+                if isinstance(inner_json, dict):
+                    for field in ("fileUrl", "url", "mediaUrl", "downloadUrl", "link"):
+                        url = url or (inner_json.get(field, "") or "")
+                    file_mime = file_mime or (inner_json.get("fileMimeType", "") or inner_json.get("mimeType", "") or "").lower()
+            if url:
+                mime = file_mime or content_type
+                # Infer from url extension if still generic/missing
+                if not mime or mime.startswith("application/vnd.zenvia"):
+                    ext = url.split("?")[0].rsplit(".", 1)[-1].lower()
+                    mime = _MEDIA_EXT_MAP.get(ext, mime)
+                return url, mime
+    except Exception:
+        pass
+    return "", ""
+
+
+def _render_msg_content(payload: dict) -> str:
+    """Return HTML for message content: inline image, audio player, file link, or escaped text."""
+    from urllib.parse import quote as _uq
+    media_url, mime = _extract_media_url(payload)
+    raw_text = _extract_content_preview(payload) or ""
+    if media_url:
+        # Infer type from mime, url extension, AND filename in raw_text
+        _url_base = media_url.lower().split("?")[0]
+        # Extract extension from filename in raw_text ("[ARQUIVO] photo.jpg" → "jpg")
+        _fname_ext = ""
+        if raw_text:
+            _fname = raw_text.split()[-1].lower()
+            if "." in _fname:
+                _fname_ext = _fname.rsplit(".", 1)[-1]
+        _img_exts = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp")
+        _aud_exts = (".mp3", ".ogg", ".oga", ".aac", ".m4a", ".opus", ".wav", ".3gp")
+        _vid_exts = (".mp4", ".webm", ".mov")
+        _is_image = (mime.startswith("image/")
+                     or any(_url_base.endswith(e) for e in _img_exts)
+                     or _fname_ext in ("jpg", "jpeg", "png", "gif", "webp", "bmp"))
+        _is_audio = (mime.startswith("audio/")
+                     or any(_url_base.endswith(e) for e in _aud_exts)
+                     or _fname_ext in ("mp3", "ogg", "oga", "aac", "m4a", "opus", "wav", "3gp"))
+        _is_video = (mime.startswith("video/")
+                     or any(_url_base.endswith(e) for e in _vid_exts)
+                     or _fname_ext in ("mp4", "webm", "mov"))
+
+        # Use proxy route to avoid CORS/download issues
+        proxy = f"/dashboard/media?url={_uq(media_url, safe='')}"
+        safe_proxy = html_mod.escape(proxy)
+        safe_url = html_mod.escape(media_url)  # fallback direct link
+
+        if _is_image:
+            caption = raw_text if raw_text and not raw_text.startswith("[") else ""
+            cap_html = f'<div style="font-size:11px;color:#8a96aa;margin-top:4px">{html_mod.escape(caption)}</div>' if caption else ""
+            return (f'<a href="{safe_proxy}" target="_blank" rel="noopener">'
+                    f'<img src="{safe_proxy}" style="max-width:260px;max-height:300px;border-radius:8px;display:block;cursor:zoom-in" '
+                    f'onerror="this.style.display=\'none\';this.nextSibling.style.display=\'inline\'">'
+                    f'</a>'
+                    f'<span style="display:none">🖼 <a href="{safe_proxy}" target="_blank" rel="noopener" style="color:#0fa968">Ver imagem</a></span>'
+                    f'{cap_html}')
+        elif _is_audio:
+            safe_mime = html_mod.escape(mime or "audio/ogg")
+            return (f'<audio controls style="max-width:100%;min-width:220px">'
+                    f'<source src="{safe_proxy}" type="{safe_mime}">'
+                    f'<a href="{safe_url}" target="_blank" style="color:#0fa968">🎵 Abrir áudio</a>'
+                    f'</audio>')
+        elif _is_video:
+            safe_mime = html_mod.escape(mime or "video/mp4")
+            return (f'<video controls style="max-width:260px;border-radius:8px">'
+                    f'<source src="{safe_proxy}" type="{safe_mime}">'
+                    f'</video>')
+        else:
+            label = html_mod.escape(raw_text or "Arquivo")
+            return f'📎 <a href="{safe_proxy}" target="_blank" rel="noopener" style="color:#0fa968">{label}</a>'
+    # Plain text
+    if raw_text:
+        return html_mod.escape(raw_text)
+    # Show event type as hint instead of blank
+    _mt = ((payload.get("message", {}) or {}).get("type", "") or payload.get("type", "") or "").lower()
+    if _mt and _mt not in ("message", "conversation_message", "message_status", "conversation_status"):
+        return f'<em style="opacity:.4">[{html_mod.escape(_mt)}]</em>'
+    return '<em style="opacity:.4">—</em>'
 
 
 def _extract_conversation_id(payload: dict) -> str:
@@ -601,10 +789,26 @@ def _extract_agent_from_payload(payload: dict) -> str:
                             if all(cp in known_parts for cp in candidate_parts):
                                 return known
 
-            # Also try matching any known agent full/first name anywhere in text
+            # "Sou X" pattern with first name anywhere
             for known in AGENT_SEGMENT:
                 first = known.split()[0]
                 if len(first) >= 4 and re.search(r'\bsou\s+\w*\s*' + re.escape(first), full_lower):
+                    return known
+
+            # Signature pattern: only match when the agent name appears as a clear
+            # sign-off / signature, NOT just mentioned anywhere in the message.
+            # Acceptable patterns: "Atenciosamente, Samuel Menuzzo", "Samuel Menuzzo\n",
+            # "- Samuel Menuzzo", "Samuel Menuzzo - Assessor".
+            # This prevents false attribution from messages like
+            # "...junto com seu assessor Samuel..." where another agent merely mentions
+            # a colleague's name.
+            for known in AGENT_SEGMENT:
+                parts = known.split()
+                first_last = (re.escape(parts[0]) + r'(?:\s+\S+){0,2}\s+' + re.escape(parts[-1])
+                              if len(parts) >= 2 else re.escape(known))
+                # Only match in signature positions: after comma/dash/newline, or at end of text
+                sig_pat = r'(?:^|[\n,\-–—]\s*)' + first_last + r'(?:\s*[-–—\n,]|\s*$)'
+                if re.search(sig_pat, full_text, re.IGNORECASE | re.MULTILINE):
                     return known
 
         return ""
@@ -655,10 +859,7 @@ def _extract_agent_prefix(text: str) -> str:
             kparts = known.lower().split()
             if all(cp in kparts for cp in cparts):
                 return known
-    # Accept raw if it looks like ≥2-word proper name
-    words = candidate.split()
-    if len(words) >= 2 and words[0][0].isupper():
-        return candidate
+    # Only return known agents — unknown raw names are rejected
     return ""
 
 
@@ -938,6 +1139,13 @@ COMMON_CSS = """
   .msg-in { background: #141e35; color: #c8d6e5; margin-right: auto; border-bottom-left-radius: 3px; }
   .msg-time { font-size: 10px; color: #4a5a7a; margin-top: 3px; font-family: 'JetBrains Mono', monospace; }
   td .mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #4a5a7a; }
+
+  /* ── Scrollbars (dark theme) ─────────────────────────────────────────── */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: #0b1120; }
+  ::-webkit-scrollbar-thumb { background: #1a2540; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #0fa968; }
+  * { scrollbar-width: thin; scrollbar-color: #1a2540 #0b1120; }
 </style>
 """
 
@@ -978,6 +1186,19 @@ def dashboard_debug_events(request: Request, db: Session = Depends(get_db)):
             f'<td style="padding:6px 10px;font-size:10px;color:#3a4a6a">{html_mod.escape(raw_keys)}</td>'
             f'</tr>'
         )
+    # Full JSON for last 5 OUT events
+    out_payloads_html = ""
+    out_evs = [ev for ev in reversed(events) if (ev.raw_payload or {}).get("message", {}).get("direction") == "OUT"][:5]
+    for ev in out_evs:
+        ts = ev.received_at.astimezone(BRASILIA).strftime("%d/%m %H:%M:%S") if ev.received_at else "—"
+        out_payloads_html += (
+            f'<div style="margin-bottom:10px">'
+            f'<div style="font-size:10px;color:#f59e0b;font-weight:700;margin-bottom:4px">{ts}</div>'
+            f'<pre style="font-size:10px;color:#a8e6cf;background:#060d1a;padding:10px;border-radius:6px;overflow-x:auto;white-space:pre-wrap;word-break:break-all">'
+            f'{html_mod.escape(json.dumps(ev.raw_payload, indent=2, ensure_ascii=False)[:3000])}'
+            f'</pre></div>'
+        )
+
     nav = _nav_html("debug", "", canal="5519997733651", is_admin=(access or {}).get('role') == 'admin', title="Debug Events")
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Debug Events</title>{COMMON_CSS}
     <meta http-equiv="refresh" content="10"></head><body>{nav}
@@ -997,7 +1218,12 @@ def dashboard_debug_events(request: Request, db: Session = Depends(get_db)):
     </tr></thead>
     <tbody>{rows}</tbody>
     </table>
-    </div></div></div></body></html>""")
+    </div></div>
+    <div class="card" style="margin-top:20px">
+    <h2 style="font-size:15px;margin-bottom:14px">Payload completo — últimos 5 eventos OUT</h2>
+    {out_payloads_html or '<p style="color:#3a4a6a">Nenhum evento OUT nos últimos 30</p>'}
+    </div>
+    </div></body></html>""")
 
 
 @router.get("/dashboard/overview", response_class=HTMLResponse, include_in_schema=False)
@@ -1007,15 +1233,17 @@ def dashboard_overview(request: Request, db: Session = Depends(get_db)):
         return _auth_redirect()
 
     canal = request.query_params.get("canal", "5519997733651")
-    all_evs_raw, _ = get_events(db, limit=50000, offset=0)
+    now_br = datetime.now(BRASILIA)
+    today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
+    two_days_ago = today_start - timedelta(days=1)
+    two_days_ago_utc = two_days_ago.astimezone(timezone.utc)
+    all_evs_raw = get_events_since(db, since=two_days_ago_utc, limit=20000)
     all_evs = _filter_events_by_channel(all_evs_raw, canal)
     client_agent_map = get_agent_mappings(db)
     client_name_map = get_client_names(db)
     acked_alerts = _get_acked_alerts(db)
     db.close()
 
-    now_br = datetime.now(BRASILIA)
-    today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
     _cp = _real_phone(canal)
 
     # ── Today groups ──────────────────────────────────────────────────────────
@@ -1935,7 +2163,7 @@ def dashboard_conversas_export(request: Request, db: Session = Depends(get_db)):
         last_ts  = next((e.received_at for e in reversed(evs_sorted) if e.received_at), None)
         n_out = sum(1 for e in evs if _extract_direction(e.raw_payload or {}) == "OUT")
         n_in  = sum(1 for e in evs if _extract_direction(e.raw_payload or {}) == "IN")
-        name  = client_name_map.get(ph, "")
+        name = client_name_map.get(ph, "") or _extract_contact_name_from_events(evs_sorted)
         first_br = first_ts.astimezone(BRASILIA) if first_ts else None
         last_br  = last_ts.astimezone(BRASILIA)  if last_ts  else None
         rows.append((
@@ -1952,7 +2180,8 @@ def dashboard_conversas_export(request: Request, db: Session = Depends(get_db)):
     writer = csv.writer(output)
     writer.writerow(["Agente", "Telefone", "Nome Cliente", "Data", "Hora Início", "Hora Última Msg", "Msgs Enviadas", "Msgs Recebidas"])
     for row in rows:
-        writer.writerow(row)
+        # Prefix phone with tab so Excel reads as text (prevents scientific notation)
+        writer.writerow([row[0], f"\t{row[1]}", row[2], row[3], row[4], row[5], row[6], row[7]])
     output.seek(0)
 
     filename = f"conversas-{periodo_exp}-{now_br.strftime('%Y%m%d%H%M')}.csv"
@@ -1970,7 +2199,10 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
         return _auth_redirect()
 
     canal = request.query_params.get("canal", "5519997733651")
-    all_events, total = get_events(db, limit=50000, offset=0)
+    now_br = datetime.now(BRASILIA)
+    today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start_utc = today_start.astimezone(timezone.utc)
+    all_events = get_events_since(db, since=today_start_utc, limit=20000)
     filtered_events = _filter_events_by_channel(all_events, canal)
     client_agent_map = get_agent_mappings(db)
     client_name_map = get_client_names(db)
@@ -2071,7 +2303,8 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
         alert_dot = '<span style="color:#ef4444;margin-right:4px;font-size:13px">⚠</span>' if has_alert else ""
         snippet_color = "#fca5a5" if has_alert else "#8a96aa"
 
-        conv_cards_html += f"""<div class="gp-conv-card" id="card-{chat_id}" data-type="{'alerta' if has_alert else 'normal'}" onclick="selectConv('{chat_id}')">
+        _search_val = f"{client_name} {phone} {agent} {last_text}".lower()
+        conv_cards_html += f"""<div class="gp-conv-card" id="card-{chat_id}" data-type="{'alerta' if has_alert else 'normal'}" data-search="{html_mod.escape(_search_val)}" onclick="selectConv('{chat_id}')">
   <div class="gp-av" style="width:36px;height:36px;background:{av_color};font-size:13px">{initials}</div>
   <div style="flex:1;min-width:0">
     <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
@@ -2090,39 +2323,12 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
   </div>
 </div>"""
 
-        # ── Chat panel (center) ──────────────────────────────────────────────
-        msgs_html = ""
-        _prev_day = None
-        for ev in evs:
-            p = ev.raw_payload or {}
-            ev_type = (p.get("type","") or "").upper()
-            if ev_type in ("MESSAGE_STATUS","CONVERSATION_STATUS"):
-                continue
-            direction = _extract_direction(p)
-            raw_content = _extract_content_preview(p) or ""
-            content = html_mod.escape(raw_content) if raw_content else '<em style="opacity:.5">[sem conteúdo legível]</em>'
-            if ev.received_at:
-                _ev_br = ev.received_at.astimezone(BRASILIA)
-                msg_ts = _ev_br.strftime("%H:%M")
-                _msg_day = _ev_br.date()
-                if _msg_day != _prev_day:
-                    _day_str = _ev_br.strftime("%d/%m/%Y")
-                    msgs_html += (f'<div style="text-align:center;font-size:10px;color:#3a4a6a;'
-                                  f'letter-spacing:1.5px;margin:8px 0 6px;font-weight:700">'
-                                  f'— {_day_str} —</div>')
-                    _prev_day = _msg_day
-            else:
-                msg_ts = ""
-            if direction == "OUT":
-                msgs_html += f'<div class="gp-msg out">{content}<div class="gp-msg-t">{msg_ts} ↑</div></div>'
-            else:
-                msgs_html += f'<div class="gp-msg in">{content}<div class="gp-msg-t">{msg_ts} ↓</div></div>'
-
+        # ── Chat panel (center) — lazy loaded via AJAX ──────────────────────
         alert_badge_chat = '<span style="background:#3a1414;color:#ef4444;border:1px solid #5a2424;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:.5px">⚠ ALERTA</span>' if has_alert else ""
         ok_btn_chat = f'<button onclick="ackAlert(\'{safe_phone}\',\'{html_mod.escape(agent).replace(chr(39),"&#39;")}\',\'{safe_snippet}\',\'{safe_display_name}\',\'{chat_id}\')" style="background:#0fa968;color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:11px;font-weight:700;cursor:pointer;font-family:\'Montserrat\',sans-serif">✓ OK</button>' if has_alert else ""
-
-        today_label = datetime.now(BRASILIA).strftime("%d %b %Y").upper()
-        chat_panels_html += f"""<div class="gp-chat-panel" id="cpanel-{chat_id}">
+        _enc_key = html_mod.escape(client_num)
+        _enc_canal = html_mod.escape(canal)
+        chat_panels_html += f"""<div class="gp-chat-panel" id="cpanel-{chat_id}" data-phone="{_enc_key}" data-canal="{_enc_canal}" data-loaded="0">
   <div style="padding:14px 24px;border-bottom:1px solid #1a2540;display:flex;align-items:center;justify-content:space-between;background:#0b1120;flex-shrink:0">
     <div style="display:flex;align-items:center;gap:12px">
       <div class="gp-av" style="width:40px;height:40px;background:{av_color};font-size:14px">{initials}</div>
@@ -2135,8 +2341,8 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
     </div>
     <div style="display:flex;gap:8px;align-items:center">{alert_badge_chat}{ok_btn_chat}</div>
   </div>
-  <div class="gp-chat-msgs">
-    {msgs_html}
+  <div class="gp-chat-msgs" id="msgs-{chat_id}">
+    <div style="text-align:center;color:#3a4a6a;font-size:12px;margin-top:60px;font-style:italic">Selecione para carregar mensagens</div>
   </div>
   <div style="padding:10px 24px;border-top:1px solid #1a2540;font-size:11px;color:#5a6a8a;text-align:center;background:#0b1120;font-style:italic;flex-shrink:0">
     🔒 Visualização somente leitura · monitoramento Zenvia
@@ -2210,14 +2416,28 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
         <span id="list-count" style="font-size:10px;color:#5a6a8a;letter-spacing:1.2px;font-weight:700">{len(groups)} CONVERSAS · HOJE</span>
         <a href="/dashboard/export?canal={canal}&periodo=hoje" style="font-size:10px;color:#0fa968;font-weight:700;text-decoration:none;display:flex;align-items:center;gap:4px" title="Exportar lista de conversas (Agente, Cliente, Horário)">⬇ CSV</a>
       </div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
         <span class="gp-chip active" onclick="filterCards('',this)">Todas</span>
         {alert_chip}
         <span class="gp-chip" onclick="filterCards('unread',this)">Não lidas</span>
       </div>
+      <div style="position:relative">
+        <input id="conv-search" type="text" placeholder="🔍  Buscar cliente, telefone ou agente…"
+          oninput="searchConvs(this.value)"
+          style="width:100%;background:#0f1629;border:1px solid #1a2540;border-radius:8px;
+                 color:#e8ecf1;font-size:12px;padding:7px 32px 7px 12px;outline:none;
+                 font-family:'Montserrat',sans-serif;box-sizing:border-box;transition:.15s"
+          onfocus="this.style.borderColor='#0fa968'" onblur="this.style.borderColor='#1a2540'">
+        <span id="search-clear" onclick="clearSearch()" style="display:none;position:absolute;right:10px;
+          top:50%;transform:translateY(-50%);cursor:pointer;color:#5a6a8a;font-size:14px;line-height:1">✕</span>
+      </div>
     </div>
-    <div style="flex:1;overflow-y:auto">
+    <div style="flex:1;overflow-y:auto" id="conv-cards-list">
       {conv_cards_html}
+      <div id="hist-section" style="display:none">
+        <div style="font-size:10px;color:#5a6a8a;letter-spacing:1px;font-weight:700;padding:8px 14px 4px;border-top:1px solid #1a2540;margin-top:4px">HISTÓRICO</div>
+        <div id="hist-cards"></div>
+      </div>
     </div>
   </div>
 
@@ -2228,6 +2448,7 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
       <div style="font-size:13px;font-style:italic">Selecione uma conversa para visualizar</div>
     </div>
     {chat_panels_html}
+    <div id="hist-panels"></div>
   </div>
 
   <!-- RIGHT: contexto -->
@@ -2239,6 +2460,15 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
 
 <script>
 var _activeId=null;
+var _canal='{canal}';
+function _scrollToBottom(m){{
+  var imgs=m.querySelectorAll('img');
+  if(!imgs.length){{m.scrollTop=m.scrollHeight;return;}}
+  var total=imgs.length,done=0;
+  function tryScroll(){{if(++done>=total)m.scrollTop=m.scrollHeight;}}
+  imgs.forEach(function(img){{if(img.complete)tryScroll();else{{img.onload=tryScroll;img.onerror=tryScroll;}}}});
+  setTimeout(function(){{m.scrollTop=m.scrollHeight;}},600);
+}}
 function selectConv(id){{
   if(_activeId){{
     var pc=document.getElementById('card-'+_activeId);if(pc)pc.classList.remove('active');
@@ -2248,10 +2478,36 @@ function selectConv(id){{
   _activeId=id;
   var card=document.getElementById('card-'+id);if(card)card.classList.add('active');
   document.getElementById('chat-ph').style.display='none';
-  var panel=document.getElementById('cpanel-'+id);
-  if(panel){{panel.style.display='flex';var m=panel.querySelector('.gp-chat-msgs');if(m)setTimeout(function(){{m.scrollTop=m.scrollHeight;}},10);}}
   document.getElementById('ctx-ph').style.display='none';
   var ctx=document.getElementById('ctx-'+id);if(ctx)ctx.style.display='block';
+  var panel=document.getElementById('cpanel-'+id);
+  if(!panel)return;
+  panel.style.display='flex';
+  var m=document.getElementById('msgs-'+id);
+  if(!m)return;
+  if(panel.getAttribute('data-loaded')==='1'){{_scrollToBottom(m);return;}}
+  var phone=panel.getAttribute('data-phone');
+  var canal=panel.getAttribute('data-canal');
+  m.innerHTML='<div style="text-align:center;color:#3a4a6a;font-size:12px;margin-top:60px">⏳ Carregando...</div>';
+  fetch('/dashboard/conv-messages?phone='+encodeURIComponent(phone)+'&canal='+encodeURIComponent(canal))
+    .then(function(r){{return r.text();}})
+    .then(function(html){{
+      m.innerHTML=html;
+      panel.setAttribute('data-loaded','1');
+      _scrollToBottom(m);
+    }})
+    .catch(function(){{
+      m.innerHTML='<div style="text-align:center;color:#ef4444;font-size:12px;margin-top:60px">Erro ao carregar mensagens</div>';
+    }});
+}}
+function loadFullHistory(btn,url){{
+  var m=btn.closest('.gp-chat-msgs');
+  if(!m)return;
+  btn.disabled=true;btn.textContent='⏳ Carregando...';
+  fetch(url).then(function(r){{return r.text();}}).then(function(html){{
+    m.innerHTML=html;
+    _scrollToBottom(m);
+  }}).catch(function(){{btn.disabled=false;btn.textContent='Erro — tentar novamente';}});
 }}
 async function ackAlert(phoneKey,agent,snippet,displayName,cardId){{
   try{{
@@ -2264,20 +2520,311 @@ async function ackAlert(phoneKey,agent,snippet,displayName,cardId){{
     }}
   }}catch(e){{console.error(e);}}
 }}
+var _activeFilter='';
 function filterCards(type,el){{
   document.querySelectorAll('.gp-chip').forEach(c=>c.classList.remove('active'));
   if(el)el.classList.add('active');
-  var cards=document.querySelectorAll('.gp-conv-card');
+  _activeFilter=type;
+  _applyFilters();
+}}
+function searchConvs(q){{
+  var cl=document.getElementById('search-clear');
+  if(cl)cl.style.display=q?'block':'none';
+  _applyFilters();
+}}
+function clearSearch(){{
+  var inp=document.getElementById('conv-search');
+  if(inp){{inp.value='';inp.focus();}}
+  var cl=document.getElementById('search-clear');
+  if(cl)cl.style.display='none';
+  _applyFilters();
+}}
+var _histTimer=null;
+function _applyFilters(){{
+  var q=(document.getElementById('conv-search')||{{}}).value||'';
+  q=q.toLowerCase().trim();
+  var type=_activeFilter;
+  // Only filter today's cards (not hist cards)
+  var cards=document.querySelectorAll('.gp-conv-card:not([data-hist])');
   var count=0;
   cards.forEach(function(c){{
-    var show=!type||c.getAttribute('data-type')===type||(type==='unread'&&c.querySelector('[style*="border-radius:9px"]'));
+    var typeOk=!type||c.getAttribute('data-type')===type||(type==='unread'&&c.querySelector('[style*="border-radius:9px"]'));
+    var searchOk=!q||(c.getAttribute('data-search')||'').includes(q);
+    var show=typeOk&&searchOk;
     c.style.display=show?'flex':'none';
     if(show)count++;
   }});
   document.getElementById('list-count').textContent=count+' CONVERSAS · HOJE';
+  // Historical search
+  clearTimeout(_histTimer);
+  var hs=document.getElementById('hist-section');
+  if(q.length>=2){{
+    hs.style.display='block';
+    document.getElementById('hist-cards').innerHTML='<div style="padding:10px 14px;font-size:11px;color:#5a6a8a;font-style:italic">⏳ Buscando histórico…</div>';
+    _histTimer=setTimeout(function(){{_fetchHist(q);}},450);
+  }}else{{
+    hs.style.display='none';
+    document.getElementById('hist-cards').innerHTML='';
+    var hp=document.getElementById('hist-panels');if(hp)hp.innerHTML='';
+  }}
+}}
+function _fetchHist(q){{
+  fetch('/dashboard/conv-search?q='+encodeURIComponent(q)+'&canal='+encodeURIComponent(_canal))
+    .then(function(r){{return r.json();}})
+    .then(function(data){{
+      var hc=document.getElementById('hist-cards');
+      hc.innerHTML=data.cards||'<div style="padding:10px 14px;font-size:11px;color:#5a6a8a">Nenhum resultado no histórico.</div>';
+      var hp=document.getElementById('hist-panels');if(hp)hp.innerHTML=data.panels||'';
+    }})
+    .catch(function(){{
+      var hc=document.getElementById('hist-cards');
+      if(hc)hc.innerHTML='<div style="padding:10px 14px;font-size:11px;color:#ef4444">Erro ao buscar histórico.</div>';
+    }});
 }}
 </script>
 </body></html>""")
+
+
+# ── Historical conversation search (AJAX) ────────────────────────────────────
+
+@router.get("/dashboard/conv-search", include_in_schema=False)
+def conv_search_api(request: Request, db: Session = Depends(get_db)):
+    """AJAX: search conversations across the last 30 days. Returns JSON {cards, panels, count}."""
+    access = _get_access(request, db)
+    if not access:
+        return JSONResponse({"cards": "", "panels": "", "count": 0}, status_code=401)
+
+    q = request.query_params.get("q", "").strip().lower()
+    canal = request.query_params.get("canal", "5519997733651").strip()
+
+    if len(q) < 2:
+        return JSONResponse({"cards": "", "panels": "", "count": 0})
+
+    now_br = datetime.now(BRASILIA)
+    today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
+    cutoff = (now_br - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
+    cutoff_utc = cutoff.astimezone(timezone.utc)
+
+    all_events = get_events_since(db, since=cutoff_utc, limit=30000)
+    filtered = _filter_events_by_channel(all_events, canal)
+    client_agent_map = get_agent_mappings(db)
+    client_name_map = get_client_names(db)
+    db.close()
+
+    groups, phone_learned = _group_events(filtered, client_agent_map)
+    _cp = _real_phone(canal)
+    groups = {k: v for k, v in groups.items() if _real_phone(k) != _cp}
+
+    _AV_COLORS = ["#0fa968", "#3b82f6", "#8b5cf6", "#f59e0b", "#ef4444", "#06b6d4", "#ec4899", "#14b8a6"]
+    _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+    sorted_groups = sorted(
+        groups.items(),
+        key=lambda x: max((e.received_at for e in x[1] if e.received_at), default=_EPOCH),
+        reverse=True,
+    )
+
+    cards_html = ""
+    panels_html = ""
+    count = 0
+
+    for client_num, evs in sorted_groups:
+        ph = _real_phone(client_num)
+        agent = phone_learned.get(client_num) or client_agent_map.get(ph) or phone_learned.get(ph) or "Sem atendente"
+        if not _user_sees(access, agent):
+            continue
+
+        client_name = client_name_map.get(ph, "") or _extract_contact_name_from_events(evs)
+
+        # Check query match against name, phone, agent
+        search_str = f"{client_name} {ph} {agent}".lower()
+        if q not in search_str:
+            continue
+
+        # Skip conversations whose last message is today (already in main list)
+        last_ev_time = max((e.received_at for e in evs if e.received_at), default=None)
+        if last_ev_time and last_ev_time.astimezone(BRASILIA) >= today_start:
+            continue
+
+        chat_id = f"h{abs(hash(client_num)) % 999999999}"
+        av_color = _AV_COLORS[abs(hash(client_num)) % len(_AV_COLORS)]
+        name_for_av = client_name if client_name else ph
+        initials = "".join(w[0].upper() for w in name_for_av.split()[:2]) if name_for_av.strip() else "?"
+        client_display = html_mod.escape(client_name) if client_name else "Desconhecido"
+        safe_phone = html_mod.escape(ph)
+        safe_agent = html_mod.escape(agent)
+        badge = _segment_badge(agent)
+        ts = last_ev_time.astimezone(BRASILIA).strftime("%d/%m") if last_ev_time else ""
+
+        last_text = ""
+        for ev in reversed(evs):
+            p = ev.raw_payload or {}
+            if (p.get("type", "") or "").upper() not in ("MESSAGE_STATUS", "CONVERSATION_STATUS"):
+                t = _extract_content_preview(p)
+                if t:
+                    last_text = t[:80]
+                    break
+
+        _enc_key = html_mod.escape(client_num)
+        _enc_canal = html_mod.escape(canal)
+
+        cards_html += f"""<div class="gp-conv-card" id="card-{chat_id}" data-type="normal" data-hist="1" data-search="{html_mod.escape(search_str)}" onclick="selectConv('{chat_id}')">
+  <div class="gp-av" style="width:36px;height:36px;background:{av_color};font-size:13px">{initials}</div>
+  <div style="flex:1;min-width:0">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+      <span style="font-weight:600;font-size:13px;color:#e8ecf1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{client_display}</span>
+      <span style="font-size:10.5px;color:#5a6a8a;flex-shrink:0;font-weight:500">{ts}</span>
+    </div>
+    <div style="font-size:11px;color:#8a96aa;margin-top:2px;display:flex;align-items:center;gap:6px">
+      <span>{_short_agent_name(agent)}</span>{badge}
+    </div>
+    <div style="font-size:12px;color:#8a96aa;margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
+      {html_mod.escape(last_text or "—")}
+    </div>
+  </div>
+</div>"""
+
+        panels_html += f"""<div class="gp-chat-panel" id="cpanel-{chat_id}" data-phone="{_enc_key}" data-canal="{_enc_canal}" data-loaded="0">
+  <div style="padding:14px 24px;border-bottom:1px solid #1a2540;display:flex;align-items:center;background:#0b1120;flex-shrink:0;gap:12px">
+    <div class="gp-av" style="width:40px;height:40px;background:{av_color};font-size:14px">{initials}</div>
+    <div>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="font-size:15px;font-weight:700;color:#fff">{client_display}</span>{badge}
+      </div>
+      <div style="font-size:11px;color:#5a6a8a;margin-top:2px;font-family:'JetBrains Mono',monospace">{safe_phone} · com {safe_agent}</div>
+    </div>
+  </div>
+  <div class="gp-chat-msgs" id="msgs-{chat_id}">
+    <div style="text-align:center;color:#3a4a6a;font-size:12px;margin-top:60px;font-style:italic">Selecione para carregar mensagens</div>
+  </div>
+  <div style="padding:10px 24px;border-top:1px solid #1a2540;font-size:11px;color:#5a6a8a;text-align:center;background:#0b1120;font-style:italic;flex-shrink:0">
+    🔒 Visualização somente leitura · monitoramento Zenvia
+  </div>
+</div>"""
+
+        count += 1
+        if count >= 30:
+            break
+
+    return JSONResponse({"cards": cards_html, "panels": panels_html, "count": count})
+
+
+# ── Lazy conversation messages ───────────────────────────────────────────────
+
+@router.get("/dashboard/conv-messages", include_in_schema=False)
+def conv_messages_api(request: Request, db: Session = Depends(get_db)):
+    """Return rendered HTML for a single conversation's messages (lazy load)."""
+    access = _get_access(request, db)
+    if not access:
+        return HTMLResponse('<div style="color:#ef4444;text-align:center;padding:20px">Sessão expirada</div>', status_code=401)
+    client_key = request.query_params.get("phone", "").strip()
+    canal = request.query_params.get("canal", "5519997733651").strip()
+    if not client_key:
+        return HTMLResponse('<div style="color:#ef4444;padding:20px">Parâmetro ausente</div>', status_code=400)
+    # Load up to 30 days to ensure full conversation history is available
+    _conv_cutoff = (datetime.now(BRASILIA) - timedelta(days=30)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(timezone.utc)
+    all_events = get_events_since(db, since=_conv_cutoff, limit=20000)
+    client_agent_map = get_agent_mappings(db)
+    db.close()
+    filtered = _filter_events_by_channel(all_events, canal)
+    # Use all available events (not just today) so the full conversation history loads
+    groups, _ = _group_events(filtered, client_agent_map)
+    # Find the matching group — merge ALL sub-groups for the same phone
+    # (avoids missing messages when _split_by_agent_prefix created multiple keys for one phone)
+    real_target = _real_phone(client_key)
+    target_evs_all: list = []
+    for k, evs in groups.items():
+        if k == client_key or _real_phone(k) == real_target:
+            target_evs_all.extend(evs)
+    target_evs = target_evs_all if target_evs_all else None
+    if not target_evs:
+        return HTMLResponse('<div style="text-align:center;color:#3a4a6a;font-size:12px;margin-top:60px;font-style:italic">Nenhuma mensagem encontrada.</div>')
+    target_evs.sort(key=lambda e: e.received_at or datetime.min.replace(tzinfo=timezone.utc))
+    load_all = request.query_params.get("full", "0") == "1"
+    _MSG_LIMIT = 80
+    _evs_filtered = [ev for ev in target_evs
+                     if (ev.raw_payload or {}).get("type","").upper() not in ("MESSAGE_STATUS","CONVERSATION_STATUS")]
+    _total = len(_evs_filtered)
+    _truncated = _total > _MSG_LIMIT and not load_all
+    _evs_display = _evs_filtered if (load_all or _total <= _MSG_LIMIT) else _evs_filtered[-_MSG_LIMIT:]
+    msgs_html = ""
+    if _truncated:
+        from urllib.parse import quote as _uq2
+        _btn_url = f"/dashboard/conv-messages?phone={_uq2(client_key, safe='')}&canal={_uq2(canal, safe='')}&full=1"
+        msgs_html += (
+            f'<div style="position:sticky;top:0;z-index:10;background:#0a0f1a;'
+            f'border-bottom:1px solid #1a2540;padding:8px 16px;text-align:center;margin-bottom:8px">'
+            f'<button onclick="loadFullHistory(this,\'{_btn_url}\')" '
+            f'style="background:transparent;border:1px solid #1a2540;color:#8a96aa;font-size:11px;'
+            f'padding:5px 18px;border-radius:20px;cursor:pointer;font-family:\'Montserrat\',sans-serif;'
+            f'font-weight:600;transition:.15s;letter-spacing:.3px" '
+            f'onmouseover="this.style.borderColor=\'#0fa968\';this.style.color=\'#0fa968\'" '
+            f'onmouseout="this.style.borderColor=\'#1a2540\';this.style.color=\'#8a96aa\'">'
+            f'↑ Ver histórico completo &nbsp;·&nbsp; {_total} mensagens</button>'
+            f'<span style="font-size:10px;color:#3a4a6a;margin-left:10px">últimas {_MSG_LIMIT} exibidas</span>'
+            f'</div>'
+        )
+    _prev_day = None
+    for ev in _evs_display:
+        p = ev.raw_payload or {}
+        direction = _extract_direction(p)
+        content = _render_msg_content(p)
+        if ev.received_at:
+            _ev_br = ev.received_at.astimezone(BRASILIA)
+            msg_ts = _ev_br.strftime("%H:%M")
+            _msg_day = _ev_br.date()
+            if _msg_day != _prev_day:
+                _day_str = _ev_br.strftime("%d/%m/%Y")
+                msgs_html += (f'<div style="text-align:center;font-size:10px;color:#3a4a6a;'
+                              f'letter-spacing:1.5px;margin:8px 0 6px;font-weight:700">— {_day_str} —</div>')
+                _prev_day = _msg_day
+        else:
+            msg_ts = ""
+        if direction == "OUT":
+            msgs_html += f'<div class="gp-msg out">{content}<div class="gp-msg-t">{msg_ts} ↑</div></div>'
+        else:
+            msgs_html += f'<div class="gp-msg in">{content}<div class="gp-msg-t">{msg_ts} ↓</div></div>'
+    return HTMLResponse(msgs_html)
+
+
+# ── Media proxy ─────────────────────────────────────────────────────────────
+
+@router.get("/dashboard/media", include_in_schema=False)
+async def media_proxy(request: Request):
+    """Proxy media files (images, audio, video) from Zenvia CDN.
+    Avoids CORS issues and forces inline Content-Disposition."""
+    if not _check_auth(request):
+        return _auth_redirect()
+    from urllib.parse import unquote as _unquote
+    import httpx as _httpx
+    raw_url = request.query_params.get("url", "").strip()
+    if not raw_url:
+        return HTMLResponse("<h3>Missing url</h3>", status_code=400)
+    # Only allow Zenvia/S3 CDN URLs for security
+    _allowed_hosts = (
+        "zenvia.com", "zenviamobile.com.br", "s3.amazonaws.com",
+        "amazonaws.com", "zenvia-files", "storage.googleapis.com",
+        "cdn.zenvia", "files.zenvia",
+    )
+    from urllib.parse import urlparse as _urlparse
+    _parsed = _urlparse(raw_url)
+    if not any(h in (_parsed.netloc or "") for h in _allowed_hosts):
+        # Unknown host — just redirect, don't proxy
+        return RedirectResponse(raw_url)
+    try:
+        async with _httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+            resp = await client.get(raw_url)
+        content_type = resp.headers.get("content-type", "application/octet-stream").split(";")[0].strip()
+        from fastapi.responses import Response as _Resp
+        return _Resp(
+            content=resp.content,
+            media_type=content_type,
+            headers={"Content-Disposition": "inline", "Cache-Control": "private, max-age=3600"},
+        )
+    except Exception:
+        return RedirectResponse(raw_url)
 
 
 # ── Alert triage endpoints ───────────────────────────────────────────────────
@@ -2394,8 +2941,7 @@ def agente_detalhe(request: Request, db: Session = Depends(get_db)):
             if ev_type in ("MESSAGE_STATUS", "CONVERSATION_STATUS"):
                 continue
             direction = _extract_direction(p)
-            raw_content = _extract_content_preview(p) or ""
-            content = html_mod.escape(raw_content) if raw_content else '<em style="opacity:.5">[mensagem sem conteúdo legível]</em>'
+            content = _render_msg_content(p)
             msg_ts = ev.received_at.astimezone(BRASILIA).strftime("%d/%m %H:%M") if ev.received_at else ""
             if direction == "OUT":
                 msgs_html += f'<div class="msg msg-out">{content}<div class="msg-time">{msg_ts} &uarr;</div></div>'
@@ -2804,7 +3350,10 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
     client_name_map = get_client_names(db)
 
     # Compute active (unacked) alerts from today's events
-    all_events, _ = get_events(db, limit=50000, offset=0)
+    now_br = datetime.now(BRASILIA)
+    today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start_utc = today_start.astimezone(timezone.utc)
+    all_events = get_events_since(db, since=today_start_utc, limit=20000)
     client_agent_map = get_agent_mappings(db)
     db.close()
     filtered_events = _filter_events_by_channel(all_events, canal)
@@ -3056,7 +3605,7 @@ def dashboard_agentes_export(request: Request, db: Session = Depends(get_db)):
             _fk = f"{_grp_ag}|{_grp_ph}|{_dk}"
             if _fk not in _hm_seen:
                 _hm_seen[_fk] = _ts_br
-                _name = client_name_map.get(_grp_ph, "")
+                _name = client_name_map.get(_grp_ph, "") or _extract_contact_name_from_events(_grp_evs)
                 _date_str = _ts_br.strftime("%d/%m/%Y")
                 _hour_str = _ts_br.strftime("%H:%M")
                 _rows.append((_grp_ag, _grp_ph, _name, _date_str, _hour_str))
@@ -3068,7 +3617,7 @@ def dashboard_agentes_export(request: Request, db: Session = Depends(get_db)):
     writer = csv.writer(output)
     writer.writerow(["Agente", "Telefone", "Nome Cliente", "Data", "Hora 1º Contato"])
     for row in _rows:
-        writer.writerow(row)
+        writer.writerow([row[0], f"\t{row[1]}", row[2], row[3], row[4]])
     output.seek(0)
 
     filename = f"agentes-{periodo}-{now_br.strftime('%Y%m%d%H%M')}.csv"
@@ -3118,7 +3667,8 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
             inicio_raw = ""
             fim_raw = ""
 
-    all_events = get_events_only(db, limit=50000)
+    cutoff_utc = cutoff.astimezone(timezone.utc)
+    all_events = get_events_since(db, since=cutoff_utc, limit=30000)
     all_events = _filter_events_by_channel(all_events, canal)
     client_agent_map = get_agent_mappings(db)
     gabarito_ts_raw = get_setting(db, "gabarito_updated_at")  # fetch before closing session
