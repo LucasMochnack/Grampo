@@ -1,9 +1,11 @@
+from datetime import date as date_cls, datetime
 from typing import Any
 from uuid import UUID
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.models import AgentMapping, AppSetting, WebhookEvent
+from app.models import AgentMapping, AppSetting, DailyAgentStat, WebhookEvent
 
 
 def create_event(
@@ -119,5 +121,78 @@ def set_setting(db: Session, key: str, value: str) -> None:
     else:
         db.add(AppSetting(key=key, value=value))
     db.commit()
+
+
+# --- Health helpers ---
+
+def get_last_event_received_at(db: Session) -> datetime | None:
+    """Return the timestamp of the most recently received webhook, or None."""
+    row = db.query(func.max(WebhookEvent.received_at)).scalar()
+    return row
+
+
+def count_events_since(db: Session, *, since: datetime) -> int:
+    """Count webhook events received on or after `since`."""
+    return (
+        db.query(func.count(WebhookEvent.id))
+        .filter(WebhookEvent.received_at >= since)
+        .scalar()
+        or 0
+    )
+
+
+# --- Daily aggregated stats ---
+
+def get_daily_stats(
+    db: Session, *, since_date: date_cls, canal: str
+) -> list[DailyAgentStat]:
+    """Read pre-aggregated stats for the given canal from `since_date` onwards."""
+    return (
+        db.query(DailyAgentStat)
+        .filter(DailyAgentStat.canal == canal)
+        .filter(DailyAgentStat.date >= since_date)
+        .all()
+    )
+
+
+def upsert_daily_stat(
+    db: Session,
+    *,
+    date: date_cls,
+    canal: str,
+    agent_name: str,
+    msgs_out: int,
+    msgs_in: int,
+    clients_count: int,
+    waiting_count: int,
+) -> None:
+    """Insert or update a single (date, canal, agent_name) stats row."""
+    row = (
+        db.query(DailyAgentStat)
+        .filter(
+            DailyAgentStat.date == date,
+            DailyAgentStat.canal == canal,
+            DailyAgentStat.agent_name == agent_name,
+        )
+        .first()
+    )
+    if row:
+        row.msgs_out = msgs_out
+        row.msgs_in = msgs_in
+        row.clients_count = clients_count
+        row.waiting_count = waiting_count
+        row.refreshed_at = datetime.utcnow()
+    else:
+        db.add(
+            DailyAgentStat(
+                date=date,
+                canal=canal,
+                agent_name=agent_name,
+                msgs_out=msgs_out,
+                msgs_in=msgs_in,
+                clients_count=clients_count,
+                waiting_count=waiting_count,
+            )
+        )
 
 

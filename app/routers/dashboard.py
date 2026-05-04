@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.crud import get_events, get_events_only, get_events_since, get_agent_mappings, get_client_names, replace_agent_mappings, get_setting, set_setting
 from app.dependencies import get_db
+from app.services import cache as _cache
 
 router = APIRouter(tags=["dashboard"])
 
@@ -429,6 +430,39 @@ def _filter_events_by_channel(events, canal: str):
     if not canal:
         return events
     return [ev for ev in events if _extract_channel(ev.raw_payload or {}) == canal]
+
+
+# ── Cache key helpers ────────────────────────────────────────────────────────
+# Cache TTL for the heavy load+filter+group pipeline. 45s is short enough
+# that managers don't notice staleness (we already meta-refresh every 600s)
+# yet long enough that 3+ concurrent F5s share one computation.
+_PIPELINE_TTL = 45.0
+
+
+def _load_period_pipeline(
+    db: Session, canal: str, since_utc: datetime, limit: int
+):
+    """Load events from `since_utc`, filter by canal, build groups and
+    learned-agent map. Result is cached for `_PIPELINE_TTL` seconds keyed by
+    (canal, since_utc, limit) — concurrent requests for the same window
+    share one computation and one DB query.
+
+    Returns: (all_events, groups, phone_learned, client_agent_map, client_name_map)
+    """
+    # Round `since_utc` to the minute so requests within the same minute
+    # share a cache key (they would otherwise have microsecond differences).
+    rounded_since = since_utc.replace(second=0, microsecond=0).isoformat()
+    cache_key = ("pipeline", canal, rounded_since, limit)
+
+    def _compute():
+        evs = get_events_since(db, since=since_utc, limit=limit)
+        evs = _filter_events_by_channel(evs, canal)
+        cam = get_agent_mappings(db)
+        cnm = get_client_names(db)
+        groups, phone_learned = _group_events(evs, cam)
+        return (evs, groups, phone_learned, cam, cnm)
+
+    return _cache.cached(cache_key, _PIPELINE_TTL, _compute)
 
 
 def _extract_addressed_name(text: str) -> str:
@@ -1981,6 +2015,9 @@ async def upload_csv(request: Request, db: Session = Depends(get_db)):
             mappings[phone] = {"agent_name": agent, "client_name": client}
     count = replace_agent_mappings(db, mappings)
     set_setting(db, "gabarito_updated_at", datetime.now(BRASILIA).isoformat())
+    # Gabarito mudou → invalida o cache de pipeline para que a próxima
+    # request reconstrua os groups com o novo client_agent_map.
+    _cache.invalidate(None)
     return RedirectResponse(f"/dashboard/agentes?msg=ok&count={count}", status_code=302)
 
 
@@ -2202,10 +2239,10 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
     now_br = datetime.now(BRASILIA)
     today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
     today_start_utc = today_start.astimezone(timezone.utc)
-    all_events = get_events_since(db, since=today_start_utc, limit=20000)
-    filtered_events = _filter_events_by_channel(all_events, canal)
-    client_agent_map = get_agent_mappings(db)
-    client_name_map = get_client_names(db)
+    all_events, _cg, _cpl, client_agent_map, client_name_map = _load_period_pipeline(
+        db, canal, today_start_utc, 20000
+    )
+    filtered_events = all_events  # already filtered by canal in the cache
     acked_alerts = _get_acked_alerts(db)   # {phone_key: {agent, snippet, display_name, acked_at}}
     db.close()  # release connection before heavy processing
     groups, phone_learned = _group_events(filtered_events, client_agent_map)
@@ -2605,10 +2642,10 @@ def conv_search_api(request: Request, db: Session = Depends(get_db)):
     cutoff = (now_br - timedelta(days=30)).replace(hour=0, minute=0, second=0, microsecond=0)
     cutoff_utc = cutoff.astimezone(timezone.utc)
 
-    all_events = get_events_since(db, since=cutoff_utc, limit=30000)
-    filtered = _filter_events_by_channel(all_events, canal)
-    client_agent_map = get_agent_mappings(db)
-    client_name_map = get_client_names(db)
+    all_events, _cg, _cpl, client_agent_map, client_name_map = _load_period_pipeline(
+        db, canal, cutoff_utc, 30000
+    )
+    filtered = all_events  # already filtered by canal in the cache
     db.close()
 
     groups, phone_learned = _group_events(filtered, client_agent_map)
@@ -2725,12 +2762,13 @@ def conv_messages_api(request: Request, db: Session = Depends(get_db)):
     _conv_cutoff = (datetime.now(BRASILIA) - timedelta(days=30)).replace(
         hour=0, minute=0, second=0, microsecond=0
     ).astimezone(timezone.utc)
-    all_events = get_events_since(db, since=_conv_cutoff, limit=20000)
-    client_agent_map = get_agent_mappings(db)
+    all_events, _cg, _cpl, client_agent_map, _ = _load_period_pipeline(
+        db, canal, _conv_cutoff, 20000
+    )
     db.close()
-    filtered = _filter_events_by_channel(all_events, canal)
-    # Use all available events (not just today) so the full conversation history loads
-    groups, _ = _group_events(filtered, client_agent_map)
+    filtered = all_events  # already filtered by canal in the cache
+    # Use cached groups (already grouped from the same all_events / canal)
+    groups = _cg
     # Find the matching group — merge ALL sub-groups for the same phone
     # (avoids missing messages when _split_by_agent_prefix created multiple keys for one phone)
     real_target = _real_phone(client_key)
@@ -2892,10 +2930,9 @@ def agente_detalhe(request: Request, db: Session = Depends(get_db)):
     _det_since = (now_br - timedelta(days=30)).replace(
         hour=0, minute=0, second=0, microsecond=0
     ).astimezone(timezone.utc)
-    all_events = get_events_since(db, since=_det_since, limit=20000)
-    all_events = _filter_events_by_channel(all_events, canal)
-    client_agent_map = get_agent_mappings(db)
-    client_name_map = get_client_names(db)
+    all_events, _cg, _cpl, client_agent_map, client_name_map = _load_period_pipeline(
+        db, canal, _det_since, 20000
+    )
     db.close()  # release connection before heavy processing
 
     period_events = [ev for ev in all_events if ev.received_at and ev.received_at.astimezone(BRASILIA) >= period_start]
@@ -3048,10 +3085,9 @@ def dashboard_temas(request: Request, db: Session = Depends(get_db)):
     _temas_since = (datetime.now(BRASILIA) - timedelta(days=30)).replace(
         hour=0, minute=0, second=0, microsecond=0
     ).astimezone(timezone.utc)
-    all_events = get_events_since(db, since=_temas_since, limit=25000)
-    all_events = _filter_events_by_channel(all_events, canal)
-    client_agent_map = get_agent_mappings(db)
-    client_name_map = get_client_names(db)
+    all_events, _cg, _cpl, client_agent_map, client_name_map = _load_period_pipeline(
+        db, canal, _temas_since, 25000
+    )
     db.close()  # release connection before heavy processing
 
     now_br = datetime.now(BRASILIA)
@@ -3321,12 +3357,12 @@ def debug_agent_clients(request: Request, db: Session = Depends(get_db)):
     now_br = datetime.now(BRASILIA)
     today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
     _conv_today_since = today_start.astimezone(timezone.utc)
-    all_events = get_events_since(db, since=_conv_today_since, limit=15000)
-    all_events = _filter_events_by_channel(all_events, canal)
-    client_agent_map = get_agent_mappings(db)
-    client_name_map = get_client_names(db)
+    all_events, _cg, _cpl, client_agent_map, client_name_map = _load_period_pipeline(
+        db, canal, _conv_today_since, 15000
+    )
     today_events = [ev for ev in all_events if ev.received_at and ev.received_at.astimezone(BRASILIA) >= today_start]
-    groups, phone_learned = _group_events(today_events, client_agent_map)
+    # Since since=today_start_utc, today_events == all_events, so cached groups apply
+    groups, phone_learned = _cg, _cpl
     result = {}
     for client_num, evs in groups.items():
         ph = _real_phone(client_num)
@@ -3360,11 +3396,12 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
     now_br = datetime.now(BRASILIA)
     today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
     today_start_utc = today_start.astimezone(timezone.utc)
-    all_events = get_events_since(db, since=today_start_utc, limit=20000)
-    client_agent_map = get_agent_mappings(db)
+    all_events, _cg, _cpl, client_agent_map, _ = _load_period_pipeline(
+        db, canal, today_start_utc, 20000
+    )
     db.close()
-    filtered_events = _filter_events_by_channel(all_events, canal)
-    groups, phone_learned = _group_events(filtered_events, client_agent_map)
+    filtered_events = all_events  # already filtered by canal
+    groups, phone_learned = _cg, _cpl  # cached groups
     _cp = _real_phone(canal); groups = {k: v for k, v in groups.items() if _real_phone(k) != _cp}
 
     _alert_kws_al = ["absurdo", "vergonha", "ridiculo", "ridículo", "palhaçada",
@@ -3563,10 +3600,9 @@ def dashboard_agentes_export(request: Request, db: Session = Depends(get_db)):
             cutoff_end = today_start + timedelta(days=1)
 
     _export_since = cutoff.astimezone(timezone.utc)
-    all_events = get_events_since(db, since=_export_since, limit=25000)
-    all_events = _filter_events_by_channel(all_events, canal)
-    client_agent_map = get_agent_mappings(db)
-    client_name_map = get_client_names(db)
+    all_events, _cg, _cpl, client_agent_map, client_name_map = _load_period_pipeline(
+        db, canal, _export_since, 25000
+    )
     db.close()
 
     events = [ev for ev in all_events if ev.received_at and cutoff <= ev.received_at.astimezone(BRASILIA) < cutoff_end]
@@ -3676,9 +3712,10 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
             fim_raw = ""
 
     cutoff_utc = cutoff.astimezone(timezone.utc)
-    all_events = get_events_since(db, since=cutoff_utc, limit=30000)
-    all_events = _filter_events_by_channel(all_events, canal)
-    client_agent_map = get_agent_mappings(db)
+    # Cached: 3 concurrent F5s share one (DB query + group_events) computation
+    all_events, _cached_groups, _cached_phone_learned, client_agent_map, _ = (
+        _load_period_pipeline(db, canal, cutoff_utc, 30000)
+    )
     gabarito_ts_raw = get_setting(db, "gabarito_updated_at")  # fetch before closing session
     db.close()  # release connection before heavy processing
 
@@ -4724,12 +4761,11 @@ def dashboard_mensagens(request: Request, db: Session = Depends(get_db)):
     _msgs_since = (datetime.now(BRASILIA) - timedelta(days=7)).replace(
         hour=0, minute=0, second=0, microsecond=0
     ).astimezone(timezone.utc)
-    all_events = get_events_since(db, since=_msgs_since, limit=20000)
-    all_events = _filter_events_by_channel(all_events, canal)
-    client_agent_map = get_agent_mappings(db)
-    client_name_map = get_client_names(db)
+    all_events, _cg, _cpl, client_agent_map, client_name_map = _load_period_pipeline(
+        db, canal, _msgs_since, 20000
+    )
     db.close()  # release connection before heavy processing
-    groups, phone_learned = _group_events(all_events, client_agent_map)
+    groups, phone_learned = _cg, _cpl  # cached groups
     _cp = _real_phone(canal); groups = {k: v for k, v in groups.items() if _real_phone(k) != _cp}
 
     # For each conversation, find the first OUT message and check if client replied
@@ -4937,9 +4973,9 @@ def dashboard_evolucao(request: Request, db: Session = Depends(get_db)):
     _evolucao_since = (datetime.now(BRASILIA) - timedelta(days=91)).replace(
         hour=0, minute=0, second=0, microsecond=0
     ).astimezone(timezone.utc)
-    all_events = get_events_since(db, since=_evolucao_since, limit=30000)
-    all_events = _filter_events_by_channel(all_events, canal)
-    client_agent_map = get_agent_mappings(db)
+    all_events, _cg, _cpl, client_agent_map, _ = _load_period_pipeline(
+        db, canal, _evolucao_since, 30000
+    )
     db.close()  # release connection before heavy processing
 
     now_br = datetime.now(BRASILIA)

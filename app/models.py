@@ -1,7 +1,7 @@
 import uuid as uuid_module
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, JSON, String, Text, Index
+from sqlalchemy import Column, Date, DateTime, Integer, JSON, String, Text, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.types import CHAR, TypeDecorator
 
@@ -78,5 +78,36 @@ class AppSetting(Base):
 
     key = Column(String(100), primary_key=True)
     value = Column(Text, nullable=True)
+
+
+class DailyAgentStat(Base):
+    """Pre-aggregated per-day, per-canal, per-agent stats.
+
+    Populated by app.services.agent_stats.refresh_day(). Read by the heavy
+    /agentes endpoint instead of recomputing from webhook_events for past
+    days. Today's row is refreshed on every render; past days are computed
+    once and reused.
+    """
+    __tablename__ = "daily_agent_stats"
+
+    date = Column(Date, primary_key=True)
+    canal = Column(String(32), primary_key=True)
+    agent_name = Column(String(255), primary_key=True)
+
+    msgs_out = Column(Integer, nullable=False, default=0)
+    msgs_in = Column(Integer, nullable=False, default=0)
+    clients_count = Column(Integer, nullable=False, default=0)
+    waiting_count = Column(Integer, nullable=False, default=0)
+
+    # Last refresh — used to decide if we need to recompute
+    refreshed_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_daily_agent_stats_date_canal", "date", "canal"),
+    )
 
 
