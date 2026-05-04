@@ -3717,7 +3717,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
             date_clients_period[_grp_ag_d][_dk_d].add(_grp_ph_d)
     # ──────────────────────────────────────────────────────────────────────────
 
-    agent_stats: dict[str, dict] = defaultdict(lambda: {"out": 0, "in": 0, "clients": set(), "days_out": defaultdict(int), "days_in": defaultdict(int), "days_clients_out": defaultdict(set), "days_clients_in": defaultdict(set)})
+    agent_stats: dict[str, dict] = defaultdict(lambda: {"out": 0, "in": 0, "clients": set(), "waiting": set(), "days_out": defaultdict(int), "days_in": defaultdict(int), "days_clients_out": defaultdict(set), "days_clients_in": defaultdict(set)})
     hourly_msgs: dict[str, dict[int, int]] = defaultdict(lambda: defaultdict(int))
     hourly_clients: dict[str, dict[int, set]] = defaultdict(lambda: defaultdict(set))
     _last_event_time: dict[str, datetime] = {}  # most recent OUT ts per agent
@@ -3727,7 +3727,9 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         agent = phone_learned.get(client_num) or client_agent_map.get(_ph) or phone_learned.get(_ph) or "Sem atendente"
         if not _user_sees(access, agent):
             continue
-        for ev in sorted(evs, key=lambda e: e.received_at or datetime.min.replace(tzinfo=timezone.utc)):
+        _sorted_evs = sorted(evs, key=lambda e: e.received_at or datetime.min.replace(tzinfo=timezone.utc))
+        _last_direction = ""
+        for ev in _sorted_evs:
             p = ev.raw_payload or {}
             direction = _extract_direction(p)
             ts = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
@@ -3744,12 +3746,17 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
                 agent_stats[agent]["days_clients_out"][day_key].add(_ph)
                 if HOUR_START <= hour <= HOUR_END:
                     hourly_msgs[agent][hour] += 1
+                _last_direction = "OUT"
             elif direction == "IN":
                 agent_stats[agent]["in"] += 1
                 agent_stats[agent]["days_in"][day_key] += 1
                 agent_stats[agent]["days_clients_in"][day_key].add(_ph)
                 # IN messages are NOT counted in hourly_msgs (only agent-sent messages)
+                _last_direction = "IN"
         agent_stats[agent]["clients"].add(_ph)
+        # Client is "waiting for reply" if the last message in this conversation was from them
+        if _last_direction == "IN":
+            agent_stats[agent]["waiting"].add(_ph)
 
     # ── Hourly unique-clients heatmap ─────────────────────────────────────────
     # Built from groups (reliable client ↔ phone association via conversationId /
@@ -3950,6 +3957,14 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         mx = max(stats["out"], stats["in"]) or 1
         in_pct = int((stats["in"] / (stats["out"] + stats["in"])) * 50) if total else 0
         out_pct = int((stats["out"] / (stats["out"] + stats["in"])) * 50) if total else 0
+        n_waiting = len(stats.get("waiting", set()))
+        _waiting_html = (
+            f'<div style="display:flex;align-items:center;gap:5px;background:#1a0a0a;border:1px solid #5a1a1a;'
+            f'border-radius:6px;padding:3px 10px;margin-top:4px">'
+            f'<span style="font-size:13px">💬</span>'
+            f'<span style="font-size:11px;font-weight:700;color:#fca5a5">{n_waiting} aguardando resposta</span>'
+            f'</div>'
+        ) if n_waiting else ""
         return f"""<div style="background:#111a2e;border:1px solid #1a2540;border-radius:10px;padding:16px 18px;display:flex;flex-direction:column;gap:12px;border-left:3px solid {seg_col}">
   <div style="display:flex;align-items:center;gap:11px">
     <div style="position:relative;flex-shrink:0">
@@ -3969,6 +3984,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
     </div>
     <span style="color:#ef6b73;min-width:28px;font-weight:600">↑{stats['out']}</span>
   </div>
+  {_waiting_html}
   <div style="display:flex;justify-content:space-between;font-size:11px;padding-top:8px;border-top:1px solid #141e35">
     <div style="display:flex;flex-direction:column">
       <span style="color:#5a6a8a;font-size:9.5px;letter-spacing:1px;font-weight:700">CLIENTES</span>
@@ -4264,7 +4280,10 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         )
 
     # ── Build segment panel (with worked-today / no-activity split) ───────────
-    _SEG_ORDER = ["Alta Renda", "On Demand", "Externo"]
+    # Include any extra segments found in data (agents not in Alta Renda/On Demand/Externo)
+    _SEG_ORDER_BASE = ["Alta Renda", "On Demand", "Externo"]
+    _extra_segs = sorted(s for s in set(list(_offline_by_seg.keys()) + list(_idle_by_seg.keys())) if s not in _SEG_ORDER_BASE)
+    _SEG_ORDER = _SEG_ORDER_BASE + _extra_segs
 
     def _seg_panel_offline(seg: str, agents_list: list) -> str:
         seg_col = SEGMENT_COLORS.get(seg, "#3a4a6a")
