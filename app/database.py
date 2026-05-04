@@ -12,8 +12,10 @@ def _build_engine():
         kwargs["connect_args"] = {"check_same_thread": False}
     else:
         kwargs["pool_size"] = 5
-        kwargs["max_overflow"] = 10
+        kwargs["max_overflow"] = 5
         kwargs["pool_pre_ping"] = True
+        kwargs["pool_timeout"] = 10
+        kwargs["pool_recycle"] = 300
 
     return create_engine(url, **kwargs)
 

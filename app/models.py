@@ -71,3 +71,12 @@ class AgentMapping(Base):
     phone = Column(String(32), primary_key=True)
     agent_name = Column(String(255), nullable=False)
     client_name = Column(String(255), nullable=True)
+
+
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+
+    key = Column(String(100), primary_key=True)
+    value = Column(Text, nullable=True)
+
+

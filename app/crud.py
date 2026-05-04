@@ -3,7 +3,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from app.models import AgentMapping, WebhookEvent
+from app.models import AgentMapping, AppSetting, WebhookEvent
 
 
 def create_event(
@@ -42,6 +42,31 @@ def get_events(
     return items, total
 
 
+def get_events_only(
+    db: Session, *, limit: int
+) -> list[WebhookEvent]:
+    """Fetch events without the extra COUNT(*) query. Use when total is not needed."""
+    return (
+        db.query(WebhookEvent)
+        .order_by(WebhookEvent.received_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+
+def get_events_since(
+    db: Session, *, since, limit: int = 20000
+) -> list[WebhookEvent]:
+    """Fetch events received on or after `since` (datetime). Filters at SQL level."""
+    return (
+        db.query(WebhookEvent)
+        .filter(WebhookEvent.received_at >= since)
+        .order_by(WebhookEvent.received_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+
 def get_event(db: Session, event_id: UUID) -> WebhookEvent | None:
     return db.query(WebhookEvent).filter(WebhookEvent.id == str(event_id)).first()
 
@@ -59,12 +84,40 @@ def get_client_names(db: Session) -> dict[str, str]:
 
 
 def replace_agent_mappings(db: Session, mappings: dict[str, dict[str, str]]) -> int:
-    db.query(AgentMapping).delete()
+    """Merge new mappings: update existing phones, add new ones, keep old ones intact."""
+    updated = 0
+    added = 0
     for phone, data in mappings.items():
-        db.add(AgentMapping(
-            phone=phone,
-            agent_name=data["agent_name"],
-            client_name=data.get("client_name", ""),
-        ))
+        existing = db.query(AgentMapping).filter(AgentMapping.phone == phone).first()
+        if existing:
+            existing.agent_name = data["agent_name"]
+            if data.get("client_name"):
+                existing.client_name = data["client_name"]
+            updated += 1
+        else:
+            db.add(AgentMapping(
+                phone=phone,
+                agent_name=data["agent_name"],
+                client_name=data.get("client_name", ""),
+            ))
+            added += 1
     db.commit()
-    return len(mappings)
+    return updated + added
+
+
+# --- App Settings ---
+
+def get_setting(db: Session, key: str) -> str | None:
+    row = db.query(AppSetting).filter(AppSetting.key == key).first()
+    return row.value if row else None
+
+
+def set_setting(db: Session, key: str, value: str) -> None:
+    row = db.query(AppSetting).filter(AppSetting.key == key).first()
+    if row:
+        row.value = value
+    else:
+        db.add(AppSetting(key=key, value=value))
+    db.commit()
+
+
