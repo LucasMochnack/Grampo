@@ -2883,17 +2883,20 @@ def agente_detalhe(request: Request, db: Session = Depends(get_db)):
     if not _user_sees(access, agent_name):
         return HTMLResponse("<h3 style='color:#e8ecf1;font-family:sans-serif;padding:40px'>Sem permissão para visualizar este agente.</h3>", status_code=403)
 
-    all_events = get_events_only(db, limit=50000)
-    all_events = _filter_events_by_channel(all_events, canal)
-    client_agent_map = get_agent_mappings(db)
-    client_name_map = get_client_names(db)
-    db.close()  # release connection before heavy processing
-
     now_br = datetime.now(BRASILIA)
     if dias == 1:
         period_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
     else:
         period_start = (now_br - timedelta(days=dias - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    _det_since = (now_br - timedelta(days=30)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(timezone.utc)
+    all_events = get_events_since(db, since=_det_since, limit=20000)
+    all_events = _filter_events_by_channel(all_events, canal)
+    client_agent_map = get_agent_mappings(db)
+    client_name_map = get_client_names(db)
+    db.close()  # release connection before heavy processing
 
     period_events = [ev for ev in all_events if ev.received_at and ev.received_at.astimezone(BRASILIA) >= period_start]
 
@@ -3042,7 +3045,10 @@ def dashboard_temas(request: Request, db: Session = Depends(get_db)):
     _dias_raw = request.query_params.get("dias", "7")
     dias = int(_dias_raw) if _dias_raw.isdigit() and int(_dias_raw) in (1, 7, 15, 30) else 7
 
-    all_events = get_events_only(db, limit=50000)
+    _temas_since = (datetime.now(BRASILIA) - timedelta(days=30)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(timezone.utc)
+    all_events = get_events_since(db, since=_temas_since, limit=25000)
     all_events = _filter_events_by_channel(all_events, canal)
     client_agent_map = get_agent_mappings(db)
     client_name_map = get_client_names(db)
@@ -3312,12 +3318,13 @@ def debug_agent_clients(request: Request, db: Session = Depends(get_db)):
     import re as _re2
     canal = request.query_params.get("canal", "5519997733651")
     agent_filter = request.query_params.get("agent", "").lower()
-    all_events = get_events_only(db, limit=50000)
+    now_br = datetime.now(BRASILIA)
+    today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
+    _conv_today_since = today_start.astimezone(timezone.utc)
+    all_events = get_events_since(db, since=_conv_today_since, limit=15000)
     all_events = _filter_events_by_channel(all_events, canal)
     client_agent_map = get_agent_mappings(db)
     client_name_map = get_client_names(db)
-    now_br = datetime.now(BRASILIA)
-    today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
     today_events = [ev for ev in all_events if ev.received_at and ev.received_at.astimezone(BRASILIA) >= today_start]
     groups, phone_learned = _group_events(today_events, client_agent_map)
     result = {}
@@ -3555,7 +3562,8 @@ def dashboard_agentes_export(request: Request, db: Session = Depends(get_db)):
             cutoff = today_start
             cutoff_end = today_start + timedelta(days=1)
 
-    all_events = get_events_only(db, limit=50000)
+    _export_since = cutoff.astimezone(timezone.utc)
+    all_events = get_events_since(db, since=_export_since, limit=25000)
     all_events = _filter_events_by_channel(all_events, canal)
     client_agent_map = get_agent_mappings(db)
     client_name_map = get_client_names(db)
@@ -4713,7 +4721,10 @@ def dashboard_mensagens(request: Request, db: Session = Depends(get_db)):
         return _auth_redirect()
 
     canal = request.query_params.get("canal", "5519997733651")
-    all_events = get_events_only(db, limit=50000)
+    _msgs_since = (datetime.now(BRASILIA) - timedelta(days=7)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(timezone.utc)
+    all_events = get_events_since(db, since=_msgs_since, limit=20000)
     all_events = _filter_events_by_channel(all_events, canal)
     client_agent_map = get_agent_mappings(db)
     client_name_map = get_client_names(db)
@@ -4923,7 +4934,10 @@ def dashboard_evolucao(request: Request, db: Session = Depends(get_db)):
 
     canal = request.query_params.get("canal", "5519997733651")
 
-    all_events = get_events_only(db, limit=50000)
+    _evolucao_since = (datetime.now(BRASILIA) - timedelta(days=91)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(timezone.utc)
+    all_events = get_events_since(db, since=_evolucao_since, limit=30000)
     all_events = _filter_events_by_channel(all_events, canal)
     client_agent_map = get_agent_mappings(db)
     db.close()  # release connection before heavy processing
