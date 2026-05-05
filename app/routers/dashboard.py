@@ -4108,8 +4108,27 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         if known_agent not in agents_in_stats:
             sorted_agents.append((known_agent, {"out": 0, "in": 0, "clients": set(), "days_out": defaultdict(int), "days_in": defaultdict(int)}))
 
+    # Segment order for heatmap grouping
+    _HM_SEG_ORDER = ["Alta Renda", "On Demand", "Externo"]
+
+    # Re-sort agents for heatmap: group by segment (fixed order), then by total desc within each group
+    _hm_by_seg: dict = defaultdict(list)
+    for _ag, _st in sorted_agents:
+        if _ag == "Sem atendente":
+            continue
+        _seg = _get_segment(_ag) or "Outros"
+        _tot = _st.get("out", 0) + _st.get("in", 0)
+        _hm_by_seg[_seg].append((_ag, _st, _tot))
+    _hm_sorted_agents: list = []
+    for _s in _HM_SEG_ORDER:
+        _grp = sorted(_hm_by_seg.pop(_s, []), key=lambda x: -x[2])
+        _hm_sorted_agents.extend((_ag, _st) for _ag, _st, _ in _grp)
+    for _s in sorted(_hm_by_seg):
+        _grp = sorted(_hm_by_seg[_s], key=lambda x: -x[2])
+        _hm_sorted_agents.extend((_ag, _st) for _ag, _st, _ in _grp)
+
     def _build_heatmap_rows(data_source, client_mode=False):
-        """Build heatmap rows. data_source: hourly_msgs or hourly_clients"""
+        """Build heatmap rows grouped by segment. data_source: hourly_msgs or hourly_clients"""
         rows = ""
         mx = 1
         for agent_name in data_source:
@@ -4117,10 +4136,21 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
                 val = data_source[agent_name].get(h, 0) if not client_mode else len(data_source[agent_name].get(h, set()))
                 if val > mx:
                     mx = val
-        for agent_name, stats in sorted_agents:
-            if agent_name == "Sem atendente":
-                continue
+        n_cols = len(hours) + 1  # hour columns + TOTAL column
+        cur_seg = None
+        for agent_name, stats in _hm_sorted_agents:
             seg = _get_segment(agent_name)
+            # Insert segment header row when segment changes
+            if seg != cur_seg:
+                cur_seg = seg
+                seg_color_hdr = SEGMENT_COLORS.get(seg, "#1a2540")
+                rows += (
+                    f'<tr style="background:#0d1630">'
+                    f'<td colspan="{n_cols + 1}" style="padding:5px 12px;font-size:10px;font-weight:800;'
+                    f'color:{seg_color_hdr};letter-spacing:1.5px;border-top:2px solid {seg_color_hdr};'
+                    f'border-bottom:1px solid #1a2540;text-transform:uppercase">'
+                    f'▸ {seg}</td></tr>'
+                )
             seg_color = SEGMENT_COLORS.get(seg, "#1a2540")
             dot = f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{seg_color};margin-right:6px;vertical-align:middle"></span>' if seg else ''
             cells = ""
@@ -4182,18 +4212,43 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         txt = "#fff" if intensity > 0.35 else "#7dcea0"
         return f'<td style="text-align:center;background:{bg};color:{txt};font-weight:700;font-size:13px;padding:8px 2px;border:1px solid #0f1629;{border_extra}">{v}</td>'
 
-    # Agent list: known agents filtered by segment(s), sorted by total
-    _dh_agents = list(AGENT_SEGMENT.keys())
+    # Agent list: known agents filtered by segment(s), grouped by segment then sorted by total desc
+    _dh_agents_raw = list(AGENT_SEGMENT.keys())
     if segmentos:
-        _dh_agents = [a for a in _dh_agents if AGENT_SEGMENT.get(a) in segmentos]
+        _dh_agents_raw = [a for a in _dh_agents_raw if AGENT_SEGMENT.get(a) in segmentos]
     for _ag in date_clients_period:
-        if _ag not in _dh_agents and (not segmentos or _get_segment(_ag) in segmentos):
-            _dh_agents.append(_ag)
-    _dh_agents.sort(key=lambda a: -sum(len(s) for s in date_clients_period.get(a, {}).values()))
+        if _ag not in _dh_agents_raw and (not segmentos or _get_segment(_ag) in segmentos):
+            _dh_agents_raw.append(_ag)
+    # Group by segment, sort within each group by total clients desc
+    _dh_by_seg: dict = defaultdict(list)
+    for _ag in _dh_agents_raw:
+        _seg = _get_segment(_ag) or "Outros"
+        _tot = sum(len(s) for s in date_clients_period.get(_ag, {}).values())
+        _dh_by_seg[_seg].append((_ag, _tot))
+    _dh_agents = []
+    for _s in _HM_SEG_ORDER:
+        _grp = sorted(_dh_by_seg.pop(_s, []), key=lambda x: -x[1])
+        _dh_agents.extend(a for a, _ in _grp)
+    for _s in sorted(_dh_by_seg):
+        _grp = sorted(_dh_by_seg[_s], key=lambda x: -x[1])
+        _dh_agents.extend(a for a, _ in _grp)
 
+    n_dh_cols = len(period_dates) + 1  # date columns + TOTAL
     weekday_heatmap_rows = ""
+    _dh_cur_seg = None
     for _ag in _dh_agents:
         seg = _get_segment(_ag)
+        # Segment header row when segment changes
+        if seg != _dh_cur_seg:
+            _dh_cur_seg = seg
+            _dh_seg_color_hdr = SEGMENT_COLORS.get(seg, "#1a2540")
+            weekday_heatmap_rows += (
+                f'<tr style="background:#0d1630">'
+                f'<td colspan="{n_dh_cols + 1}" style="padding:5px 12px;font-size:10px;font-weight:800;'
+                f'color:{_dh_seg_color_hdr};letter-spacing:1.5px;border-top:2px solid {_dh_seg_color_hdr};'
+                f'border-bottom:1px solid #1a2540;text-transform:uppercase">'
+                f'▸ {seg}</td></tr>'
+            )
         seg_color = SEGMENT_COLORS.get(seg, "#1a2540")
         dot = f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{seg_color};margin-right:6px;vertical-align:middle"></span>' if seg else ''
         cells = ""
