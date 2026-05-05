@@ -4646,26 +4646,59 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         document.getElementById('hm-btn-' + show).className = 'active';
         document.getElementById('hm-btn-' + hide).className = '';
     }}
-    function toggleFullscreen(id) {{
+    function _applyFullscreen(id) {{
         var el = document.getElementById(id);
-        var isFs = el.classList.toggle('fullscreen');
-        var existing = el.querySelector('.fs-close');
-        if (isFs) {{
+        if (!el) return;
+        el.classList.add('fullscreen');
+        if (!el.querySelector('.fs-close')) {{
             var btn = document.createElement('button');
             btn.className = 'fs-close';
             btn.textContent = 'Fechar (Esc)';
             btn.onclick = function() {{ toggleFullscreen(id); }};
             el.appendChild(btn);
-        }} else if (existing) {{
-            existing.remove();
+        }}
+        el.scrollIntoView({{behavior:'smooth', block:'start'}});
+    }}
+    function toggleFullscreen(id) {{
+        var el = document.getElementById(id);
+        var isFs = el.classList.toggle('fullscreen');
+        var existing = el.querySelector('.fs-close');
+        if (isFs) {{
+            // Persist fullscreen state in URL hash so meta-refresh restores it
+            history.replaceState(null, '', window.location.pathname + window.location.search + '#fs-' + id);
+            var btn = document.createElement('button');
+            btn.className = 'fs-close';
+            btn.textContent = 'Fechar (Esc)';
+            btn.onclick = function() {{ toggleFullscreen(id); }};
+            el.appendChild(btn);
+        }} else {{
+            // Clear hash when exiting fullscreen
+            history.replaceState(null, '', window.location.pathname + window.location.search);
+            if (existing) existing.remove();
         }}
     }}
     document.addEventListener('keydown', function(e) {{
         if (e.key === 'Escape') {{
             var fs = document.querySelector('.fullscreen');
-            if (fs) {{ fs.classList.remove('fullscreen'); var c = fs.querySelector('.fs-close'); if(c) c.remove(); }}
+            if (fs) {{
+                fs.classList.remove('fullscreen');
+                var c = fs.querySelector('.fs-close'); if(c) c.remove();
+                history.replaceState(null, '', window.location.pathname + window.location.search);
+            }}
         }}
     }});
+    // Restore fullscreen state from URL hash after meta-refresh
+    (function() {{
+        var hash = window.location.hash;
+        if (hash && hash.indexOf('fs-') === 1) {{
+            var fsId = hash.slice(4);
+            window.addEventListener('DOMContentLoaded', function() {{ _applyFullscreen(fsId); }});
+            // Fallback if DOMContentLoaded already fired
+            if (document.readyState === 'complete' || document.readyState === 'interactive') {{
+                _applyFullscreen(fsId);
+            }}
+        }}
+    }})();
     </script>
     </body></html>""")
 
