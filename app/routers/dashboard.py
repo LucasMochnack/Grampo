@@ -4646,6 +4646,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         document.getElementById('hm-btn-' + show).className = 'active';
         document.getElementById('hm-btn-' + hide).className = '';
     }}
+    var _LS_KEY = 'grampo_hm_fs';
     function _applyFullscreen(id) {{
         var el = document.getElementById(id);
         if (!el) return;
@@ -4657,23 +4658,22 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
             btn.onclick = function() {{ toggleFullscreen(id); }};
             el.appendChild(btn);
         }}
-        el.scrollIntoView({{behavior:'smooth', block:'start'}});
+        window.scrollTo(0, 0);
     }}
     function toggleFullscreen(id) {{
         var el = document.getElementById(id);
         var isFs = el.classList.toggle('fullscreen');
         var existing = el.querySelector('.fs-close');
         if (isFs) {{
-            // Persist fullscreen state in URL hash so meta-refresh restores it
-            history.replaceState(null, '', window.location.pathname + window.location.search + '#fs-' + id);
+            try {{ localStorage.setItem(_LS_KEY, id); }} catch(e) {{}}
             var btn = document.createElement('button');
             btn.className = 'fs-close';
             btn.textContent = 'Fechar (Esc)';
             btn.onclick = function() {{ toggleFullscreen(id); }};
             el.appendChild(btn);
+            window.scrollTo(0, 0);
         }} else {{
-            // Clear hash when exiting fullscreen
-            history.replaceState(null, '', window.location.pathname + window.location.search);
+            try {{ localStorage.removeItem(_LS_KEY); }} catch(e) {{}}
             if (existing) existing.remove();
         }}
     }}
@@ -4683,21 +4683,15 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
             if (fs) {{
                 fs.classList.remove('fullscreen');
                 var c = fs.querySelector('.fs-close'); if(c) c.remove();
-                history.replaceState(null, '', window.location.pathname + window.location.search);
+                try {{ localStorage.removeItem(_LS_KEY); }} catch(e) {{}}
             }}
         }}
     }});
-    // Restore fullscreen state from URL hash after meta-refresh
+    // Restore fullscreen state from localStorage after meta-refresh
     (function() {{
-        var hash = window.location.hash;
-        if (hash && hash.indexOf('fs-') === 1) {{
-            var fsId = hash.slice(4);
-            window.addEventListener('DOMContentLoaded', function() {{ _applyFullscreen(fsId); }});
-            // Fallback if DOMContentLoaded already fired
-            if (document.readyState === 'complete' || document.readyState === 'interactive') {{
-                _applyFullscreen(fsId);
-            }}
-        }}
+        var fsId;
+        try {{ fsId = localStorage.getItem(_LS_KEY); }} catch(e) {{}}
+        if (fsId) {{ _applyFullscreen(fsId); }}
     }})();
     </script>
     </body></html>""")
