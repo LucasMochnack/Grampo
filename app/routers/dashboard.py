@@ -4117,7 +4117,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         if _ag == "Sem atendente":
             continue
         _seg = _get_segment(_ag) or "Outros"
-        _tot = _st.get("out", 0) + _st.get("in", 0)
+        _tot = len(_st.get("clients", set()))  # sort by unique clients (matches Clientes únicos column)
         _hm_by_seg[_seg].append((_ag, _st, _tot))
     _hm_sorted_agents: list = []
     for _s in _HM_SEG_ORDER:
