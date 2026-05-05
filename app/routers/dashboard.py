@@ -3576,7 +3576,13 @@ def dashboard_agentes_export(request: Request, db: Session = Depends(get_db)):
         periodo = "hoje"
     inicio_raw = request.query_params.get("inicio", "")
     fim_raw = request.query_params.get("fim", "")
-    segmento = request.query_params.get("segmento", "")
+    # Multi-select segments (new param `segmentos` as comma-separated list).
+    # Backward compatible with the legacy single-value `segmento` param.
+    _segs_raw = request.query_params.get("segmentos", "")
+    segmentos: set[str] = {s.strip() for s in _segs_raw.split(",") if s.strip()} if _segs_raw else set()
+    _old_seg = request.query_params.get("segmento", "")
+    if _old_seg:
+        segmentos.add(_old_seg)
     canal = request.query_params.get("canal", "5519997733651")
 
     now_br = datetime.now(BRASILIA)
@@ -3633,7 +3639,7 @@ def dashboard_agentes_export(request: Request, db: Session = Depends(get_db)):
             continue
         if not _user_sees(access, _grp_ag):
             continue
-        if segmento and _get_segment(_grp_ag) != segmento:
+        if segmentos and _get_segment(_grp_ag) not in segmentos:
             continue
         for _ev in sorted(_grp_evs, key=lambda e: e.received_at or datetime.min.replace(tzinfo=timezone.utc)):
             if not _ev.received_at:
@@ -3683,7 +3689,13 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         periodo = "hoje"
     inicio_raw = request.query_params.get("inicio", "")
     fim_raw = request.query_params.get("fim", "")
-    segmento = request.query_params.get("segmento", "")
+    # Multi-select segments (new param `segmentos` as comma-separated list).
+    # Backward compatible with the legacy single-value `segmento` param.
+    _segs_raw = request.query_params.get("segmentos", "")
+    segmentos: set[str] = {s.strip() for s in _segs_raw.split(",") if s.strip()} if _segs_raw else set()
+    _old_seg = request.query_params.get("segmento", "")
+    if _old_seg:
+        segmentos.add(_old_seg)
     canal = request.query_params.get("canal", "5519997733651")
     msg = request.query_params.get("msg", "")
     count = request.query_params.get("count", "")
@@ -3839,9 +3851,9 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
 
     sorted_agents = sorted(agent_stats.items(), key=lambda x: x[1]["out"] + x[1]["in"], reverse=True)
 
-    # Filter by segment if selected
-    if segmento:
-        sorted_agents = [(a, s) for a, s in sorted_agents if _get_segment(a) == segmento]
+    # Filter by segment(s) if any selected
+    if segmentos:
+        sorted_agents = [(a, s) for a, s in sorted_agents if _get_segment(a) in segmentos]
 
     # Ranking
     ranking_html = ""
@@ -4064,7 +4076,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
 
     # KPI counts — ALWAYS today, from ALL known agents (independent of period filter)
     _seg_kpi = [a for a in AGENT_SEGMENT
-                if (not segmento or AGENT_SEGMENT.get(a) == segmento)
+                if (not segmentos or AGENT_SEGMENT.get(a) in segmentos)
                 and _user_sees(access, a)]
     n_online = sum(1 for a in _seg_kpi if _ag_status(a) == "online")
     n_idle   = sum(1 for a in _seg_kpi if _ag_status(a) == "idle")
@@ -4075,8 +4087,8 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
     hour_headers = "".join(f'<th style="text-align:center;min-width:44px;font-size:10px;padding:6px 2px">{h:02d}h</th>' for h in hours)
     hour_headers += '<th style="text-align:center;min-width:50px;font-size:10px;padding:6px 4px;color:#0fa968">TOTAL</th>'
 
-    # Build rows for ALL known agents (from AGENT_SEGMENT), filtered by segment
-    all_known_agents = [a for a in AGENT_SEGMENT if not segmento or AGENT_SEGMENT[a] == segmento]
+    # Build rows for ALL known agents (from AGENT_SEGMENT), filtered by segment(s)
+    all_known_agents = [a for a in AGENT_SEGMENT if not segmentos or AGENT_SEGMENT[a] in segmentos]
     agents_in_stats = {a for a, _ in sorted_agents}
     for known_agent in all_known_agents:
         if known_agent not in agents_in_stats:
@@ -4156,12 +4168,12 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         txt = "#fff" if intensity > 0.35 else "#7dcea0"
         return f'<td style="text-align:center;background:{bg};color:{txt};font-weight:700;font-size:13px;padding:8px 2px;border:1px solid #0f1629;{border_extra}">{v}</td>'
 
-    # Agent list: known agents filtered by segment, sorted by total
+    # Agent list: known agents filtered by segment(s), sorted by total
     _dh_agents = list(AGENT_SEGMENT.keys())
-    if segmento:
-        _dh_agents = [a for a in _dh_agents if AGENT_SEGMENT.get(a) == segmento]
+    if segmentos:
+        _dh_agents = [a for a in _dh_agents if AGENT_SEGMENT.get(a) in segmentos]
     for _ag in date_clients_period:
-        if _ag not in _dh_agents and (not segmento or _get_segment(_ag) == segmento):
+        if _ag not in _dh_agents and (not segmentos or _get_segment(_ag) in segmentos):
             _dh_agents.append(_ag)
     _dh_agents.sort(key=lambda a: -sum(len(s) for s in date_clients_period.get(a, {}).values()))
 
@@ -4200,7 +4212,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
 
     # ── Unified period filter (Hoje / 7 dias / Personalizado) ────────────────
     canal_qs = f"&canal={canal}"  # always include so explicit "todos" (canal="") is preserved
-    seg_qs = f"&segmento={segmento}" if segmento else ""
+    seg_qs = f"&segmentos={','.join(sorted(segmentos))}" if segmentos else ""
 
     def _periodo_link(p: str) -> str:
         return f"/dashboard/agentes?periodo={p}{canal_qs}{seg_qs}"
@@ -4242,21 +4254,35 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         }}
         </script>"""
 
-    # Segment filter buttons (preserves periodo + canal)
+    # Segment filter buttons — multi-select. Each pill toggles its segment in
+    # or out of the URL list `segmentos=A,B,C`. "Todos" clears the list.
+    # Empty list = no filter (= all segments).
     _periodo_qs = f"&periodo={periodo}"
     if periodo == "custom" and inicio_raw and fim_raw:
         _periodo_qs += f"&inicio={inicio_raw}&fim={fim_raw}"
-    segs = [("", "Todos"), ("Alta Renda", "Alta Renda"), ("Externo", "Externo"), ("On Demand", "On Demand")]
+    _seg_base = f"/dashboard/agentes?{_periodo_qs.lstrip('&')}{canal_qs}"
     seg_filter_html = '<div class="period-btns" style="margin-bottom:16px;flex-wrap:wrap">'
-    for val, label in segs:
-        active = "active" if segmento == val else ""
-        seg_link = f"/dashboard/agentes?{_periodo_qs.lstrip('&')}{canal_qs}"
-        if val:
-            seg_link += f"&segmento={val}"
+    # "Todos" pill — clears all selections
+    todos_active = "active" if not segmentos else ""
+    seg_filter_html += f'<a href="{_seg_base}" class="{todos_active}">Todos</a>'
+    # Per-segment pills — clicking toggles that segment in the URL list
+    for val in ["Alta Renda", "Externo", "On Demand"]:
+        is_selected = val in segmentos
+        # Build the next state if this pill is clicked
+        next_set = set(segmentos)
+        if is_selected:
+            next_set.discard(val)
+        else:
+            next_set.add(val)
+        if next_set:
+            seg_link = f"{_seg_base}&segmentos={','.join(sorted(next_set))}"
+        else:
+            seg_link = _seg_base
+        active = "active" if is_selected else ""
         color_style = ""
-        if val and val in SEGMENT_COLORS and segmento != val:
+        if val in SEGMENT_COLORS and not is_selected:
             color_style = f'style="border-left:3px solid {SEGMENT_COLORS[val]}"'
-        seg_filter_html += f'<a href="{seg_link}" class="{active}" {color_style}>{label}</a>'
+        seg_filter_html += f'<a href="{seg_link}" class="{active}" {color_style}>{val}</a>'
     seg_filter_html += '</div>'
 
     # Upload feedback
