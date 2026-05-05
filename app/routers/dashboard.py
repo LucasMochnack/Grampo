@@ -803,10 +803,24 @@ def _extract_agent_from_payload(payload: dict) -> str:
 
         if full_text:
             full_lower = full_text.lower()
-            # Look for "Sou X" / "me chamo X" / "meu nome é X" patterns
-            for pat in [r'sou\s+([A-ZÁÉÍÓÚÃÕÂÊÎÔÛÇa-záéíóúãõâêîôûç]+(?:\s+[A-ZÁÉÍÓÚÃÕÂÊÎÔÛÇa-záéíóúãõâêîôûç]+){0,3})',
-                        r'me chamo\s+([A-ZÁÉÍÓÚÃÕÂÊÎÔÛÇa-záéíóúãõâêîôûç]+(?:\s+[A-ZÁÉÍÓÚÃÕÂÊÎÔÛÇa-záéíóúãõâêîôûç]+){0,3})',
-                        r'meu nome [eé]\s+([A-ZÁÉÍÓÚÃÕÂÊÎÔÛÇa-záéíóúãõâêîôûç]+(?:\s+[A-ZÁÉÍÓÚÃÕÂÊÎÔÛÇa-záéíóúãõâêîôûç]+){0,3})']:
+            # Look for self-introduction patterns:
+            #   "Sou X" / "me chamo X" / "meu nome é X"
+            #   "aqui é o/a X" / "aqui quem fala é o/a X" / "é o/a X falando"
+            #   "quem fala é o/a X" / "fala o/a X aqui"
+            # All are common Brazilian Portuguese phrasings agents use to
+            # introduce themselves at the start of a conversation.
+            _name = r'([A-ZÁÉÍÓÚÃÕÂÊÎÔÛÇa-záéíóúãõâêîôûç]+(?:\s+[A-ZÁÉÍÓÚÃÕÂÊÎÔÛÇa-záéíóúãõâêîôûç]+){0,3})'
+            for pat in [
+                r'sou\s+(?:o\s+|a\s+)?' + _name,
+                r'me chamo\s+' + _name,
+                r'meu nome [eé]\s+' + _name,
+                # "aqui é o Vinícius" / "aqui é a Maria" / "aqui é Vinícius"
+                r'aqui\s+(?:[eé]|quem\s+fala\s+[eé])\s+(?:o\s+|a\s+)?' + _name,
+                # "é o Vinícius falando" / "é a Maria falando"
+                r'\b[eé]\s+(?:o\s+|a\s+)' + _name + r'\s+falando',
+                # "fala o Vinícius aqui" / "quem fala é o Vinícius"
+                r'(?:quem\s+)?fala\s+(?:[eé]\s+)?(?:o\s+|a\s+)' + _name,
+            ]:
                 for m in re.finditer(pat, full_text, flags=re.IGNORECASE):
                     candidate = m.group(1).strip().rstrip(",.!?;:").strip()
                     if not candidate:
