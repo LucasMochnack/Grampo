@@ -3692,6 +3692,327 @@ def dashboard_agentes_export(request: Request, db: Session = Depends(get_db)):
     )
 
 
+@router.get("/dashboard/agentes/heatmap", response_class=HTMLResponse, include_in_schema=False)
+def dashboard_agentes_heatmap(request: Request, db: Session = Depends(get_db)):
+    """Página dedicada ao mapa de calor — sem sidebar, tela cheia natural."""
+    access = _get_access(request, db)
+    if access is None:
+        return _auth_redirect()
+
+    periodo = request.query_params.get("periodo", "hoje")
+    if periodo not in ("hoje", "7dias", "custom"):
+        periodo = "hoje"
+    inicio_raw = request.query_params.get("inicio", "")
+    fim_raw    = request.query_params.get("fim", "")
+    _segs_raw  = request.query_params.get("segmentos", "")
+    segmentos: set[str] = {s.strip() for s in _segs_raw.split(",") if s.strip()} if _segs_raw else set()
+    canal = request.query_params.get("canal", "5519997733651")
+
+    now_br = datetime.now(BRASILIA)
+    today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    if periodo == "hoje":
+        cutoff = today_start
+        cutoff_end = today_start + timedelta(days=1)
+    elif periodo == "7dias":
+        cutoff = today_start - timedelta(days=6)
+        cutoff_end = today_start + timedelta(days=1)
+    else:
+        try:
+            cutoff = datetime.strptime(inicio_raw, "%Y-%m-%d").replace(tzinfo=BRASILIA)
+            _end   = datetime.strptime(fim_raw,    "%Y-%m-%d").replace(tzinfo=BRASILIA)
+            cutoff_end = _end + timedelta(days=1)
+            if cutoff_end <= cutoff:
+                raise ValueError
+        except ValueError:
+            periodo = "hoje"; cutoff = today_start; cutoff_end = today_start + timedelta(days=1)
+            inicio_raw = ""; fim_raw = ""
+
+    cutoff_utc = cutoff.astimezone(timezone.utc)
+    all_events, _, _, client_agent_map, _ = _load_period_pipeline(db, canal, cutoff_utc, 30000)
+    db.close()
+
+    _date_key_fmt = "%d/%m"
+    _n_days = (cutoff_end.date() - cutoff.date()).days
+    period_dates = [(cutoff.date() + timedelta(days=i)) for i in range(_n_days)]
+    period_date_set = {d.strftime(_date_key_fmt) for d in period_dates}
+
+    events = [ev for ev in all_events if ev.received_at and cutoff <= ev.received_at.astimezone(BRASILIA) < cutoff_end]
+    groups, phone_learned = _group_events(events, client_agent_map)
+    _cp = _real_phone(canal)
+    groups = {k: v for k, v in groups.items() if _real_phone(k) != _cp}
+
+    _combined_agent_map = dict(client_agent_map)
+    for _k, _v in phone_learned.items():
+        _rk = _real_phone(_k)
+        if _rk and _rk not in _combined_agent_map:
+            _combined_agent_map[_rk] = _v
+
+    # ── Build heatmap data ───────────────────────────────────────────────────
+    agent_stats: dict = defaultdict(lambda: {"out": 0, "in": 0, "clients": set()})
+    hourly_msgs: dict    = defaultdict(lambda: defaultdict(int))
+    hourly_clients: dict = defaultdict(lambda: defaultdict(set))
+    date_clients_period: dict = defaultdict(lambda: defaultdict(set))
+
+    for _grp_key, _grp_evs in groups.items():
+        _grp_ph = _real_phone(_grp_key)
+        if not _grp_ph or _grp_ph in COMPANY_CHANNELS or _grp_ph == _real_phone(canal):
+            continue
+        _grp_ag = (_combined_agent_map.get(_grp_ph)
+                   or _extract_agent_from_payload(next((e.raw_payload for e in _grp_evs if e.raw_payload), {}))
+                   or "Sem atendente")
+        if _grp_ag == "Sem atendente" or not _user_sees(access, _grp_ag):
+            continue
+        if segmentos and _get_segment(_grp_ag) not in segmentos:
+            continue
+        _hm_seen_local: dict = {}
+        for _ev in sorted(_grp_evs, key=lambda e: e.received_at or datetime.min.replace(tzinfo=timezone.utc)):
+            if not _ev.received_at:
+                continue
+            _p = _ev.raw_payload or {}
+            _dir = _extract_direction(_p)
+            _ts_br = _ev.received_at.astimezone(BRASILIA)
+            _h = _ts_br.hour
+            _dk = _ts_br.strftime(_date_key_fmt)
+            if _dir == "OUT":
+                agent_stats[_grp_ag]["out"] += 1
+                if HOUR_START <= _h <= HOUR_END:
+                    hourly_msgs[_grp_ag][_h] += 1
+                if _dk in period_date_set:
+                    date_clients_period[_grp_ag][_dk].add(_grp_ph)
+                _fk = f"{_grp_ag}|{_grp_ph}|{_dk}"
+                if _fk not in _hm_seen_local and HOUR_START <= _h <= HOUR_END:
+                    _hm_seen_local[_fk] = _h
+                    hourly_clients[_grp_ag][_h].add(_grp_ph)
+            elif _dir == "IN":
+                agent_stats[_grp_ag]["in"] += 1
+        agent_stats[_grp_ag]["clients"].add(_grp_ph)
+
+    sorted_agents = sorted(agent_stats.items(), key=lambda x: len(x[1]["clients"]), reverse=True)
+    if segmentos:
+        sorted_agents = [(a, s) for a, s in sorted_agents if _get_segment(a) in segmentos]
+
+    # ── Segment-grouped sorted list for heatmap ──────────────────────────────
+    _HM_SEG_ORDER = ["Alta Renda", "On Demand", "Externo"]
+    all_known = [a for a in AGENT_SEGMENT if not segmentos or AGENT_SEGMENT[a] in segmentos]
+    _in_stats = {a for a, _ in sorted_agents}
+    for _ka in all_known:
+        if _ka not in _in_stats:
+            sorted_agents.append((_ka, {"out": 0, "in": 0, "clients": set()}))
+
+    _hm_by_seg: dict = defaultdict(list)
+    for _ag, _st in sorted_agents:
+        if _ag == "Sem atendente": continue
+        _seg = _get_segment(_ag) or "Outros"
+        _hm_by_seg[_seg].append((_ag, _st, len(_st.get("clients", set()))))
+    _hm_sorted: list = []
+    for _s in _HM_SEG_ORDER:
+        _hm_sorted.extend((_a, _st) for _a, _st, _ in sorted(_hm_by_seg.pop(_s, []), key=lambda x: -x[2]))
+    for _s in sorted(_hm_by_seg):
+        _hm_sorted.extend((_a, _st) for _a, _st, _ in sorted(_hm_by_seg[_s], key=lambda x: -x[2]))
+
+    # ── Hourly heatmap rows ──────────────────────────────────────────────────
+    hours = list(range(HOUR_START, HOUR_END + 1))
+    hour_headers = "".join(f'<th style="text-align:center;min-width:44px;font-size:10px;padding:6px 2px">{h:02d}h</th>' for h in hours)
+    hour_headers += '<th style="text-align:center;min-width:50px;font-size:10px;padding:6px 4px;color:#0fa968">TOTAL</th>'
+
+    def _hm_rows(data_src, client_mode=False):
+        mx = max((len(data_src[a].get(h, set())) if client_mode else data_src[a].get(h, 0)
+                  for a in data_src for h in hours), default=1) or 1
+        rows = ""; cur_seg = None
+        for agent_name, _ in _hm_sorted:
+            seg = _get_segment(agent_name)
+            if seg != cur_seg:
+                cur_seg = seg
+                sc = SEGMENT_COLORS.get(seg, "#1a2540")
+                rows += (f'<tr style="background:#0d1630"><td colspan="{len(hours)+2}" style="padding:5px 12px;'
+                         f'font-size:10px;font-weight:800;color:{sc};letter-spacing:1.5px;'
+                         f'border-top:2px solid {sc};border-bottom:1px solid #1a2540;text-transform:uppercase">▸ {seg}</td></tr>')
+            sc = SEGMENT_COLORS.get(seg, "#1a2540")
+            dot = f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{sc};margin-right:6px;vertical-align:middle"></span>'
+            cells = ""; row_total = 0; _us: set = set()
+            for h in hours:
+                if client_mode:
+                    _hs = data_src[agent_name].get(h, set()); v = len(_hs); _us |= _hs
+                else:
+                    v = data_src[agent_name].get(h, 0); row_total += v
+                if v == 0:
+                    cells += f'<td style="text-align:center;background:#0b1120;color:#1a2540;font-weight:700;font-size:15px;padding:8px 2px;border:1px solid #0f1629"></td>'
+                else:
+                    intensity = min(v / mx, 1.0)
+                    r2=int(10+intensity*5); g2=int(40+intensity*129); b2=int(20+intensity*84); a2=0.3+intensity*0.7
+                    bg=f"rgba({r2},{g2},{b2},{a2:.2f})"; tc="#fff" if intensity>0.35 else "#7dcea0"
+                    cells += f'<td style="text-align:center;background:{bg};color:{tc};font-weight:700;font-size:15px;padding:8px 2px;border:1px solid #0f1629">{v}</td>'
+            if client_mode: row_total = len(_us)
+            cells += f'<td style="text-align:center;font-weight:800;font-size:15px;color:#0fa968;background:#0f1629;padding:8px 4px;border:1px solid #1a2540">{row_total}</td>'
+            _det = f"/dashboard/agente-detalhe?agent={_url_quote(agent_name)}&canal={canal}"
+            rows += (f'<tr><td style="border-left:3px solid {sc};padding-left:10px;white-space:nowrap;font-size:12px;font-weight:600;background:#0b1120">'
+                     f'{dot}<a href="{_det}" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dotted #3a4a6a" '
+                     f'onmouseover="this.style.color=\'#0fa968\'" onmouseout="this.style.color=\'inherit\'">{_short_agent_name(agent_name)}</a>'
+                     f'</td>{cells}</tr>')
+        return rows
+
+    hourly_rows_msgs    = _hm_rows(hourly_msgs,    client_mode=False)
+    hourly_rows_clients = _hm_rows(hourly_clients, client_mode=True)
+
+    # ── Daily heatmap rows ───────────────────────────────────────────────────
+    _dh_agents_raw = [a for a in AGENT_SEGMENT if not segmentos or AGENT_SEGMENT.get(a) in segmentos]
+    for _ag in date_clients_period:
+        if _ag not in _dh_agents_raw and (not segmentos or _get_segment(_ag) in segmentos):
+            _dh_agents_raw.append(_ag)
+    _dh_mx = max((len(s) for ag_d in date_clients_period.values() for s in ag_d.values()), default=1) or 1
+
+    _dh_by_seg2: dict = defaultdict(list)
+    for _ag in _dh_agents_raw:
+        _seg = _get_segment(_ag) or "Outros"
+        _tot = sum(len(s) for s in date_clients_period.get(_ag, {}).values())
+        _dh_by_seg2[_seg].append((_ag, _tot))
+    _dh_agents: list = []
+    for _s in _HM_SEG_ORDER:
+        _dh_agents.extend(a for a, _ in sorted(_dh_by_seg2.pop(_s, []), key=lambda x: -x[1]))
+    for _s in sorted(_dh_by_seg2):
+        _dh_agents.extend(a for a, _ in sorted(_dh_by_seg2[_s], key=lambda x: -x[1]))
+
+    _WDAY_NAMES = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+    _today_date = now_br.date()
+
+    def _dh_cell2(v, mx, is_today=False):
+        border = "border-bottom:2px solid #0fa968;" if is_today else ""
+        if v == 0:
+            return f'<td style="text-align:center;background:#0b1120;color:#1a2540;font-weight:700;font-size:13px;padding:8px 2px;border:1px solid #0f1629;{border}"></td>'
+        intensity = min(v/mx, 1.0)
+        r2=int(10+intensity*5); g2=int(40+intensity*129); b2=int(20+intensity*84); a2=0.3+intensity*0.7
+        bg=f"rgba({r2},{g2},{b2},{a2:.2f})"; tc="#fff" if intensity>0.35 else "#7dcea0"
+        return f'<td style="text-align:center;background:{bg};color:{tc};font-weight:700;font-size:13px;padding:8px 2px;border:1px solid #0f1629;{border}">{v}</td>'
+
+    wday_rows = ""; _dh_cur_seg = None
+    for _ag in _dh_agents:
+        seg = _get_segment(_ag)
+        if seg != _dh_cur_seg:
+            _dh_cur_seg = seg; sc = SEGMENT_COLORS.get(seg, "#1a2540")
+            wday_rows += (f'<tr style="background:#0d1630"><td colspan="{len(period_dates)+2}" style="padding:5px 12px;'
+                          f'font-size:10px;font-weight:800;color:{sc};letter-spacing:1.5px;'
+                          f'border-top:2px solid {sc};border-bottom:1px solid #1a2540;text-transform:uppercase">▸ {seg}</td></tr>')
+        sc = SEGMENT_COLORS.get(seg, "#1a2540")
+        dot = f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{sc};margin-right:6px;vertical-align:middle"></span>'
+        cells = ""; row_total = 0
+        for _d in period_dates:
+            _dk = _d.strftime(_date_key_fmt)
+            v = len(date_clients_period.get(_ag, {}).get(_dk, set()))
+            row_total += v; cells += _dh_cell2(v, _dh_mx, is_today=(_d == _today_date))
+        cells += f'<td style="text-align:center;font-weight:800;font-size:13px;color:#0fa968;background:#0f1629;padding:8px 4px;border:1px solid #1a2540">{row_total}</td>'
+        _det2 = f"/dashboard/agente-detalhe?agent={_url_quote(_ag)}&canal={canal}"
+        wday_rows += (f'<tr><td style="border-left:3px solid {sc};padding-left:10px;white-space:nowrap;font-size:12px;font-weight:600;background:#0b1120">'
+                      f'{dot}<a href="{_det2}" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dotted #3a4a6a" '
+                      f'onmouseover="this.style.color=\'#0fa968\'" onmouseout="this.style.color=\'inherit\'">{_short_agent_name(_ag)}</a>'
+                      f'</td>{cells}</tr>')
+
+    _wday_headers = ""
+    for _d in period_dates:
+        _dk_lbl = _d.strftime(_date_key_fmt); _wd_lbl = _WDAY_NAMES[_d.weekday()]
+        _is_today = (_d == _today_date); _is_weekend = _d.weekday() >= 5
+        if _is_today:   _ths = 'text-align:center;min-width:46px;font-size:10px;padding:5px 2px;background:#0d2d1e;border-bottom:2px solid #0fa968;color:#0fa968;font-weight:800'
+        elif _is_weekend: _ths = 'text-align:center;min-width:46px;font-size:10px;padding:5px 2px;color:#4a5a7a'
+        else:             _ths = 'text-align:center;min-width:46px;font-size:10px;padding:5px 2px'
+        _wday_headers += f'<th style="{_ths}">{_wd_lbl}<br><span style="font-size:9px;color:#e8ecf1;font-weight:400">{_dk_lbl}</span></th>'
+    _wday_headers += '<th style="text-align:center;min-width:50px;font-size:10px;padding:6px 4px;color:#0fa968">TOTAL</th>'
+
+    # ── URL helpers ──────────────────────────────────────────────────────────
+    _canal_qs = f"&canal={canal}"
+    _seg_qs   = f"&segmentos={','.join(sorted(segmentos))}" if segmentos else ""
+    _base_url = f"/dashboard/agentes/heatmap?periodo={{p}}{_canal_qs}{_seg_qs}"
+    _loaded_at = now_br.strftime("%H:%M")
+
+    # Segment pills
+    _seg_pills = '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><span style="font-size:10px;color:#5a6a8a;font-weight:700;margin-right:4px">TIME:</span>'
+    _seg_base_hm = f"/dashboard/agentes/heatmap?periodo={periodo}{_canal_qs}"
+    _todos_act = "background:#0fa968;color:#fff" if not segmentos else "background:#111a2e;color:#c0c8d8"
+    _seg_pills += f'<a href="{_seg_base_hm}" style="{_todos_act};border:1px solid #1a2540;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:700;text-decoration:none">Todos</a>'
+    for _sv in ["Alta Renda", "On Demand", "Externo"]:
+        _is_sel = _sv in segmentos
+        _ns = set(segmentos); (_ns.discard(_sv) if _is_sel else _ns.add(_sv))
+        _sl = f"{_seg_base_hm}&segmentos={','.join(sorted(_ns))}" if _ns else _seg_base_hm
+        _pill_style = "background:#0fa968;color:#fff" if _is_sel else "background:#111a2e;color:#c0c8d8"
+        _sc = SEGMENT_COLORS.get(_sv, "#aaa")
+        _seg_pills += f'<a href="{_sl}" style="{_pill_style};border:1px solid {_sc};padding:4px 10px;border-radius:20px;font-size:11px;font-weight:700;text-decoration:none">{"✓ " if _is_sel else ""}{_sv}</a>'
+    _seg_pills += '</div>'
+
+    return HTMLResponse(f"""<!DOCTYPE html><html lang="pt-BR"><head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="600">
+<title>Mapa de Calor — Alto Valor</title>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+* {{ box-sizing:border-box; margin:0; padding:0; }}
+body {{ font-family:'Montserrat',sans-serif; background:#0b1120; color:#e8ecf1; padding:16px; }}
+a {{ color:inherit; }}
+table {{ border-collapse:separate; border-spacing:2px; }}
+.period-btns {{ display:flex; gap:6px; flex-wrap:wrap; }}
+.period-btns a {{ background:#111a2e; border:1px solid #1a2540; color:#c0c8d8; padding:5px 14px; border-radius:20px; font-size:11px; font-weight:700; text-decoration:none; }}
+.period-btns a.active, .period-btns a:hover {{ background:#0fa968; color:#fff; border-color:#0fa968; }}
+.card {{ background:#111a2e; border:1px solid #1a2540; border-radius:12px; padding:20px; margin-bottom:16px; }}
+</style>
+</head><body>
+<div style="display:flex;align-items:center;gap:16px;margin-bottom:16px;flex-wrap:wrap;padding:4px 0">
+  <a href="/dashboard/agentes?periodo={periodo}{_canal_qs}{_seg_qs}" style="color:#5a6a8a;font-size:12px;font-weight:700;text-decoration:none">&larr; Agentes</a>
+  <span style="font-size:16px;font-weight:800;color:#e8ecf1">🔥 Mapa de Calor</span>
+  <div class="period-btns">
+    <a href="{_base_url.format(p='hoje')}" {"class='active'" if periodo=="hoje" else ""}>Hoje</a>
+    <a href="{_base_url.format(p='7dias')}" {"class='active'" if periodo=="7dias" else ""}>7 dias</a>
+  </div>
+  {_seg_pills}
+  <span style="margin-left:auto;font-size:11px;color:#5a6a8a;font-family:monospace" id="hm-timer">Atualizado {_loaded_at}</span>
+</div>
+
+<div class="card">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+    <h2 style="font-size:14px;margin:0">Atividade por hora (06h–19h)</h2>
+    <div class="period-btns" style="margin-left:0">
+      <a href="#" onclick="toggleHM('msgs');return false" id="hm-btn-msgs">Mensagens</a>
+      <a href="#" class="active" onclick="toggleHM('clients');return false" id="hm-btn-clients">Clientes únicos</a>
+    </div>
+  </div>
+  <div style="overflow-x:auto;display:none" id="hm-msgs">
+    <table><thead><tr><th style="min-width:160px;font-size:11px;padding:6px 10px">Agente</th>{hour_headers}</tr></thead>
+    <tbody>{hourly_rows_msgs}</tbody></table>
+  </div>
+  <div style="overflow-x:auto" id="hm-clients">
+    <table><thead><tr><th style="min-width:160px;font-size:11px;padding:6px 10px">Agente</th>{hour_headers}</tr></thead>
+    <tbody>{hourly_rows_clients}</tbody></table>
+  </div>
+  <p style="font-size:10px;color:#4a5a7a;margin-top:8px">💡 Cada cliente conta 1 vez por hora.</p>
+</div>
+
+<div class="card">
+  <h2 style="font-size:14px;margin-bottom:12px">Clientes únicos por dia</h2>
+  <div style="overflow-x:auto">
+    <table><thead><tr><th style="min-width:160px;font-size:11px;padding:6px 10px">Agente</th>{_wday_headers}</tr></thead>
+    <tbody>{wday_rows}</tbody></table>
+  </div>
+  <p style="font-size:10px;color:#4a5a7a;margin-top:8px">💡 Cada cliente conta 1 vez por dia.</p>
+</div>
+
+<script>
+function toggleHM(mode) {{
+  document.getElementById('hm-msgs').style.display    = mode==='msgs' ? '' : 'none';
+  document.getElementById('hm-clients').style.display = mode==='clients' ? '' : 'none';
+  document.getElementById('hm-btn-msgs').className    = mode==='msgs' ? 'active' : '';
+  document.getElementById('hm-btn-clients').className = mode==='clients' ? 'active' : '';
+}}
+(function(){{
+  var load=new Date(), REFRESH=600;
+  setInterval(function(){{
+    var elapsed=Math.floor((new Date()-load)/1000);
+    var rem=Math.max(REFRESH-elapsed,0);
+    var el=document.getElementById('hm-timer');
+    if(el) el.textContent='Atualizado {_loaded_at} · '+Math.floor(rem/60)+':'+(rem%60<10?'0':'')+rem%60;
+    if(elapsed>=REFRESH) location.reload();
+  }},1000);
+}})();
+</script>
+</body></html>""")
+
+
 @router.get("/dashboard/agentes", response_class=HTMLResponse, include_in_schema=False)
 def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
     access = _get_access(request, db)
@@ -4555,7 +4876,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
                     <a href="#" onclick="toggleHeatmap('msgs');return false" id="hm-btn-msgs">Mensagens</a>
                     <a href="#" class="active" onclick="toggleHeatmap('clients');return false" id="hm-btn-clients">Clientes únicos</a>
                 </div>
-                <button class="fs-btn" onclick="toggleFullscreen('hourly-section')" style="margin-left:auto">&#x26F6; Tela cheia</button>
+                <a href="/dashboard/agentes/heatmap?periodo={periodo}{canal_qs}{seg_qs}" target="_blank" class="fs-btn" style="margin-left:auto;text-decoration:none">&#x26F6; Abrir em tela cheia</a>
             </div>
             <p style="font-size:11px;color:#4a5a7a;margin-bottom:10px;font-weight:500;display:none" id="hm-desc-msgs">
                 Total de mensagens (IN + OUT) por agente em cada faixa horária.
@@ -4591,7 +4912,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap">
                 <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
                 <h2 style="margin:0;font-size:15px">Clientes únicos por dia do período</h2>
-                <button class="fs-btn" onclick="toggleFullscreen('wday-section')" style="margin-left:auto">&#x26F6; Tela cheia</button>
+                <a href="/dashboard/agentes/heatmap?periodo={periodo}{canal_qs}{seg_qs}" target="_blank" class="fs-btn" style="margin-left:auto;text-decoration:none">&#x26F6; Abrir em tela cheia</a>
             </div>
             <p style="font-size:11px;color:#4a5a7a;margin-bottom:10px;font-weight:500">
                 Clientes únicos contatados (OUT) por agente em cada dia do período.
