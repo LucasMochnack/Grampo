@@ -4646,7 +4646,6 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         document.getElementById('hm-btn-' + show).className = 'active';
         document.getElementById('hm-btn-' + hide).className = '';
     }}
-    var _LS_KEY = 'grampo_hm_fs';
     function _applyFullscreen(id) {{
         var el = document.getElementById(id);
         if (!el) return;
@@ -4660,12 +4659,18 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
         }}
         window.scrollTo(0, 0);
     }}
+    function _setFsUrl(id) {{
+        // Add ?fs=id to the current URL so meta-refresh reloads in fullscreen
+        var u = new URL(window.location.href);
+        if (id) {{ u.searchParams.set('fs', id); }} else {{ u.searchParams.delete('fs'); }}
+        history.replaceState(null, '', u.toString());
+    }}
     function toggleFullscreen(id) {{
         var el = document.getElementById(id);
         var isFs = el.classList.toggle('fullscreen');
         var existing = el.querySelector('.fs-close');
         if (isFs) {{
-            try {{ localStorage.setItem(_LS_KEY, id); }} catch(e) {{}}
+            _setFsUrl(id);
             var btn = document.createElement('button');
             btn.className = 'fs-close';
             btn.textContent = 'Fechar (Esc)';
@@ -4673,7 +4678,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
             el.appendChild(btn);
             window.scrollTo(0, 0);
         }} else {{
-            try {{ localStorage.removeItem(_LS_KEY); }} catch(e) {{}}
+            _setFsUrl(null);
             if (existing) existing.remove();
         }}
     }}
@@ -4683,14 +4688,14 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
             if (fs) {{
                 fs.classList.remove('fullscreen');
                 var c = fs.querySelector('.fs-close'); if(c) c.remove();
-                try {{ localStorage.removeItem(_LS_KEY); }} catch(e) {{}}
+                _setFsUrl(null);
             }}
         }}
     }});
-    // Restore fullscreen state from localStorage after meta-refresh
+    // Restore fullscreen from URL param — works with meta-refresh which reloads exact current URL
     (function() {{
-        var fsId;
-        try {{ fsId = localStorage.getItem(_LS_KEY); }} catch(e) {{}}
+        var params = new URLSearchParams(window.location.search);
+        var fsId = params.get('fs');
         if (fsId) {{ _applyFullscreen(fsId); }}
     }})();
     </script>
