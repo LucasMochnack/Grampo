@@ -3964,6 +3964,11 @@ table {{ border-collapse:separate; border-spacing:2px; }}
   <span style="margin-left:auto;font-size:11px;color:#5a6a8a;font-family:monospace" id="hm-timer">Atualizado {_loaded_at}</span>
 </div>
 
+<!-- Barra de progresso até próxima atualização -->
+<div id="refresh-bar-wrap" style="position:fixed;bottom:0;left:0;width:100%;height:3px;background:#0f1629;z-index:999">
+  <div id="refresh-bar" style="height:3px;width:100%;background:#0fa968;transition:width 1s linear;transform-origin:left"></div>
+</div>
+
 <div class="card">
   <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap">
     <h2 style="font-size:14px;margin:0">Atividade por hora (06h–19h)</h2>
@@ -4001,11 +4006,22 @@ function toggleHM(mode) {{
 }}
 (function(){{
   var load=new Date(), REFRESH=600;
+  var bar=document.getElementById('refresh-bar');
   setInterval(function(){{
     var elapsed=Math.floor((new Date()-load)/1000);
     var rem=Math.max(REFRESH-elapsed,0);
+    // Timer text
     var el=document.getElementById('hm-timer');
     if(el) el.textContent='Atualizado {_loaded_at} · '+Math.floor(rem/60)+':'+(rem%60<10?'0':'')+rem%60;
+    // Progress bar: starts full (100%), drains to 0% as time passes
+    if(bar){{
+      var pct=Math.max((rem/REFRESH)*100,0);
+      bar.style.width=pct+'%';
+      // Color shift: green → yellow → red as time runs out
+      if(pct>40) bar.style.background='#0fa968';
+      else if(pct>15) bar.style.background='#f59e0b';
+      else bar.style.background='#ef4444';
+    }}
     if(elapsed>=REFRESH) location.reload();
   }},1000);
 }})();
