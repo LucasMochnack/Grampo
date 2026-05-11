@@ -21,7 +21,9 @@ def _build_engine(*, pool_size: int = 5, max_overflow: int = 15, pool_timeout: i
 
 
 # Main engine — used by dashboard, API, etc.
-engine = _build_engine(pool_size=5, max_overflow=15, pool_timeout=30)
+# pool_timeout=10: fail fast when pool is exhausted instead of blocking
+# threads for 30s (which would prevent even /health from responding).
+engine = _build_engine(pool_size=5, max_overflow=15, pool_timeout=10)
 
 # Dedicated webhook engine — small isolated pool so webhook writes NEVER
 # starve when dashboard endpoints saturate the main pool. Short timeout so
