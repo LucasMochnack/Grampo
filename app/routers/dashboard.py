@@ -142,20 +142,78 @@ SEGMENT_COLORS: dict[str, str] = {
 # ── Topic / Theme rules ──────────────────────────────────────────────────────
 # (id, label, color, keywords)
 TOPIC_RULES: list[tuple[str, str, str, list[str]]] = [
-    ("consorcio",   "Consórcio",          "#f59e0b", ["consórcio","consorcio","consorciado","consorciada","contemplação","contemplado","contemplada","lance","cota","administradora","carta de crédito","aquisição de bem","bem imóvel","bem móvel","veículo","veiculo"]),
-    ("seguro_vida", "Seguro de Vida",      "#ef4444", ["seguro de vida","seguro vida","proteção familiar","seguro","apólice"]),
-    ("previdencia", "Previdência",         "#8b5cf6", ["previdência","previdencia","pgbl","vgbl","aposentadoria","previdenciário"]),
-    ("renda_fixa",  "Renda Fixa",          "#06b6d4", ["renda fixa","cdb","lci","lca","tesouro direto","tesouro","debênture","debenture","cri","cra","letras"]),
-    ("acoes",       "Ações / BDR",         "#0fa968", ["ações","acoes","bdr","bolsa","b3","bovespa","ação","stock"]),
-    ("fundos",      "Fundos",              "#3b82f6", ["fundo","fundos","multimercado","fundo de ações","fundo cambial"]),
-    ("fii",         "Fundos Imobiliários", "#10b981", ["fii","fundo imobiliário","fundo imobiliario","tijolo","papel","imóvel","imovel"]),
-    ("coe",         "COE",                 "#d4af37", ["coe","certificado de operações estruturadas","operações estruturadas"]),
-    ("offshore",    "Offshore / Int'l",    "#7c3aed", ["offshore","exterior","internacional","dólar","dolares","global","investimento no exterior"]),
-    ("carteira",    "Revisão de Carteira", "#64748b", ["carteira","revisão","revisar","alocação","alocacao","diversificação","diversificacao","rebalanceamento","portfólio","portfolio"]),
-    ("resgate",     "Resgate / Saque",     "#f97316", ["resgate","resgatar","saque","sacar","retirada","retirar"]),
-    ("reuniao",     "Reunião / Call",      "#0ea5e9", ["reunião","reuniao","call","ligação","ligacao","videoconferência","videoconferencia","agendar","agendamento"]),
-    ("credito",     "Crédito / Empréstimo","#fb7185", ["crédito","credito","empréstimo","emprestimo","financiamento","home equity","ccb","consignado","antecipação","antecipacao","linha de crédito","capital de giro","refinanciamento","financiar","parcelamento","alienação fiduciária","alienacao fiduciaria"]),
-    ("cambio",      "Câmbio",              "#a78bfa", ["câmbio","cambio","remessa","dólar","euro","moeda estrangeira"]),
+    # Frases específicas primeiro; palavras soltas só quando inequívocas no contexto financeiro
+    ("consorcio",   "Consórcio",          "#f59e0b", [
+        "consórcio","consorcio","consorciado","consorciada",
+        "contemplação","contemplado","contemplada","contemplar",
+        "carta de crédito","aquisição de bem","bem imóvel","bem móvel",
+        "administradora de consórcio","administradora de consorcio",
+        "lance do consórcio","cota do consórcio",
+    ]),
+    ("seguro_vida", "Seguro de Vida",      "#ef4444", [
+        "seguro de vida","seguro vida","proteção familiar","apólice",
+        "cobertura de vida","sinistro","beneficiário","segurado",
+    ]),
+    ("previdencia", "Previdência",         "#8b5cf6", [
+        "previdência","previdencia","pgbl","vgbl","aposentadoria",
+        "previdenciário","previdenciaria","plano de previdência",
+    ]),
+    ("renda_fixa",  "Renda Fixa",          "#06b6d4", [
+        "renda fixa","cdb","lci","lca","tesouro direto","tesouro nacional",
+        "debênture","debenture","cri","cra","letras de crédito",
+        "nota comercial","título de renda fixa",
+    ]),
+    ("acoes",       "Ações / BDR",         "#0fa968", [
+        "ações","acoes","bdr","bolsa de valores","b3","bovespa",
+        "stock options","ação ordinária","ação preferencial","dividendos",
+        "proventos","ibovespa","índice bovespa",
+    ]),
+    ("fundos",      "Fundos",              "#3b82f6", [
+        "fundo de investimento","fundo multimercado","fundo de ações",
+        "fundo cambial","fundo de renda fixa","fundo quantitativo",
+        "multimercado","cota do fundo","gestor do fundo",
+    ]),
+    ("fii",         "Fundos Imobiliários", "#10b981", [
+        "fii","fundo imobiliário","fundo imobiliario",
+        "tijolo","fundo de tijolo","fundo de papel","cri","cra",
+        "dividend yield","rendimento do fundo",
+    ]),
+    ("coe",         "COE",                 "#d4af37", [
+        "coe","certificado de operações estruturadas","operações estruturadas",
+    ]),
+    ("offshore",    "Offshore / Int'l",    "#7c3aed", [
+        "offshore","investimento no exterior","investir no exterior",
+        "conta no exterior","investimento internacional","fundo internacional",
+        "fundo global","conta global","global investments",
+        "remessa internacional","enviar dinheiro para fora",
+        "capital no exterior","patrimônio no exterior",
+    ]),
+    ("carteira",    "Revisão de Carteira", "#64748b", [
+        "carteira de investimentos","revisão de carteira","revisar carteira",
+        "alocação","alocacao","diversificação","diversificacao",
+        "rebalanceamento","portfólio","portfolio","perfil de investidor",
+        "análise de carteira","estratégia de investimento",
+    ]),
+    ("resgate",     "Resgate / Saque",     "#f97316", [
+        "resgate","resgatar","saque","sacar","retirada","retirar",
+        "liquidar","liquidação","prazo de resgate",
+    ]),
+    ("reuniao",     "Reunião / Call",      "#0ea5e9", [
+        "reunião","reuniao","call","videoconferência","videoconferencia",
+        "agendar reunião","agendar call","marcar reunião","horário disponível",
+        "disponibilidade para reunião","vamos conversar","bater um papo",
+    ]),
+    ("credito",     "Crédito / Empréstimo","#fb7185", [
+        "crédito","credito","empréstimo","emprestimo","financiamento",
+        "home equity","ccb","consignado","antecipação","antecipacao",
+        "linha de crédito","capital de giro","refinanciamento",
+        "parcelamento","alienação fiduciária","alienacao fiduciaria",
+    ]),
+    ("cambio",      "Câmbio",              "#a78bfa", [
+        "câmbio","cambio","remessa","moeda estrangeira",
+        "dólar","euro","libra esterlina","iene","yuan",
+        "taxa de câmbio","spread cambial","comprar dólar","vender dólar",
+    ]),
 ]
 
 
@@ -1417,7 +1475,8 @@ def dashboard_overview(request: Request, db: Session = Depends(get_db)):
         ft = " ".join((_extract_content_preview(ev.raw_payload or {}) or "") for ev in evs).lower()
         for tid, _, _, kws in TOPIC_RULES:
             for kw in kws:
-                if kw in ft and ph not in s7[tid]:
+                _hit = (kw in ft) if (" " in kw or len(kw) > 5) else bool(_re.search(r'(?<![a-záéíóúàãõâêîôûçña-z])' + _re.escape(kw) + r'(?![a-záéíóúàãõâêîôûçña-z])', ft))
+                if _hit and ph not in s7[tid]:
                     td7[tid][ag].add(ph)
                     s7[tid].add(ph)
                     break
@@ -3136,7 +3195,14 @@ def dashboard_temas(request: Request, db: Session = Depends(get_db)):
         for tid, tlabel, tcolor, keywords in TOPIC_RULES:
             matched_kw = None
             for kw in keywords:
-                if kw in full_text:
+                # Multi-word phrases: substring match is precise enough
+                # Single short words (≤5 chars): require word boundary to avoid
+                # false positives like "fundo" in "profundo", "cri" in "crise"
+                if " " in kw or len(kw) > 5:
+                    hit = kw in full_text
+                else:
+                    hit = bool(_re.search(r'(?<![a-záéíóúàãõâêîôûçña-z])' + _re.escape(kw) + r'(?![a-záéíóúàãõâêîôûçña-z])', full_text))
+                if hit:
                     matched_kw = kw
                     break
             if matched_kw and ph not in _seen_topic_client[tid]:
@@ -5520,7 +5586,8 @@ def dashboard_evolucao(request: Request, db: Session = Depends(get_db)):
         ).lower()
         for tid, _tlabel, _tcolor, keywords in TOPIC_RULES:
             for kw in keywords:
-                if kw in full_text:
+                _hit = (kw in full_text) if (" " in kw or len(kw) > 5) else bool(_re.search(r'(?<![a-záéíóúàãõâêîôûçña-z])' + _re.escape(kw) + r'(?![a-záéíóúàãõâêîôûçña-z])', full_text))
+                if _hit:
                     weekly_topics[week_key][tid].add(ph)
                     break
 
