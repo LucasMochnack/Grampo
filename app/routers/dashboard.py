@@ -2309,11 +2309,29 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
         return _auth_redirect()
 
     canal = request.query_params.get("canal", "5519997733651")
+    _periodo_conv = request.query_params.get("periodo_conv", "hoje")
+    if _periodo_conv not in ("hoje", "7dias", "30dias"):
+        _periodo_conv = "hoje"
+
     now_br = datetime.now(BRASILIA)
     today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
-    today_start_utc = today_start.astimezone(timezone.utc)
+
+    if _periodo_conv == "hoje":
+        _conv_since = today_start
+        _conv_limit = 20000
+        _conv_label = "HOJE"
+    elif _periodo_conv == "7dias":
+        _conv_since = today_start - timedelta(days=6)
+        _conv_limit = 50000
+        _conv_label = "7 DIAS"
+    else:  # 30dias
+        _conv_since = today_start - timedelta(days=29)
+        _conv_limit = 100000
+        _conv_label = "30 DIAS"
+
+    _conv_since_utc = _conv_since.astimezone(timezone.utc)
     all_events, _cg, _cpl, client_agent_map, client_name_map = _load_period_pipeline(
-        db, canal, today_start_utc, 20000
+        db, canal, _conv_since_utc, _conv_limit
     )
     filtered_events = all_events  # already filtered by canal in the cache
     acked_alerts = _get_acked_alerts(db)   # {phone_key: {agent, snippet, display_name, acked_at}}
@@ -2322,6 +2340,27 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
     # Remove the canal's own phone number from client conversations
     _canal_phone = _real_phone(canal)
     groups = {k: v for k, v in groups.items() if _real_phone(k) != _canal_phone}
+
+    # For multi-day periods, filter to conversations that had activity in the window
+    if _periodo_conv != "hoje":
+        groups = {
+            k: v for k, v in groups.items()
+            if any(
+                e.received_at and e.received_at.astimezone(BRASILIA) >= _conv_since
+                for e in v
+            )
+        }
+
+    # Cap at 500 most recent conversations to avoid overloading the browser
+    _CONV_CAP = 500
+    _conv_truncated = len(groups) > _CONV_CAP
+    if _conv_truncated:
+        _sorted_keys = sorted(
+            groups.keys(),
+            key=lambda k: max((e.received_at for e in groups[k] if e.received_at), default=datetime.min.replace(tzinfo=timezone.utc)),
+            reverse=True
+        )[:_CONV_CAP]
+        groups = {k: groups[k] for k in _sorted_keys}
 
     conv_cards_html = ""
     chat_panels_html = ""
@@ -2525,9 +2564,14 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
   <!-- LEFT: lista de conversas -->
   <div style="width:380px;border-right:1px solid #1a2540;display:flex;flex-direction:column;flex-shrink:0;overflow:hidden">
     <div style="padding:14px 18px 10px;border-bottom:1px solid #1a2540;flex-shrink:0">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
-        <span id="list-count" style="font-size:10px;color:#5a6a8a;letter-spacing:1.2px;font-weight:700">{len(groups)} CONVERSAS · HOJE</span>
-        <a href="/dashboard/export?canal={canal}&periodo=hoje" style="font-size:10px;color:#0fa968;font-weight:700;text-decoration:none;display:flex;align-items:center;gap:4px" title="Exportar lista de conversas (Agente, Cliente, Horário)">⬇ CSV</a>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span id="list-count" style="font-size:10px;color:#5a6a8a;letter-spacing:1.2px;font-weight:700">{len(groups)} CONVERSAS · {_conv_label}{' (top 500)' if _conv_truncated else ''}</span>
+        <a href="/dashboard/export?canal={canal}&periodo={'hoje' if _periodo_conv == 'hoje' else '7dias' if _periodo_conv == '7dias' else '30dias'}" style="font-size:10px;color:#0fa968;font-weight:700;text-decoration:none;display:flex;align-items:center;gap:4px" title="Exportar lista de conversas">⬇ CSV</a>
+      </div>
+      <div style="display:flex;gap:5px;margin-bottom:8px">
+        <a href="?canal={canal}&periodo_conv=hoje" style="text-decoration:none"><span class="gp-chip{'active' if _periodo_conv == 'hoje' else ''}" style="font-size:10px;padding:3px 10px">Hoje</span></a>
+        <a href="?canal={canal}&periodo_conv=7dias" style="text-decoration:none"><span class="gp-chip{'active' if _periodo_conv == '7dias' else ''}" style="font-size:10px;padding:3px 10px">7 dias</span></a>
+        <a href="?canal={canal}&periodo_conv=30dias" style="text-decoration:none"><span class="gp-chip{'active' if _periodo_conv == '30dias' else ''}" style="font-size:10px;padding:3px 10px">30 dias</span></a>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
         <span class="gp-chip active" onclick="filterCards('',this)">Todas</span>
@@ -2677,7 +2721,7 @@ function _applyFilters(){{
     c.style.display=show?'flex':'none';
     if(show)count++;
   }});
-  document.getElementById('list-count').textContent=count+' CONVERSAS · HOJE';
+  document.getElementById('list-count').textContent=count+' CONVERSAS · {_conv_label}{" (top 500)" if _conv_truncated else ""}';
   // Historical search
   clearTimeout(_histTimer);
   var hs=document.getElementById('hist-section');
