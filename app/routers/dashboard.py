@@ -769,11 +769,26 @@ def _render_msg_content(payload: dict) -> str:
                     f'<span style="display:none">🖼 <a href="{safe_proxy}" target="_blank" rel="noopener" style="color:#0fa968">Ver imagem</a></span>'
                     f'{cap_html}')
         elif _is_audio:
+            from urllib.parse import quote as _uq2
             safe_mime = html_mod.escape(mime or "audio/ogg")
-            return (f'<audio controls style="max-width:100%;min-width:220px">'
-                    f'<source src="{safe_proxy}" type="{safe_mime}">'
-                    f'<a href="{safe_url}" target="_blank" style="color:#0fa968">🎵 Abrir áudio</a>'
-                    f'</audio>')
+            safe_orig = html_mod.escape(_uq2(media_url, safe=""))
+            safe_mime_attr = html_mod.escape(mime or "audio/ogg")
+            return (
+                f'<audio controls style="max-width:100%;min-width:220px;display:block">'
+                f'<source src="{safe_proxy}" type="{safe_mime}">'
+                f'<a href="{safe_url}" target="_blank" style="color:#0fa968">🎵 Abrir áudio</a>'
+                f'</audio>'
+                f'<div style="margin-top:5px">'
+                f'<button onclick="transcribeAudio(this,\'{safe_orig}\',\'{safe_mime_attr}\')" '
+                f'style="background:#111a2e;border:1px solid #1a2540;color:#8a96aa;font-size:10.5px;'
+                f'padding:3px 10px;border-radius:5px;cursor:pointer;font-family:inherit;transition:.15s" '
+                f'onmouseover="this.style.color=\'#e8ecf1\'" onmouseout="this.style.color=\'#8a96aa\'">'
+                f'🎙 Transcrever</button>'
+                f'<div class="transcription-box" style="display:none;margin-top:6px;padding:8px 10px;'
+                f'background:#0d1a2e;border-left:2px solid #0fa968;border-radius:0 6px 6px 0;'
+                f'font-size:12px;color:#c8d4e8;line-height:1.55;white-space:pre-wrap"></div>'
+                f'</div>'
+            )
         elif _is_video:
             safe_mime = html_mod.escape(mime or "video/mp4")
             return (f'<video controls style="max-width:260px;border-radius:8px">'
@@ -2674,6 +2689,27 @@ function loadFullHistory(btn,url){{
     _scrollToBottom(m);
   }}).catch(function(){{btn.disabled=false;btn.textContent='Erro — tentar novamente';}});
 }}
+function transcribeAudio(btn,encodedUrl,mime){{
+  btn.textContent='⏳ Transcrevendo...';
+  btn.disabled=true;
+  var url='/dashboard/transcribe?url='+encodedUrl+(mime?'&mime='+encodeURIComponent(mime):'');
+  fetch(url)
+    .then(function(r){{return r.json();}})
+    .then(function(d){{
+      if(d.error){{
+        btn.textContent='❌ '+d.error;
+        btn.disabled=false;
+        return;
+      }}
+      var box=btn.nextElementSibling;
+      if(box){{box.textContent=d.text;box.style.display='block';}}
+      btn.style.display='none';
+    }})
+    .catch(function(){{
+      btn.textContent='❌ Erro — tentar novamente';
+      btn.disabled=false;
+    }});
+}}
 async function ackAlert(phoneKey,agent,snippet,displayName,cardId){{
   try{{
     var resp=await fetch('/dashboard/ack-alert',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{phone_key:phoneKey,agent:agent,snippet:snippet,display_name:displayName}})}});
@@ -2958,6 +2994,45 @@ def conv_messages_api(request: Request, db: Session = Depends(get_db)):
 
 
 # ── Media proxy ─────────────────────────────────────────────────────────────
+
+@router.get("/dashboard/transcribe", include_in_schema=False)
+def transcribe_audio_endpoint(request: Request, db: Session = Depends(get_db)):
+    """AJAX: transcribe an audio message via Whisper. Cached in DB.
+
+    Query params:
+        url  — original media URL (not the proxy URL)
+        mime — MIME type hint (optional, e.g. audio/ogg)
+    """
+    if not _check_auth(request):
+        return JSONResponse({"error": "Não autenticado"}, status_code=401)
+
+    from urllib.parse import unquote as _unquote
+    from app.services.transcription import transcribe_url, get_cached
+
+    raw_url = _unquote(request.query_params.get("url", "").strip())
+    mime = request.query_params.get("mime", "").strip()
+
+    if not raw_url:
+        return JSONResponse({"error": "URL não informada"}, status_code=400)
+
+    # Return cached transcription without touching Whisper API
+    cached = get_cached(db, raw_url)
+    if cached:
+        db.close()
+        return JSONResponse({"text": cached, "cached": True})
+
+    db.close()  # release DB connection before the slow Whisper call
+
+    try:
+        text = transcribe_url(db, raw_url, mime)
+        return JSONResponse({"text": text, "cached": False})
+    except (ValueError, RuntimeError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        import logging as _log
+        _log.getLogger(__name__).error("Transcription error: %s", exc)
+        return JSONResponse({"error": "Erro interno na transcrição"}, status_code=500)
+
 
 @router.get("/dashboard/media", include_in_schema=False)
 async def media_proxy(request: Request):

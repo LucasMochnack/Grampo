@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     SESSION_SECRET: str = ""
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
+    OPENAI_API_KEY: str = ""  # Required for audio transcription via Whisper
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

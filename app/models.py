@@ -80,6 +80,26 @@ class AppSetting(Base):
     value = Column(Text, nullable=True)
 
 
+class AudioTranscription(Base):
+    """Cached Whisper transcriptions keyed by a SHA-256 of the media URL.
+
+    Storing by URL hash means the same audio file is only transcribed once
+    even if it appears in multiple conversations or is requested by multiple
+    users simultaneously.
+    """
+    __tablename__ = "audio_transcriptions"
+
+    url_hash = Column(String(64), primary_key=True)   # SHA-256 hex of the raw URL
+    audio_url = Column(Text, nullable=False)
+    transcription = Column(Text, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    duration_s = Column(Integer, nullable=True)       # audio length in seconds, if returned
+
+
 class DailyAgentStat(Base):
     """Pre-aggregated per-day, per-canal, per-agent stats.
 
