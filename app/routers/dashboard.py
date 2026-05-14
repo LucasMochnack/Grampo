@@ -2327,6 +2327,7 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
     chat_panels_html = ""
     context_panels_html = ""
     unacked_alert_count = 0
+    _conv_agents_seen: list[str] = []  # ordered unique agents for dropdown
     intent_counts: dict[str, int] = defaultdict(int)
     intent_by_agent: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     convs_with_any_intent = 0
@@ -2414,7 +2415,9 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
         snippet_color = "#fca5a5" if has_alert else "#8a96aa"
 
         _search_val = f"{client_name} {phone} {agent} {last_text}".lower()
-        conv_cards_html += f"""<div class="gp-conv-card" id="card-{chat_id}" data-type="{'alerta' if has_alert else 'normal'}" data-search="{html_mod.escape(_search_val)}" onclick="selectConv('{chat_id}')">
+        if agent not in _conv_agents_seen:
+            _conv_agents_seen.append(agent)
+        conv_cards_html += f"""<div class="gp-conv-card" id="card-{chat_id}" data-type="{'alerta' if has_alert else 'normal'}" data-search="{html_mod.escape(_search_val)}" data-agent="{html_mod.escape(agent)}" onclick="selectConv('{chat_id}')">
   <div class="gp-av" style="width:36px;height:36px;background:{av_color};font-size:13px">{initials}</div>
   <div style="flex:1;min-width:0">
     <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
@@ -2531,6 +2534,14 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
         {alert_chip}
         <span class="gp-chip" onclick="filterCards('unread',this)">Não lidas</span>
       </div>
+      <select id="agent-filter" onchange="_applyFilters()"
+        style="width:100%;background:#0f1629;border:1px solid #1a2540;border-radius:8px;
+               color:#e8ecf1;font-size:12px;padding:7px 10px;outline:none;margin-bottom:6px;
+               font-family:'Montserrat',sans-serif;box-sizing:border-box;cursor:pointer;transition:.15s"
+        onfocus="this.style.borderColor='#0fa968'" onblur="this.style.borderColor='#1a2540'">
+        <option value="">👤  Todos os agentes</option>
+        {''.join(f'<option value="{html_mod.escape(a)}">{html_mod.escape(a)}</option>' for a in sorted(_conv_agents_seen))}
+      </select>
       <div style="position:relative">
         <input id="conv-search" type="text" placeholder="🔍  Buscar cliente, telefone ou agente…"
           oninput="searchConvs(this.value)"
@@ -2654,13 +2665,15 @@ function _applyFilters(){{
   var q=(document.getElementById('conv-search')||{{}}).value||'';
   q=q.toLowerCase().trim();
   var type=_activeFilter;
+  var agentSel=(document.getElementById('agent-filter')||{{}}).value||'';
   // Only filter today's cards (not hist cards)
   var cards=document.querySelectorAll('.gp-conv-card:not([data-hist])');
   var count=0;
   cards.forEach(function(c){{
     var typeOk=!type||c.getAttribute('data-type')===type||(type==='unread'&&c.querySelector('[style*="border-radius:9px"]'));
     var searchOk=!q||(c.getAttribute('data-search')||'').includes(q);
-    var show=typeOk&&searchOk;
+    var agentOk=!agentSel||(c.getAttribute('data-agent')||'')==agentSel;
+    var show=typeOk&&searchOk&&agentOk;
     c.style.display=show?'flex':'none';
     if(show)count++;
   }});
