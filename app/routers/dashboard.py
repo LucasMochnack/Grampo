@@ -2255,9 +2255,11 @@ def dashboard_conversas_export(request: Request, db: Session = Depends(get_db)):
     now_br = datetime.now(BRASILIA)
     today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    # Default: today only; optionally accept ?periodo=7dias
+    # Default: today only; optionally accept ?periodo=7dias|30dias
     periodo_exp = request.query_params.get("periodo", "hoje")
-    if periodo_exp == "7dias":
+    if periodo_exp == "30dias":
+        cutoff = today_start - timedelta(days=29)
+    elif periodo_exp == "7dias":
         cutoff = today_start - timedelta(days=6)
     else:
         cutoff = today_start
@@ -2386,9 +2388,10 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
     intent_by_agent: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     convs_with_any_intent = 0
     _AV_COLORS = ["#0fa968","#3b82f6","#8b5cf6","#f59e0b","#ef4444","#06b6d4","#ec4899","#14b8a6"]
+    _EPOCH_DT = datetime.min.replace(tzinfo=timezone.utc)
     idx = 0
-    for client_num, evs in sorted(groups.items(), key=lambda x: max(e.received_at for e in x[1]), reverse=True):
-        evs.sort(key=lambda e: e.received_at)
+    for client_num, evs in sorted(groups.items(), key=lambda x: max((e.received_at for e in x[1] if e.received_at), default=_EPOCH_DT), reverse=True):
+        evs.sort(key=lambda e: e.received_at or datetime.min.replace(tzinfo=timezone.utc))
         phone = _real_phone(client_num)  # strip ##agent## suffix if present
         agent = phone_learned.get(client_num) or client_agent_map.get(phone) or phone_learned.get(phone) or "Sem atendente"
         if not _user_sees(access, agent):
@@ -2584,9 +2587,9 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
         <a href="/dashboard/export?canal={canal}&periodo={'hoje' if _periodo_conv == 'hoje' else '7dias' if _periodo_conv == '7dias' else '30dias'}" style="font-size:10px;color:#0fa968;font-weight:700;text-decoration:none;display:flex;align-items:center;gap:4px" title="Exportar lista de conversas">⬇ CSV</a>
       </div>
       <div style="display:flex;gap:5px;margin-bottom:8px">
-        <a href="?canal={canal}&periodo_conv=hoje" style="text-decoration:none"><span class="gp-chip{'active' if _periodo_conv == 'hoje' else ''}" style="font-size:10px;padding:3px 10px">Hoje</span></a>
-        <a href="?canal={canal}&periodo_conv=7dias" style="text-decoration:none"><span class="gp-chip{'active' if _periodo_conv == '7dias' else ''}" style="font-size:10px;padding:3px 10px">7 dias</span></a>
-        <a href="?canal={canal}&periodo_conv=30dias" style="text-decoration:none"><span class="gp-chip{'active' if _periodo_conv == '30dias' else ''}" style="font-size:10px;padding:3px 10px">30 dias</span></a>
+        <a href="?canal={canal}&periodo_conv=hoje" style="text-decoration:none"><span class="gp-chip{' active' if _periodo_conv == 'hoje' else ''}" style="font-size:10px;padding:3px 10px">Hoje</span></a>
+        <a href="?canal={canal}&periodo_conv=7dias" style="text-decoration:none"><span class="gp-chip{' active' if _periodo_conv == '7dias' else ''}" style="font-size:10px;padding:3px 10px">7 dias</span></a>
+        <a href="?canal={canal}&periodo_conv=30dias" style="text-decoration:none"><span class="gp-chip{' active' if _periodo_conv == '30dias' else ''}" style="font-size:10px;padding:3px 10px">30 dias</span></a>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px">
         <span class="gp-chip active" onclick="filterCards('',this)">Todas</span>
@@ -3624,7 +3627,8 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
 
     active_alerts_html = ""
     n_active = 0
-    for client_num, evs in sorted(groups.items(), key=lambda x: max(e.received_at for e in x[1]), reverse=True):
+    _EPOCH_DT2 = datetime.min.replace(tzinfo=timezone.utc)
+    for client_num, evs in sorted(groups.items(), key=lambda x: max((e.received_at for e in x[1] if e.received_at), default=_EPOCH_DT2), reverse=True):
         phone = _real_phone(client_num)
         if phone in acked:
             continue
