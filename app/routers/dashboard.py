@@ -37,22 +37,95 @@ COMPANY_CHANNELS_MAP: dict[str, str] = {
 COMPANY_CHANNELS = set(COMPANY_CHANNELS_MAP.keys())
 HOUR_START, HOUR_END = 6, 19
 
-# ── Intent classification ───────────────────────────────────────────────────
+# ── Intent / Alert classification ────────────────────────────────────────────
 import re as _re
+
+# IDs dos 4 níveis de alerta (Política de Monitoramento – Jurídico)
+ALERT_IDS: frozenset[str] = frozenset({"alerta_critico", "alerta_alto", "alerta_monit", "alerta_oper"})
+
+# label e cor por nível — usados em toda a UI
+ALERT_LEVELS: dict[str, tuple[str, str]] = {
+    "alerta_critico": ("🔴 Crítico",     "#ef4444"),
+    "alerta_alto":    ("🟠 Alto Risco",  "#f97316"),
+    "alerta_monit":   ("🟡 Monitoramento", "#eab308"),
+    "alerta_oper":    ("🔵 Operacional", "#3b82f6"),
+}
 
 _INTENT_RULES: list[tuple[str, str, str, list[str]]] = [
     # (id, label, color, keywords)
-    ("alerta", "⚠ ALERTA", "#ef4444", [
+
+    # ── 🔴 Crítico: ação imediata ────────────────────────────────────────────
+    ("alerta_critico", "🔴 Crítico", "#ef4444", [
+        # Conduta / xingamentos / insatisfação grave (base original)
         "absurdo", "vergonha", "ridiculo", "ridículo", "palhaçada", "palhacada",
         "incompetente", "incompetência", "incompetencia", "lixo", "péssimo", "pessimo",
         "horrível", "horrivel", "nojo", "nojento", "merda", "porra", "caralho",
         "puta", "fdp", "vai se foder", "vai tomar", "filho da puta", "otário",
         "otario", "idiota", "imbecil", "babaca", "cuzão", "cuzao",
         "reclamação", "reclamacao", "reclamo", "reclamar", "procon",
-        "advogado", "ouvidoria", "denúncia", "denuncia",
+        "ouvidoria", "denúncia", "denuncia",
         "fraude", "roubando", "roubo", "enganado", "enganando",
-        "desrespeit", "falta de respeito", "abuso", "descaso",
+        "desrespeit", "falta de respeito", "descaso",
+        # Promessas de retorno / falsa segurança (Jurídico)
+        "100% seguro", "risco zero", "garantia total",
+        "não existe possibilidade de perda", "impossível dar errado",
+        "não tem como perder", "rentabilidade garantida", "lucro garantido",
+        "retorno fixo", "ganho mensal garantido", "crescimento constante",
+        "dobrar o dinheiro rápido", "rende muito ao mês", "lucro imediato",
+        "resultado certo", "funciona sempre", "nunca deu problema",
+        "não tem como falhar", "eu garanto",
+        # Liquidez indevida
+        "liquidez imediata", "resgata a qualquer momento sem perda",
+        "dinheiro disponível sempre", "saque instantâneo sem custo",
+        "resgate imediato",
+        # Desintermediação / pagamento irregular
+        "não precisa declarar", "me pagar por fora", "pagamento direto pra mim",
+        "comissão por fora", "isso não passa pela corretora",
+        "pagamento sem registro", "minha conta bancária", "deposite na minha conta",
+        "combinar valor",
+        # Risco jurídico iminente
+        "advogado", "vou processar", "dano moral", "isso é ilegal",
+        "processo judicial", "ação judicial",
     ]),
+
+    # ── 🟠 Alto Risco: análise prioritária ──────────────────────────────────
+    ("alerta_alto", "🟠 Alto Risco", "#f97316", [
+        # Urgência / pressão comercial
+        "última chance", "tem que decidir hoje", "é agora ou nunca",
+        "se não entrar agora", "todo mundo já investiu",
+        "não pode ficar de fora", "essa oportunidade não volta",
+        "todo mundo está fazendo",
+        # Influência indevida / autoridade
+        "confie apenas em mim", "eu escolho para você",
+        "sou especialista garantido", "consultor exclusivo certificado",
+        # Atuação irregular (consultoria sem habilitação)
+        "dou consultoria", "sou consultor", "analiso investimentos",
+        # Classificação inadequada de risco
+        "operação segura", "sem risco de crédito", "sem risco",
+        # Conflito de interesse
+        "mudar para fee", "ganho mais assim", "comissão maior", "compensa mais",
+    ]),
+
+    # ── 🟡 Monitoramento: risco potencial ────────────────────────────────────
+    ("alerta_monit", "🟡 Monitoramento", "#eab308", [
+        # Relacionamento / entendimento
+        "não fui avisado", "nao fui avisado",
+        "não me explicou", "nao me explicou",
+        "isso está errado", "isso esta errado",
+        "não concordo", "nao concordo",
+        # Insatisfação / risco de saída
+        "quero sair", "vou tirar tudo", "não quero mais", "nao quero mais",
+        "quero registrar reclamação", "quero registrar reclamacao",
+        "estou insatisfeito", "perdi dinheiro",
+    ]),
+
+    # ── 🔵 Operacional: rastreabilidade ─────────────────────────────────────
+    ("alerta_oper", "🔵 Operacional", "#3b82f6", [
+        "faz por aqui", "depois eu formalizo", "pode executar",
+        "não precisa registrar", "nao precisa registrar",
+        "sem e-mail", "me manda no whatsapp", "só confirma aqui", "so confirma aqui",
+    ]),
+]
     ("reuniao", "Reunião", "#3b82f6", [
         "reunião", "reuniao", "meet", "agenda", "agendar", "agendado",
         "horário", "horario", "disponível", "disponivel", "disponibilidade",
@@ -79,7 +152,9 @@ _INTENT_RULES: list[tuple[str, str, str, list[str]]] = [
 
 def _classify_conversation(messages_texts: list[tuple[str, str]]) -> list[tuple[str, str, str]]:
     """Classify conversation intent from list of (direction, text).
-    Returns list of (id, label, color) for matched intents."""
+    Returns list of (id, label, color) for matched intents.
+    Alert levels are sorted by severity: Crítico → Alto → Monit. → Operacional.
+    """
     found: dict[str, tuple[str, str, str]] = {}
     for direction, text in messages_texts:
         lower = text.lower()
@@ -87,24 +162,27 @@ def _classify_conversation(messages_texts: list[tuple[str, str]]) -> list[tuple[
             if intent_id in found:
                 continue
             for kw in keywords:
-                # Use word-boundary matching to avoid false positives
-                # (e.g., "puta" inside "disputa", "reputação")
                 if " " in kw:
-                    # multi-word phrases: substring match is fine
                     if kw in lower:
                         found[intent_id] = (intent_id, label, color)
                         break
                 else:
-                    # single word: require word boundary at start
                     if _re.search(r'\b' + _re.escape(kw), lower):
                         found[intent_id] = (intent_id, label, color)
                         break
-    # Sort: alerta always first
+    # Sort: alerts first (in severity order), then other intents
+    _ALERT_ORDER = ["alerta_critico", "alerta_alto", "alerta_monit", "alerta_oper"]
     result = []
-    if "alerta" in found:
-        result.append(found.pop("alerta"))
+    for aid in _ALERT_ORDER:
+        if aid in found:
+            result.append(found.pop(aid))
     result.extend(found.values())
     return result
+
+
+def _top_alert(intents: list[tuple[str, str, str]]) -> tuple[str, str, str] | None:
+    """Return the highest-severity alert intent tuple, or None."""
+    return next((i for i in intents if i[0] in ALERT_IDS), None)
 
 
 def _intent_badges(intents: list[tuple[str, str, str]]) -> str:
@@ -1399,7 +1477,7 @@ def dashboard_overview(request: Request, db: Session = Depends(get_db)):
         ctexts = [(_extract_direction(ev.raw_payload or {}),
                    _extract_content_preview(ev.raw_payload or {}) or "")
                   for ev in evs if _extract_content_preview(ev.raw_payload or {})]
-        if any(i[0] == "alerta" for i in _classify_conversation(ctexts)):
+        if any(i[0] in ALERT_IDS for i in _classify_conversation(ctexts)):
             if ph not in acked_alerts:
                 n_alerts += 1
 
@@ -1558,7 +1636,7 @@ def dashboard_overview(request: Request, db: Session = Depends(get_db)):
         ctexts = [(_extract_direction(ev.raw_payload or {}),
                    _extract_content_preview(ev.raw_payload or {}) or "")
                   for ev in evs if _extract_content_preview(ev.raw_payload or {})]
-        if not any(i[0] == "alerta" for i in _classify_conversation(ctexts)):
+        if not any(i[0] in ALERT_IDS for i in _classify_conversation(ctexts)):
             continue
         _al_shown += 1
         cn = client_name_map.get(ph, "")
@@ -2423,18 +2501,18 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
             intent_counts[iid] += 1
             intent_by_agent[agent][iid] += 1
 
-        # Alert detection
-        has_alert = any(i[0] == "alerta" for i in intents)
+        # Alert detection — uses the full keyword list from all 4 alert rules
+        _top_alrt = _top_alert(intents)
+        has_alert = _top_alrt is not None
+        alert_level_id    = _top_alrt[0] if _top_alrt else ""
+        alert_level_label = _top_alrt[1] if _top_alrt else ""
+        alert_level_color = _top_alrt[2] if _top_alrt else "#ef4444"
         alert_snippet = ""
         if has_alert:
-            _alert_kws = ["absurdo", "vergonha", "ridiculo", "ridículo", "palhaçada",
-                "incompetente", "lixo", "péssimo", "pessimo", "horrível", "horrivel", "merda", "porra",
-                "caralho", "puta", "fdp", "vai se foder", "idiota", "imbecil", "babaca",
-                "reclamação", "reclamacao", "reclamo", "procon", "advogado",
-                "fraude", "roubando", "desrespeit", "falta de respeito", "abuso", "descaso"]
+            _all_alert_kws = [kw for aid, _, _, kws in _INTENT_RULES if aid in ALERT_IDS for kw in kws]
             for _dir, text in conv_texts:
                 lower = text.lower()
-                for kw in _alert_kws:
+                for kw in _all_alert_kws:
                     matched = (kw in lower) if " " in kw else bool(_re.search(r'\b' + _re.escape(kw), lower))
                     if matched:
                         alert_snippet = text[:120]
@@ -2469,8 +2547,8 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
 
         # ── Conversation card (left panel) ──────────────────────────────────
         unread_badge_html = f'<span style="margin-left:auto;background:#0fa968;color:#fff;font-size:10px;font-weight:700;min-width:18px;text-align:center;padding:1px 6px;border-radius:9px">{in_count}</span>' if in_count > 0 else ""
-        alert_dot = '<span style="color:#ef4444;margin-right:4px;font-size:13px">⚠</span>' if has_alert else ""
-        snippet_color = "#fca5a5" if has_alert else "#8a96aa"
+        alert_dot = f'<span style="color:{alert_level_color};margin-right:4px;font-size:12px;font-weight:700">{alert_level_label}</span>' if has_alert else ""
+        snippet_color = alert_level_color if has_alert else "#8a96aa"
 
         _search_val = f"{client_name} {phone} {agent} {last_text}".lower()
         if agent not in _conv_agents_seen:
@@ -2495,7 +2573,9 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
 </div>"""
 
         # ── Chat panel (center) — lazy loaded via AJAX ──────────────────────
-        alert_badge_chat = '<span style="background:#3a1414;color:#ef4444;border:1px solid #5a2424;padding:4px 10px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:.5px">⚠ ALERTA</span>' if has_alert else ""
+        _alrt_bg = {"#ef4444":"#3a1414","#f97316":"#3a1a0a","#eab308":"#2a2208","#3b82f6":"#0d1a38"}.get(alert_level_color,"#1a1a1a")
+        _alrt_border = {"#ef4444":"#5a2424","#f97316":"#6a3010","#eab308":"#4a4010","#3b82f6":"#1a2a5a"}.get(alert_level_color,"#333")
+        alert_badge_chat = f'<span style="background:{_alrt_bg};color:{alert_level_color};border:1px solid {_alrt_border};padding:4px 10px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:.5px">{alert_level_label}</span>' if has_alert else ""
         ok_btn_chat = f'<button onclick="ackAlert(\'{safe_phone}\',\'{html_mod.escape(agent).replace(chr(39),"&#39;")}\',\'{safe_snippet}\',\'{safe_display_name}\',\'{chat_id}\')" style="background:#0fa968;color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:11px;font-weight:700;cursor:pointer;font-family:\'Montserrat\',sans-serif">✓ OK</button>' if has_alert else ""
         _enc_key = html_mod.escape(client_num)
         _enc_canal = html_mod.escape(canal)
@@ -3620,12 +3700,6 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
     groups, phone_learned = _cg, _cpl  # cached groups
     _cp = _real_phone(canal); groups = {k: v for k, v in groups.items() if _real_phone(k) != _cp}
 
-    _alert_kws_al = ["absurdo", "vergonha", "ridiculo", "ridículo", "palhaçada",
-        "incompetente", "lixo", "péssimo", "pessimo", "horrível", "horrivel", "merda", "porra",
-        "caralho", "puta", "fdp", "vai se foder", "idiota", "imbecil", "babaca",
-        "reclamação", "reclamacao", "reclamo", "procon", "advogado",
-        "fraude", "roubando", "desrespeit", "falta de respeito", "abuso", "descaso"]
-
     active_alerts_html = ""
     n_active = 0
     _EPOCH_DT2 = datetime.min.replace(tzinfo=timezone.utc)
@@ -3642,33 +3716,40 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
             d = _extract_direction(p); c = _extract_content_preview(p) or ""
             if c: conv_texts.append((d, c))
         intents = _classify_conversation(conv_texts)
-        if not any(i[0] == "alerta" for i in intents):
+        if not any(i[0] in ALERT_IDS for i in intents):
             continue
+        top_alrt = _top_alert(intents)
+        alrt_label = top_alrt[1] if top_alrt else "⚠ Alerta"
+        alrt_color = top_alrt[2] if top_alrt else "#ef4444"
+        _alrt_bg2  = {"#ef4444":"#1a0e0e","#f97316":"#1a1008","#eab308":"#1a1a08","#3b82f6":"#0a1028"}.get(alrt_color,"#1a1a1a")
+        _alrt_bd2  = {"#ef4444":"#5a2424","#f97316":"#6a3010","#eab308":"#4a4010","#3b82f6":"#1a2a5a"}.get(alrt_color,"#333")
+        # Find the triggering snippet using all alert keywords
+        _all_alert_kws2 = [kw for aid, _, _, kws in _INTENT_RULES if aid in ALERT_IDS for kw in kws]
         alert_snippet = ""
         for _d, text in conv_texts:
-            for kw in _alert_kws_al:
+            for kw in _all_alert_kws2:
                 if (kw in text.lower()) if " " in kw else bool(_re.search(r'\b' + _re.escape(kw), text.lower())):
                     alert_snippet = text[:120]; break
             if alert_snippet: break
         client_name = client_name_map.get(phone, "")
         display = html_mod.escape(client_name if client_name else phone)
         badge = _segment_badge(agent)
-        last_ev = max(evs, key=lambda e: e.received_at)
+        last_ev = max(evs, key=lambda e: e.received_at or datetime.min.replace(tzinfo=timezone.utc))
         ts_str = last_ev.received_at.astimezone(BRASILIA).strftime("%d/%m %H:%M") if last_ev.received_at else ""
         safe_phone = html_mod.escape(phone)
         safe_agent = html_mod.escape(agent)
         safe_snippet = html_mod.escape(alert_snippet).replace("'", "&#39;")
         safe_display = html_mod.escape(client_name if client_name else phone).replace("'", "&#39;")
         n_active += 1
-        active_alerts_html += f"""<div style="background:#1a0e0e;border:1px solid #5a2424;border-radius:8px;padding:12px 16px;margin-bottom:8px;display:flex;align-items:center;gap:12px">
-  <span style="color:#ef4444;font-size:18px;flex-shrink:0">⚠</span>
+        active_alerts_html += f"""<div style="background:{_alrt_bg2};border:1px solid {_alrt_bd2};border-radius:8px;padding:12px 16px;margin-bottom:8px;display:flex;align-items:center;gap:12px">
+  <span style="font-size:13px;font-weight:700;flex-shrink:0;color:{alrt_color}">{alrt_label}</span>
   <div style="flex:1;min-width:0">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
       <span style="font-size:13px;font-weight:700;color:#fff">{display}</span>{badge}
       <span style="font-size:11px;color:#8a96aa;margin-left:4px">com {safe_agent}</span>
       <span style="font-size:10.5px;color:#5a6a8a;margin-left:auto;flex-shrink:0;font-family:'JetBrains Mono',monospace">{ts_str}</span>
     </div>
-    <div style="font-size:11.5px;color:#fca5a5;font-style:italic">"{html_mod.escape(alert_snippet)}..."</div>
+    <div style="font-size:11.5px;color:{alrt_color};opacity:.85;font-style:italic">"{html_mod.escape(alert_snippet)}..."</div>
   </div>
   <button onclick="ackAlertPage('{safe_phone}','{safe_agent}','{safe_snippet}','{safe_display}',this)" style="background:#0fa968;border:none;color:#fff;padding:5px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif;flex-shrink:0">✓ OK</button>
 </div>"""
