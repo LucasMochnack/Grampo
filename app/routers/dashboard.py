@@ -125,7 +125,8 @@ _INTENT_RULES: list[tuple[str, str, str, list[str]]] = [
         "não precisa registrar", "nao precisa registrar",
         "sem e-mail", "me manda no whatsapp", "só confirma aqui", "so confirma aqui",
     ]),
-]
+
+    # ── Outros contextos ─────────────────────────────────────────────────────
     ("reuniao", "Reunião", "#3b82f6", [
         "reunião", "reuniao", "meet", "agenda", "agendar", "agendado",
         "horário", "horario", "disponível", "disponivel", "disponibilidade",
@@ -3989,11 +3990,11 @@ def dashboard_diagnostico(request: Request, db: Session = Depends(get_db)):
     canal = request.query_params.get("canal", "5519997733651")
     now_br = datetime.now(BRASILIA)
     today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
-    cutoff_7d   = today_start - timedelta(days=6)
-    cutoff_utc  = cutoff_7d.astimezone(timezone.utc)
+    cutoff_30d  = today_start - timedelta(days=29)
+    cutoff_utc  = cutoff_30d.astimezone(timezone.utc)
 
     all_events, _cg, _cpl, client_agent_map, client_name_map = _load_period_pipeline(
-        db, canal, cutoff_utc, 50000
+        db, canal, cutoff_utc, 100000
     )
     db.close()
 
@@ -4047,7 +4048,58 @@ def dashboard_diagnostico(request: Request, db: Session = Depends(get_db)):
     total = ok_count + len(sem_atendente) + len(conv_unresolved)
     pct_ok = round(ok_count / total * 100) if total else 0
 
+    # ── Alert analysis (30 days) ─────────────────────────────────────────────
+    _all_alert_kws = [kw for aid, _, _, kws in _INTENT_RULES if aid in ALERT_IDS for kw in kws]
+    alert_level_counts:   dict[str, int]        = defaultdict(int)
+    alert_level_examples: dict[str, list]       = defaultdict(list)
+    alert_kw_counts:      dict[str, int]        = defaultdict(int)
+
+    for _akey, _aevs in groups.items():
+        _aph = _real_phone(_akey)
+        _aagent = (phone_learned.get(_akey) or client_agent_map.get(_aph)
+                   or phone_learned.get(_aph) or "Sem atendente")
+        _conv_texts: list[tuple[str, str]] = []
+        for _ev in _aevs:
+            _p = _ev.raw_payload or {}
+            _c = _extract_content_preview(_p) or ""
+            _d = _extract_direction(_p)
+            if _c:
+                _conv_texts.append((_d, _c))
+
+        _intents = _classify_conversation(_conv_texts)
+        _top = _top_alert(_intents)
+        if not _top:
+            continue
+
+        _lid = _top[0]
+        alert_level_counts[_lid] += 1
+
+        _mkw = ""
+        _snip = ""
+        for _d2, _txt in _conv_texts:
+            _lower = _txt.lower()
+            for _kw in _all_alert_kws:
+                _hit = (_kw in _lower) if " " in _kw else bool(
+                    _re.search(r'\b' + _re.escape(_kw), _lower))
+                if _hit:
+                    _mkw  = _kw
+                    _snip = _txt[:120]
+                    alert_kw_counts[_kw] += 1
+                    break
+            if _mkw:
+                break
+
+        _acname = client_name_map.get(_aph, _aph or _akey[:20])
+        if len(alert_level_examples[_lid]) < 8:
+            alert_level_examples[_lid].append((_aagent, _acname, _snip, _mkw))
+
+    _total_alerts = sum(alert_level_counts.values())
+    _alert_coverage = round(_total_alerts / len(groups) * 100) if groups else 0
+
     nav = _nav_html("agentes", canal=canal, is_admin=True, title="Diagnóstico")
+
+    table_style = "width:100%;border-collapse:collapse;background:#0b1120;border-radius:8px;overflow:hidden"
+    th_style = "padding:8px 12px;text-align:left;font-size:10px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540"
 
     def _row(cells, header=False):
         tag = "th" if header else "td"
@@ -4060,25 +4112,81 @@ def dashboard_diagnostico(request: Request, db: Session = Depends(get_db)):
     zero_rows = "".join(_row([html_mod.escape(a), AGENT_SEGMENT.get(a,""), '<span style="color:#5a6a8a">0 conversas</span>']) for a in sorted(zero_agents)) or "<tr><td colspan='3' style='padding:10px;color:#0fa968;font-size:12px'>✅ Todos ativos</td></tr>"
 
     def _card(title, value, color, sub=""):
-        return f'<div style="background:#0d1630;border:1px solid #1a2540;border-radius:10px;padding:18px 22px;min-width:140px"><div style="font-size:10px;color:#5a6a8a;letter-spacing:1px;font-weight:700;margin-bottom:6px">{title}</div><div style="font-size:28px;font-weight:700;color:{color};font-family:monospace">{value}</div>{f"<div style=\\"font-size:11px;color:#5a6a8a;margin-top:4px\\">{sub}</div>" if sub else ""}</div>'
+        _sub_html = '<div style="font-size:11px;color:#5a6a8a;margin-top:4px">' + str(sub) + '</div>' if sub else ''
+        return (
+            '<div style="background:#0d1630;border:1px solid #1a2540;border-radius:10px;'
+            'padding:18px 22px;min-width:140px">'
+            '<div style="font-size:10px;color:#5a6a8a;letter-spacing:1px;font-weight:700;margin-bottom:6px">'
+            + str(title) + '</div>'
+            '<div style="font-size:28px;font-weight:700;color:' + color + ';font-family:monospace">'
+            + str(value) + '</div>'
+            + _sub_html + '</div>'
+        )
 
     cards_html = (
-        _card("TOTAL 7D", total, "#e8ecf1") +
+        _card("TOTAL 30D", total, "#e8ecf1") +
         _card("COM AGENTE", ok_count, "#0fa968", f"{pct_ok}% cobertura") +
         _card("SEM ATENDENTE", len(sem_atendente), "#ef4444" if sem_atendente else "#0fa968") +
         _card("NÃO RESOLVIDOS", len(conv_unresolved), "#f59e0b" if conv_unresolved else "#0fa968") +
         _card("AGENTES DESCONHECIDOS", len(unknown_agents), "#f59e0b" if unknown_agents else "#0fa968")
     )
 
-    table_style = "width:100%;border-collapse:collapse;background:#0b1120;border-radius:8px;overflow:hidden"
-    th_style = "padding:8px 12px;text-align:left;font-size:10px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540"
+    # ── Alert level summary cards ────────────────────────────────────────────
+    _alert_order = [
+        ("alerta_critico", "🔴 Crítico",       "#ef4444"),
+        ("alerta_alto",    "🟠 Alto Risco",    "#f97316"),
+        ("alerta_monit",   "🟡 Monitoramento", "#eab308"),
+        ("alerta_oper",    "🔵 Operacional",   "#3b82f6"),
+    ]
+    alert_cards_html = "".join(
+        _card(lbl.upper(), alert_level_counts.get(lid, 0), color)
+        for lid, lbl, color in _alert_order
+    ) + _card("COBERTURA", f"{_alert_coverage}%", "#8a96aa", f"{_total_alerts} de {len(groups)} convs")
+
+    # ── Alert level detail tables ────────────────────────────────────────────
+    def _alert_section(lid, lbl, color):
+        cnt = alert_level_counts.get(lid, 0)
+        exs = alert_level_examples.get(lid, [])
+        rows = "".join(
+            _row([
+                html_mod.escape(ag),
+                html_mod.escape(cl),
+                f'<span style="background:#1a2540;color:{color};padding:2px 8px;border-radius:4px;font-size:10px">[{html_mod.escape(kw)}]</span>',
+                f'<span style="color:#8a96aa;font-size:11px">{html_mod.escape(sn[:100])}</span>',
+            ])
+            for ag, cl, sn, kw in exs
+        ) or f'<tr><td colspan="4" style="padding:10px;color:#5a6a8a;font-size:12px">Nenhuma conversa neste nível</td></tr>'
+        return f"""
+  <div style="margin-bottom:28px">
+    <div style="font-size:13px;font-weight:700;color:{color};margin-bottom:8px">{lbl} — {cnt} conversas (30 dias)</div>
+    <table style="{table_style}">
+      <thead><tr>
+        <th style="{th_style}">AGENTE</th>
+        <th style="{th_style}">CLIENTE</th>
+        <th style="{th_style}">GATILHO</th>
+        <th style="{th_style}">TRECHO</th>
+      </tr></thead>
+      <tbody>{rows}</tbody>
+    </table>
+    {f'<div style="font-size:11px;color:#5a6a8a;margin-top:4px">Mostrando {len(exs)} exemplos de {cnt}</div>' if cnt > len(exs) else ''}
+  </div>"""
+
+    alert_details_html = "".join(_alert_section(lid, lbl, color) for lid, lbl, color in _alert_order)
+
+    # ── Top triggered keywords ───────────────────────────────────────────────
+    top_kws = sorted(alert_kw_counts.items(), key=lambda x: -x[1])[:25]
+    kw_rows = "".join(
+        _row([f'<span style="background:#1a2540;color:#8a96aa;padding:2px 8px;border-radius:4px;font-size:11px">[{html_mod.escape(kw)}]</span>',
+              f'<span style="font-family:monospace;font-size:13px;color:#e8ecf1">{cnt}</span>'])
+        for kw, cnt in top_kws
+    ) or f'<tr><td colspan="2" style="padding:10px;color:#5a6a8a;font-size:12px">Nenhum gatilho disparado</td></tr>'
 
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Diagnóstico</title>{COMMON_CSS}</head><body>
 {nav}
 <div style="max-width:1100px;margin:30px auto;padding:0 24px">
   <div style="margin-bottom:24px">
     <div style="font-size:20px;font-weight:700;color:#e8ecf1;margin-bottom:4px">🔍 Diagnóstico de Dados</div>
-    <div style="font-size:12px;color:#5a6a8a">Últimos 7 dias · canal {html_mod.escape(canal)}</div>
+    <div style="font-size:12px;color:#5a6a8a">Últimos 30 dias · canal {html_mod.escape(canal)}</div>
   </div>
 
   <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:32px">{cards_html}</div>
@@ -4116,10 +4224,31 @@ def dashboard_diagnostico(request: Request, db: Session = Depends(get_db)):
 
   <!-- Agentes com zero conversas -->
   <div style="margin-bottom:32px">
-    <div style="font-size:13px;font-weight:700;color:#5a6a8a;margin-bottom:10px">😶 Agentes sem conversas nos últimos 7 dias ({len(zero_agents)})</div>
+    <div style="font-size:13px;font-weight:700;color:#5a6a8a;margin-bottom:10px">😶 Agentes sem conversas nos últimos 30 dias ({len(zero_agents)})</div>
     <table style="{table_style}">
-      <thead><tr><th style="{th_style}">AGENTE</th><th style="{th_style}">SEGMENTO</th><th style="{th_style}">7 DIAS</th></tr></thead>
+      <thead><tr><th style="{th_style}">AGENTE</th><th style="{th_style}">SEGMENTO</th><th style="{th_style}">30 DIAS</th></tr></thead>
       <tbody>{zero_rows}</tbody>
+    </table>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <!-- ANÁLISE DE ALERTAS 30 DIAS                                             -->
+  <!-- ═══════════════════════════════════════════════════════════════════════ -->
+  <div style="border-top:2px solid #1a2540;padding-top:32px;margin-bottom:28px">
+    <div style="font-size:20px;font-weight:700;color:#e8ecf1;margin-bottom:4px">🚨 Análise de Alertas de Conformidade</div>
+    <div style="font-size:12px;color:#5a6a8a">Últimos 30 dias · {len(groups)} conversas analisadas · {_total_alerts} com alerta ({_alert_coverage}% cobertura)</div>
+  </div>
+
+  <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:32px">{alert_cards_html}</div>
+
+  {alert_details_html}
+
+  <!-- Top keywords -->
+  <div style="margin-bottom:32px">
+    <div style="font-size:13px;font-weight:700;color:#8a96aa;margin-bottom:10px">🔑 Top 25 gatilhos disparados (30 dias)</div>
+    <table style="{table_style};max-width:480px">
+      <thead><tr><th style="{th_style}">GATILHO</th><th style="{th_style}">OCORRÊNCIAS</th></tr></thead>
+      <tbody>{kw_rows}</tbody>
     </table>
   </div>
 
