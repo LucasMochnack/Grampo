@@ -53,61 +53,99 @@ ALERT_LEVELS: dict[str, tuple[str, str]] = {
 
 _INTENT_RULES: list[tuple[str, str, str, list[str]]] = [
     # (id, label, color, keywords)
+    # ──────────────────────────────────────────────────────────────────────────
+    # Calibrado após audit de 1.990 conversas em 02/04→15/05/2026:
+    #   • Removidas keywords genéricas que viraram falso positivo (resgate imediato,
+    #     liquidez imediata, advogado, sem risco) — agora exigem composto/contexto.
+    #   • Insultos mais leves (péssimo, horrível, imbecil) movidos pra Monitoramento.
+    #   • Crítico = obscenidade pesada, fraude, promessa indevida, ouvidoria, ação
+    #     judicial. Não é mais gatilhado por reclamação genérica.
+    # ──────────────────────────────────────────────────────────────────────────
 
     # ── 🔴 Crítico: ação imediata ────────────────────────────────────────────
     ("alerta_critico", "🔴 Crítico", "#ef4444", [
-        # Conduta / xingamentos / insatisfação grave (base original)
-        "absurdo", "vergonha", "ridiculo", "ridículo", "palhaçada", "palhacada",
-        "incompetente", "incompetência", "incompetencia", "lixo", "péssimo", "pessimo",
-        "horrível", "horrivel", "nojo", "nojento", "merda", "porra", "caralho",
-        "puta", "fdp", "vai se foder", "vai tomar", "filho da puta", "otário",
-        "otario", "idiota", "imbecil", "babaca", "cuzão", "cuzao",
-        "reclamação", "reclamacao", "reclamo", "reclamar", "procon",
-        "ouvidoria", "denúncia", "denuncia",
-        "fraude", "roubando", "roubo", "enganado", "enganando",
-        "desrespeit", "falta de respeito", "descaso",
+        # Obscenidade explícita / agressão
+        "merda", "porra", "caralho", "puta", "fdp", "vai se foder", "vai tomar",
+        "filho da puta", "cuzão", "cuzao", "vai a merda", "vai pra puta",
+        # Reclamação formal / canais de ouvidoria
+        "procon", "ouvidoria", "denúncia", "denuncia", "anbima",
+        "cvm", "banco central", "bacen",
+        "quero registrar uma reclamação", "quero registrar uma reclamacao",
+        "vou abrir uma reclamação", "vou abrir uma reclamacao",
+        # Acusação de fraude
+        "fraude", "fraudou", "fraudulent", "estelionato",
+        "está me roubando", "me roubou", "fui roubado",
+        "vocês me enganaram", "voces me enganaram", "fui enganado",
         # Promessas de retorno / falsa segurança (Jurídico)
-        "100% seguro", "risco zero", "garantia total",
+        "100% seguro", "100 por cento seguro", "risco zero", "garantia total",
         "não existe possibilidade de perda", "impossível dar errado",
         "não tem como perder", "rentabilidade garantida", "lucro garantido",
-        "retorno fixo", "ganho mensal garantido", "crescimento constante",
-        "dobrar o dinheiro rápido", "rende muito ao mês", "lucro imediato",
+        "retorno fixo garantido", "ganho mensal garantido", "crescimento constante garantido",
+        "dobrar o dinheiro rápido", "lucro imediato garantido",
         "resultado certo", "funciona sempre", "nunca deu problema",
-        "não tem como falhar", "eu garanto",
-        # Liquidez indevida
-        "liquidez imediata", "resgata a qualquer momento sem perda",
+        "não tem como falhar", "eu garanto o retorno", "eu garanto o lucro",
+        "eu garanto o ganho",
+        # Liquidez indevida — exige contexto de garantia (jargão técnico standalone foi removido)
+        "resgate imediato sem perda", "resgate imediato sem risco",
+        "resgate imediato garantido", "garantia de resgate imediato",
+        "liquidez imediata sem risco", "liquidez imediata garantida",
+        "resgata a qualquer momento sem perda",
         "dinheiro disponível sempre", "saque instantâneo sem custo",
-        "resgate imediato",
         # Desintermediação / pagamento irregular
         "não precisa declarar", "me pagar por fora", "pagamento direto pra mim",
-        "comissão por fora", "isso não passa pela corretora",
-        "pagamento sem registro", "minha conta bancária", "deposite na minha conta",
-        "combinar valor",
-        # Risco jurídico iminente
-        "advogado", "vou processar", "dano moral", "isso é ilegal",
-        "processo judicial", "ação judicial",
+        "comissão por fora", "comissao por fora",
+        "isso não passa pela corretora", "isso nao passa pela corretora",
+        "pagamento sem registro", "deposite na minha conta", "pix na minha conta",
+        "transferência na minha conta", "transferencia na minha conta",
+        "combinar valor por fora",
+        # Risco jurídico iminente — "advogado" sozinho foi removido (falso positivo)
+        "meu advogado", "chamar meu advogado", "falar com advogado",
+        "consultar meu advogado", "consultar um advogado",
+        "acionar advogado", "vou processar", "te processar", "vou na justiça",
+        "dano moral", "ação na justiça", "isso é ilegal", "isso e ilegal",
+        "processo judicial", "ação judicial", "acao judicial",
     ]),
 
     # ── 🟠 Alto Risco: análise prioritária ──────────────────────────────────
     ("alerta_alto", "🟠 Alto Risco", "#f97316", [
         # Urgência / pressão comercial
-        "última chance", "tem que decidir hoje", "é agora ou nunca",
-        "se não entrar agora", "todo mundo já investiu",
-        "não pode ficar de fora", "essa oportunidade não volta",
-        "todo mundo está fazendo",
+        "última chance", "ultima chance", "tem que decidir hoje",
+        "é agora ou nunca", "e agora ou nunca",
+        "se não entrar agora", "se nao entrar agora",
+        "todo mundo já investiu", "todo mundo ja investiu",
+        "não pode ficar de fora", "nao pode ficar de fora",
+        "essa oportunidade não volta", "essa oportunidade nao volta",
+        "todo mundo está fazendo", "todo mundo esta fazendo",
         # Influência indevida / autoridade
-        "confie apenas em mim", "eu escolho para você",
+        "confie apenas em mim", "eu escolho para você", "eu escolho para voce",
         "sou especialista garantido", "consultor exclusivo certificado",
-        # Atuação irregular (consultoria sem habilitação)
-        "dou consultoria", "sou consultor", "analiso investimentos",
-        # Classificação inadequada de risco
-        "operação segura", "sem risco de crédito", "sem risco",
+        # Atuação irregular (consultoria sem habilitação) —
+        # "sou consultor" mantém porque é declaração explícita do agente
+        "dou consultoria", "sou consultor", "presto consultoria",
+        "faço consultoria de investimento", "analiso investimentos pra você",
+        # Classificação inadequada de risco — "sem risco" sozinho foi composto
+        "operação segura", "operacao segura",
+        "sem risco de crédito", "sem risco de credito",
+        "investimento sem risco", "aplicação sem risco", "aplicacao sem risco",
+        "retorno sem risco", "rentabilidade sem risco", "ganho sem risco",
+        "completamente sem risco",
         # Conflito de interesse
-        "mudar para fee", "ganho mais assim", "comissão maior", "compensa mais",
+        "mudar para fee", "vou ganhar mais assim", "comissão maior pra mim",
+        "comissao maior pra mim",
     ]),
 
     # ── 🟡 Monitoramento: risco potencial ────────────────────────────────────
     ("alerta_monit", "🟡 Monitoramento", "#eab308", [
+        # Insatisfação genérica (movidos do Crítico após audit)
+        "absurdo", "vergonha", "ridiculo", "ridículo",
+        "palhaçada", "palhacada",
+        "incompetente", "incompetência", "incompetencia",
+        "lixo", "péssimo", "pessimo", "horrível", "horrivel",
+        "nojo", "nojento",
+        "otário", "otario", "idiota", "imbecil", "babaca",
+        "desrespeit", "falta de respeito", "descaso",
+        # Reclamação genérica (sem ser ouvidoria formal)
+        "reclamação", "reclamacao", "reclamo", "vou reclamar",
         # Relacionamento / entendimento
         "não fui avisado", "nao fui avisado",
         "não me explicou", "nao me explicou",
@@ -115,15 +153,23 @@ _INTENT_RULES: list[tuple[str, str, str, list[str]]] = [
         "não concordo", "nao concordo",
         # Insatisfação / risco de saída
         "quero sair", "vou tirar tudo", "não quero mais", "nao quero mais",
-        "quero registrar reclamação", "quero registrar reclamacao",
         "estou insatisfeito", "perdi dinheiro",
+        # Sentimento de engano (sem acusar fraude explicitamente)
+        "fui mal orientado", "fui mal informado",
     ]),
 
     # ── 🔵 Operacional: rastreabilidade ─────────────────────────────────────
+    # NOTA: 0 disparos em 1.990 conversas no audit de 15/05/2026.
+    # Pode significar (a) os agentes não fazem isso, ou (b) as expressões não
+    # casam com a linguagem real. Revisitar com Jurídico se quiserem reforçar.
     ("alerta_oper", "🔵 Operacional", "#3b82f6", [
-        "faz por aqui", "depois eu formalizo", "pode executar",
+        "faz por aqui mesmo", "depois eu formalizo", "depois a gente formaliza",
+        "pode executar sem ordem", "pode executar sem formalizar",
         "não precisa registrar", "nao precisa registrar",
-        "sem e-mail", "me manda no whatsapp", "só confirma aqui", "so confirma aqui",
+        "não precisa de e-mail", "nao precisa de e-mail",
+        "sem e-mail mesmo", "me manda só no whatsapp", "me manda so no whatsapp",
+        "só confirma aqui", "so confirma aqui",
+        "confirma aqui que eu executo", "vou rodar sem ordem formal",
     ]),
 
     # ── Outros contextos ─────────────────────────────────────────────────────
@@ -643,25 +689,32 @@ def _extract_direction(payload: dict) -> str:
         return ""
 
 
-def _extract_content_preview(payload: dict) -> str:
+def _extract_content_preview(payload: dict, max_len: int = 300) -> str:
+    """Extract the readable text/etiqueta from a payload.
+
+    Args:
+        max_len: cap on returned text length. Default 300 (display purposes).
+            Use a larger value (e.g. 2000) for classification so keywords
+            aren't lost past char 300 in long messages.
+    """
     try:
         msg = payload.get("message", {})
         contents = msg.get("contents", [])
         if isinstance(contents, list):
             for c in contents:
                 if isinstance(c, str):
-                    return c[:300]
+                    return c[:max_len]
                 if not isinstance(c, dict):
                     continue
                 for key in ("text", "body", "payload"):
                     txt = c.get(key, "")
                     if txt and isinstance(txt, str):
-                        return txt[:300]
+                        return txt[:max_len]
                     elif txt and isinstance(txt, dict):
                         # Nested: {'text': {'text': '...'}}
                         inner = txt.get("text", "") or txt.get("body", "")
                         if inner:
-                            return str(inner)[:300]
+                            return str(inner)[:max_len]
                 # Handle Zenvia Conversations API nested payload.json (templates, files)
                 inner_payload = c.get("payload")
                 if isinstance(inner_payload, dict):
@@ -670,15 +723,15 @@ def _extract_content_preview(payload: dict) -> str:
                         # Template: payload.json.text
                         tmpl_text = inner_json.get("text", "")
                         if tmpl_text:
-                            return str(tmpl_text)[:300]
+                            return str(tmpl_text)[:max_len]
                         # File: payload.json.fileCaption / fileName
                         fcaption = inner_json.get("fileCaption", "")
                         fname_inner = inner_json.get("fileName", "")
                         fmime = inner_json.get("fileMimeType", "")
                         if fcaption:
-                            return f"[ARQUIVO] {fcaption}"[:300]
+                            return f"[ARQUIVO] {fcaption}"[:max_len]
                         if fname_inner:
-                            return f"[ARQUIVO] {fname_inner}"[:300]
+                            return f"[ARQUIVO] {fname_inner}"[:max_len]
                 ctype = (c.get("type", "") or "").lower()
                 if "template" in ctype:
                     return "[TEMPLATE]"
@@ -689,9 +742,9 @@ def _extract_content_preview(payload: dict) -> str:
                     fname = c.get("fileName", c.get("filename", ""))
                     label = ctype.upper()
                     if caption:
-                        return f"[{label}] {caption}"[:300]
+                        return f"[{label}] {caption}"[:max_len]
                     if fname:
-                        return f"[{label}] {fname}"[:300]
+                        return f"[{label}] {fname}"[:max_len]
                     return f"[{label}]"
                 # WhatsApp special types
                 _WA_LABELS = {
@@ -725,7 +778,7 @@ def _extract_content_preview(payload: dict) -> str:
                 if ctype:
                     return f"[{ctype}]"
         if msg.get("text"):
-            return str(msg["text"])[:300]
+            return str(msg["text"])[:max_len]
         # Check message-level type for calls and other non-content events
         _msg_type = (msg.get("type", "") or "").lower()
         if "call" in _msg_type:
@@ -743,7 +796,7 @@ def _extract_content_preview(payload: dict) -> str:
                 if isinstance(c, dict):
                     txt = c.get("text", "") or c.get("body", "")
                     if txt and isinstance(txt, str):
-                        return txt[:300]
+                        return txt[:max_len]
         # Last resort: show raw type so something appears instead of blank
         msg_type = (msg.get("type", "") or payload.get("type", "") or "").lower()
         if msg_type and msg_type not in ("message", "conversation_message"):
@@ -3701,7 +3754,10 @@ def _compute_full_audit(db: Session, canal: str) -> dict:
         cp = _real_phone(canal)
         groups = {k: v for k, v in groups.items() if _real_phone(k) != cp}
 
-        all_alert_kws = [kw for aid, _, _, kws in _INTENT_RULES if aid in ALERT_IDS for kw in kws]
+        # Pre-index keywords by level for accurate trigger attribution
+        kws_by_level: dict[str, list[str]] = {
+            aid: list(kws) for aid, _, _, kws in _INTENT_RULES if aid in ALERT_IDS
+        }
         level_counts: dict[str, int] = defaultdict(int)
         level_examples: dict[str, list] = defaultdict(list)
         kw_counts: dict[str, int] = defaultdict(int)
@@ -3723,7 +3779,9 @@ def _compute_full_audit(db: Session, canal: str) -> dict:
                     if last_ts is None or ev.received_at > last_ts:
                         last_ts = ev.received_at
                 p = ev.raw_payload or {}
-                c = _extract_content_preview(p) or ""
+                # Use larger window (2000 chars) for classification so keywords
+                # past char 300 aren't lost in long messages.
+                c = _extract_content_preview(p, max_len=2000) or ""
                 d = _extract_direction(p)
                 if c:
                     conv_texts.append((d, c))
@@ -3736,11 +3794,14 @@ def _compute_full_audit(db: Session, canal: str) -> dict:
             lid = top[0]
             level_counts[lid] += 1
 
+            # Show the keyword that actually triggered THIS level (not some
+            # other level's keyword that happens to also match the text).
+            level_kws = kws_by_level.get(lid, [])
             matched_kw = ""
             snippet = ""
             for _d, text in conv_texts:
                 lower = text.lower()
-                for kw in all_alert_kws:
+                for kw in level_kws:
                     hit = (kw in lower) if " " in kw else bool(
                         _re.search(r'\b' + _re.escape(kw), lower))
                     if hit:
@@ -3813,7 +3874,9 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
         conv_texts = []
         for ev in evs:
             p = ev.raw_payload or {}
-            d = _extract_direction(p); c = _extract_content_preview(p) or ""
+            d = _extract_direction(p)
+            # 2000 chars so keywords past 300 don't escape detection
+            c = _extract_content_preview(p, max_len=2000) or ""
             if c: conv_texts.append((d, c))
         intents = _classify_conversation(conv_texts)
         if not any(i[0] in ALERT_IDS for i in intents):
@@ -3823,11 +3886,13 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
         alrt_color = top_alrt[2] if top_alrt else "#ef4444"
         _alrt_bg2  = {"#ef4444":"#1a0e0e","#f97316":"#1a1008","#eab308":"#1a1a08","#3b82f6":"#0a1028"}.get(alrt_color,"#1a1a1a")
         _alrt_bd2  = {"#ef4444":"#5a2424","#f97316":"#6a3010","#eab308":"#4a4010","#3b82f6":"#1a2a5a"}.get(alrt_color,"#333")
-        # Find the triggering snippet using all alert keywords
-        _all_alert_kws2 = [kw for aid, _, _, kws in _INTENT_RULES if aid in ALERT_IDS for kw in kws]
+        # Find the triggering snippet using only the keywords of the matched level
+        # (so we show the actual trigger, not a different level's keyword that happens to also match)
+        _matched_levels = {i[0] for i in intents if i[0] in ALERT_IDS}
+        _level_kws = [kw for aid, _, _, kws in _INTENT_RULES if aid in _matched_levels for kw in kws]
         alert_snippet = ""
         for _d, text in conv_texts:
-            for kw in _all_alert_kws2:
+            for kw in _level_kws:
                 if (kw in text.lower()) if " " in kw else bool(_re.search(r'\b' + _re.escape(kw), text.lower())):
                     alert_snippet = text[:120]; break
             if alert_snippet: break
