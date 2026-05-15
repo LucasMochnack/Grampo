@@ -2155,6 +2155,7 @@ def _nav_html(active: str, extra: str = "", canal: str = "", unacked_alerts: int
         admin_group = f"""<div class="nav-group">
       <div class="nav-group-label">ADMIN</div>
       {_ni("acessos", "Acessos", "/dashboard/acessos")}
+      {_ni("diagnostico", "Diagnóstico", f"/dashboard/diagnostico{canal_qs}")}
     </div>"""
 
     ch_options = '<option value="">Todos os canais</option>'
@@ -3892,6 +3893,157 @@ def dashboard_agentes_export(request: Request, db: Session = Depends(get_db)):
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.get("/dashboard/diagnostico", response_class=HTMLResponse, include_in_schema=False)
+def dashboard_diagnostico(request: Request, db: Session = Depends(get_db)):
+    """Página de diagnóstico de qualidade de dados: conversas sem agente,
+    grupos não resolvidos e agentes fora do mapa de segmento."""
+    access = _get_access(request, db)
+    if access is None:
+        return _auth_redirect()
+    if (access or {}).get("role") != "admin":
+        return HTMLResponse("<h3>Acesso restrito a administradores.</h3>", status_code=403)
+
+    canal = request.query_params.get("canal", "5519997733651")
+    now_br = datetime.now(BRASILIA)
+    today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
+    cutoff_7d   = today_start - timedelta(days=6)
+    cutoff_utc  = cutoff_7d.astimezone(timezone.utc)
+
+    all_events, _cg, _cpl, client_agent_map, client_name_map = _load_period_pipeline(
+        db, canal, cutoff_utc, 50000
+    )
+    db.close()
+
+    groups, phone_learned = _group_events(all_events, client_agent_map)
+    _cp = _real_phone(canal)
+    groups = {k: v for k, v in groups.items() if _real_phone(k) != _cp}
+
+    _EPOCH_DT = datetime.min.replace(tzinfo=timezone.utc)
+
+    # ── Classify each group ─────────────────────────────────────────────────
+    sem_atendente = []    # (key, phone, agent, last_msg_ts, snippet, days_ago_str)
+    conv_unresolved = []  # (key, snippet, last_msg_ts)
+    ok_count = 0
+    agents_found: dict[str, int] = defaultdict(int)  # agent → n conversations
+
+    for key, evs in groups.items():
+        ph = _real_phone(key)
+        agent = phone_learned.get(key) or client_agent_map.get(ph) or phone_learned.get(ph) or "Sem atendente"
+        last_ts = max((e.received_at for e in evs if e.received_at), default=None)
+        ts_str = last_ts.astimezone(BRASILIA).strftime("%d/%m %H:%M") if last_ts else "?"
+        # Get a snippet from the last real message
+        snippet = ""
+        for ev in reversed(sorted(evs, key=lambda e: e.received_at or _EPOCH_DT)):
+            s = _extract_content_preview(ev.raw_payload or {}) or ""
+            if s and not s.startswith("["):
+                snippet = s[:80]
+                break
+        snippet = html_mod.escape(snippet or "[mídia]")
+
+        if key.startswith("conv:iso:") or (key.startswith("conv:") and not key.startswith("conv:iso:")):
+            conv_unresolved.append((html_mod.escape(key), snippet, ts_str))
+        elif agent == "Sem atendente":
+            cname = client_name_map.get(ph, "")
+            display = html_mod.escape(cname or ph or key[:30])
+            sem_atendente.append((display, html_mod.escape(ph or key[:30]), ts_str, snippet))
+        else:
+            ok_count += 1
+            agents_found[agent] += 1
+
+    sem_atendente.sort(key=lambda x: x[2], reverse=True)
+    conv_unresolved.sort(key=lambda x: x[2], reverse=True)
+
+    # ── Agents in phone_learned but NOT in AGENT_SEGMENT ────────────────────
+    all_learned = set(phone_learned.values()) | set(client_agent_map.values())
+    known_agents = {k.lower() for k in AGENT_SEGMENT.keys()}
+    unknown_agents = {a for a in all_learned if a and a != "Sem atendente" and a.lower() not in known_agents}
+
+    # ── Agents in AGENT_SEGMENT with zero conversations (7d) ────────────────
+    zero_agents = [a for a in AGENT_SEGMENT if agents_found.get(a, 0) == 0]
+
+    total = ok_count + len(sem_atendente) + len(conv_unresolved)
+    pct_ok = round(ok_count / total * 100) if total else 0
+
+    nav = _nav_html("agentes", canal=canal, is_admin=True, title="Diagnóstico")
+
+    def _row(cells, header=False):
+        tag = "th" if header else "td"
+        style = "padding:8px 12px;border-bottom:1px solid #1a2540;font-size:12px;"
+        return "<tr>" + "".join(f"<{tag} style='{style}'>{c}</{tag}>" for c in cells) + "</tr>"
+
+    sem_rows = "".join(_row([d, ph, ts, f'<span style="color:#8a96aa">{sn}</span>']) for d, ph, ts, sn in sem_atendente[:100]) or "<tr><td colspan='4' style='padding:10px;color:#0fa968;font-size:12px'>✅ Nenhuma</td></tr>"
+    unres_rows = "".join(_row([k, f'<span style="color:#8a96aa">{sn}</span>', ts]) for k, sn, ts in conv_unresolved[:50]) or "<tr><td colspan='3' style='padding:10px;color:#0fa968;font-size:12px'>✅ Nenhuma</td></tr>"
+    unk_rows = "".join(_row([html_mod.escape(a), f'<span style="color:#f59e0b">⚠ fora do AGENT_SEGMENT</span>']) for a in sorted(unknown_agents)) or "<tr><td colspan='2' style='padding:10px;color:#0fa968;font-size:12px'>✅ Todos mapeados</td></tr>"
+    zero_rows = "".join(_row([html_mod.escape(a), AGENT_SEGMENT.get(a,""), '<span style="color:#5a6a8a">0 conversas</span>']) for a in sorted(zero_agents)) or "<tr><td colspan='3' style='padding:10px;color:#0fa968;font-size:12px'>✅ Todos ativos</td></tr>"
+
+    def _card(title, value, color, sub=""):
+        return f'<div style="background:#0d1630;border:1px solid #1a2540;border-radius:10px;padding:18px 22px;min-width:140px"><div style="font-size:10px;color:#5a6a8a;letter-spacing:1px;font-weight:700;margin-bottom:6px">{title}</div><div style="font-size:28px;font-weight:700;color:{color};font-family:monospace">{value}</div>{f"<div style=\\"font-size:11px;color:#5a6a8a;margin-top:4px\\">{sub}</div>" if sub else ""}</div>'
+
+    cards_html = (
+        _card("TOTAL 7D", total, "#e8ecf1") +
+        _card("COM AGENTE", ok_count, "#0fa968", f"{pct_ok}% cobertura") +
+        _card("SEM ATENDENTE", len(sem_atendente), "#ef4444" if sem_atendente else "#0fa968") +
+        _card("NÃO RESOLVIDOS", len(conv_unresolved), "#f59e0b" if conv_unresolved else "#0fa968") +
+        _card("AGENTES DESCONHECIDOS", len(unknown_agents), "#f59e0b" if unknown_agents else "#0fa968")
+    )
+
+    table_style = "width:100%;border-collapse:collapse;background:#0b1120;border-radius:8px;overflow:hidden"
+    th_style = "padding:8px 12px;text-align:left;font-size:10px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540"
+
+    return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Diagnóstico</title>{COMMON_CSS}</head><body>
+{nav}
+<div style="max-width:1100px;margin:30px auto;padding:0 24px">
+  <div style="margin-bottom:24px">
+    <div style="font-size:20px;font-weight:700;color:#e8ecf1;margin-bottom:4px">🔍 Diagnóstico de Dados</div>
+    <div style="font-size:12px;color:#5a6a8a">Últimos 7 dias · canal {html_mod.escape(canal)}</div>
+  </div>
+
+  <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:32px">{cards_html}</div>
+
+  <!-- Sem atendente -->
+  <div style="margin-bottom:32px">
+    <div style="font-size:13px;font-weight:700;color:#ef4444;margin-bottom:10px">⚠ Conversas sem atendente ({len(sem_atendente)}) — excluídas do heatmap</div>
+    <div style="font-size:11px;color:#5a6a8a;margin-bottom:8px">Essas conversas não aparecem no Mapa de Calor porque nenhum agente foi identificado. Verifique se o número está na tabela de mapeamentos.</div>
+    <table style="{table_style}">
+      <thead><tr><th style="{th_style}">CLIENTE</th><th style="{th_style}">TELEFONE</th><th style="{th_style}">ÚLTIMA MSG</th><th style="{th_style}">TRECHO</th></tr></thead>
+      <tbody>{sem_rows}</tbody>
+    </table>
+    {f'<div style="font-size:11px;color:#5a6a8a;margin-top:6px">Mostrando 100 de {len(sem_atendente)}</div>' if len(sem_atendente) > 100 else ''}
+  </div>
+
+  <!-- Grupos não resolvidos -->
+  <div style="margin-bottom:32px">
+    <div style="font-size:13px;font-weight:700;color:#f59e0b;margin-bottom:10px">⚡ Grupos não resolvidos ({len(conv_unresolved)}) — sem número de telefone</div>
+    <div style="font-size:11px;color:#5a6a8a;margin-bottom:8px">Eventos sem from/to e sem conversationId mapeado para um telefone conhecido. Geralmente são status events ou mensagens de sistema.</div>
+    <table style="{table_style}">
+      <thead><tr><th style="{th_style}">CHAVE</th><th style="{th_style}">TRECHO</th><th style="{th_style}">ÚLTIMA MSG</th></tr></thead>
+      <tbody>{unres_rows}</tbody>
+    </table>
+  </div>
+
+  <!-- Agentes fora do mapa -->
+  <div style="margin-bottom:32px">
+    <div style="font-size:13px;font-weight:700;color:#f59e0b;margin-bottom:10px">👤 Agentes detectados fora do AGENT_SEGMENT ({len(unknown_agents)})</div>
+    <div style="font-size:11px;color:#5a6a8a;margin-bottom:8px">Esses nomes aparecem em mensagens mas não estão cadastrados em AGENT_SEGMENT. Sem segmento, não entram corretamente no heatmap.</div>
+    <table style="{table_style}">
+      <thead><tr><th style="{th_style}">NOME DETECTADO</th><th style="{th_style}">STATUS</th></tr></thead>
+      <tbody>{unk_rows}</tbody>
+    </table>
+  </div>
+
+  <!-- Agentes com zero conversas -->
+  <div style="margin-bottom:32px">
+    <div style="font-size:13px;font-weight:700;color:#5a6a8a;margin-bottom:10px">😶 Agentes sem conversas nos últimos 7 dias ({len(zero_agents)})</div>
+    <table style="{table_style}">
+      <thead><tr><th style="{th_style}">AGENTE</th><th style="{th_style}">SEGMENTO</th><th style="{th_style}">7 DIAS</th></tr></thead>
+      <tbody>{zero_rows}</tbody>
+    </table>
+  </div>
+
+</div>
+</body></html>""")
 
 
 @router.get("/dashboard/agentes/heatmap", response_class=HTMLResponse, include_in_schema=False)
