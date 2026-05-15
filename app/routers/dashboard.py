@@ -3679,6 +3679,101 @@ def debug_agent_clients(request: Request, db: Session = Depends(get_db)):
     return JSONResponse({"date": today_start.strftime("%d/%m/%Y"), "counts": counts, "clients": out})
 
 
+_AUDIT_TTL = 600.0  # 10 minutes — historical audit doesn't change second by second
+
+
+def _compute_full_audit(db: Session, canal: str) -> dict:
+    """Scan the ENTIRE database history and classify every conversation.
+
+    Returns dict with: total_conversations, total_alerts, coverage_pct,
+    level_counts, level_examples, kw_counts, oldest_event_ts, newest_event_ts.
+
+    Result is cached for 10 minutes — concurrent F5s share one heavy scan.
+    """
+    cache_key = ("full_alert_audit", canal)
+
+    def _compute():
+        # since=epoch covers entire DB; high limit cap is just safety
+        epoch = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        evs, groups, phone_learned, cam, cnm = _load_period_pipeline(
+            db, canal, epoch, 500_000
+        )
+        cp = _real_phone(canal)
+        groups = {k: v for k, v in groups.items() if _real_phone(k) != cp}
+
+        all_alert_kws = [kw for aid, _, _, kws in _INTENT_RULES if aid in ALERT_IDS for kw in kws]
+        level_counts: dict[str, int] = defaultdict(int)
+        level_examples: dict[str, list] = defaultdict(list)
+        kw_counts: dict[str, int] = defaultdict(int)
+
+        oldest = newest = None
+
+        for key, gevs in groups.items():
+            ph = _real_phone(key)
+            agent = (phone_learned.get(key) or cam.get(ph)
+                     or phone_learned.get(ph) or "Sem atendente")
+            conv_texts: list[tuple[str, str]] = []
+            last_ts = None
+            for ev in gevs:
+                if ev.received_at:
+                    if oldest is None or ev.received_at < oldest:
+                        oldest = ev.received_at
+                    if newest is None or ev.received_at > newest:
+                        newest = ev.received_at
+                    if last_ts is None or ev.received_at > last_ts:
+                        last_ts = ev.received_at
+                p = ev.raw_payload or {}
+                c = _extract_content_preview(p) or ""
+                d = _extract_direction(p)
+                if c:
+                    conv_texts.append((d, c))
+
+            intents = _classify_conversation(conv_texts)
+            top = _top_alert(intents)
+            if not top:
+                continue
+
+            lid = top[0]
+            level_counts[lid] += 1
+
+            matched_kw = ""
+            snippet = ""
+            for _d, text in conv_texts:
+                lower = text.lower()
+                for kw in all_alert_kws:
+                    hit = (kw in lower) if " " in kw else bool(
+                        _re.search(r'\b' + _re.escape(kw), lower))
+                    if hit:
+                        matched_kw = kw
+                        snippet = text[:140]
+                        kw_counts[kw] += 1
+                        break
+                if matched_kw:
+                    break
+
+            client_name = cnm.get(ph, "") or ph or key[:20]
+            if len(level_examples[lid]) < 12:
+                ts_str = last_ts.astimezone(BRASILIA).strftime("%d/%m/%Y %H:%M") if last_ts else "?"
+                level_examples[lid].append({
+                    "agent": agent, "client": client_name, "phone": ph,
+                    "snippet": snippet, "keyword": matched_kw, "when": ts_str,
+                })
+
+        total_alerts = sum(level_counts.values())
+        return {
+            "total_conversations": len(groups),
+            "total_alerts": total_alerts,
+            "coverage_pct": round(total_alerts / len(groups) * 100) if groups else 0,
+            "level_counts": dict(level_counts),
+            "level_examples": {k: list(v) for k, v in level_examples.items()},
+            "kw_counts": dict(kw_counts),
+            "oldest": oldest.astimezone(BRASILIA).strftime("%d/%m/%Y") if oldest else "?",
+            "newest": newest.astimezone(BRASILIA).strftime("%d/%m/%Y") if newest else "?",
+        }
+
+    return _cache.cached(cache_key, _AUDIT_TTL, _compute)
+
+
 @router.get("/dashboard/alertas", response_class=HTMLResponse, include_in_schema=False)
 def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
     access = _get_access(request, db)
@@ -3696,6 +3791,10 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
     all_events, _cg, _cpl, client_agent_map, _ = _load_period_pipeline(
         db, canal, today_start_utc, 20000
     )
+
+    # Full-history audit (cached 10min). Admins only see the audit section.
+    is_admin = (access or {}).get("role") == "admin"
+    audit = _compute_full_audit(db, canal) if is_admin else None
     db.close()
     filtered_events = all_events  # already filtered by canal
     groups, phone_learned = _cg, _cpl  # cached groups
@@ -3788,7 +3887,114 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
 
     _active_top_color = "#ef4444" if n_active > 0 else "#1a2540"
     _active_val_color = "#ef4444" if n_active > 0 else "#5a6a8a"
-    nav = _nav_html("alertas", canal=canal, unacked_alerts=n_active, acked_alerts=len(acked), is_admin=(access or {}).get('role')=='admin', title="Alertas")
+    nav = _nav_html("alertas", canal=canal, unacked_alerts=n_active, acked_alerts=len(acked), is_admin=is_admin, title="Alertas")
+
+    # ── Build full-history audit section (admin only) ───────────────────────
+    audit_html = ""
+    if audit:
+        _alert_order_audit = [
+            ("alerta_critico", "🔴 Crítico",       "#ef4444", "#3a1414", "#5a2424"),
+            ("alerta_alto",    "🟠 Alto Risco",    "#f97316", "#3a1a08", "#6a3010"),
+            ("alerta_monit",   "🟡 Monitoramento", "#eab308", "#2a2208", "#4a4010"),
+            ("alerta_oper",    "🔵 Operacional",   "#3b82f6", "#0d1a38", "#1a2a5a"),
+        ]
+
+        # Top-line cards
+        def _audit_card(label, value, color, sub=""):
+            sub_html = f'<div style="font-size:11px;color:#5a6a8a;margin-top:4px">{sub}</div>' if sub else ''
+            return (
+                f'<div style="background:#0d1630;border:1px solid #1a2540;border-radius:10px;'
+                f'padding:18px 22px;min-width:140px">'
+                f'<div style="font-size:10px;color:#5a6a8a;letter-spacing:1px;font-weight:700;margin-bottom:6px">{label}</div>'
+                f'<div style="font-size:28px;font-weight:700;color:{color};font-family:monospace">{value}</div>'
+                f'{sub_html}</div>'
+            )
+
+        audit_top_cards = "".join(
+            _audit_card(lbl.upper(), audit["level_counts"].get(lid, 0), color)
+            for lid, lbl, color, _bg, _bd in _alert_order_audit
+        ) + _audit_card("COBERTURA", f"{audit['coverage_pct']}%", "#8a96aa",
+                        f"{audit['total_alerts']} de {audit['total_conversations']}")
+
+        # Per-level example tables
+        def _audit_level_section(lid, lbl, color, bg, bd):
+            cnt = audit["level_counts"].get(lid, 0)
+            exs = audit["level_examples"].get(lid, [])
+            if not exs:
+                rows = f'<tr><td colspan="5" style="padding:14px;color:#5a6a8a;font-size:12px;text-align:center">Nenhuma conversa neste nível</td></tr>'
+            else:
+                rows = ""
+                for ex in exs:
+                    rows += (
+                        f'<tr>'
+                        f'<td style="padding:8px 12px;border-bottom:1px solid #1a2540;font-size:12px;font-weight:600">{html_mod.escape(ex["client"])}</td>'
+                        f'<td style="padding:8px 12px;border-bottom:1px solid #1a2540;font-size:11px;color:#8a96aa">{html_mod.escape(ex["agent"])}</td>'
+                        f'<td style="padding:8px 12px;border-bottom:1px solid #1a2540;font-size:11px"><span style="background:{bg};color:{color};padding:2px 8px;border-radius:4px;font-size:10px;font-family:monospace">[{html_mod.escape(ex["keyword"])}]</span></td>'
+                        f'<td style="padding:8px 12px;border-bottom:1px solid #1a2540;font-size:11px;color:#8a96aa;font-style:italic">"{html_mod.escape(ex["snippet"])}"</td>'
+                        f'<td style="padding:8px 12px;border-bottom:1px solid #1a2540;font-size:11px;color:#5a6a8a;white-space:nowrap;font-family:monospace">{ex["when"]}</td>'
+                        f'</tr>'
+                    )
+            more = f'<div style="font-size:11px;color:#5a6a8a;margin-top:6px">Mostrando {len(exs)} exemplos de {cnt} conversas</div>' if cnt > len(exs) else ''
+            return (
+                f'<div style="background:{bg};border:1px solid {bd};border-radius:10px;padding:18px 20px;margin-bottom:16px">'
+                f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
+                f'<span style="font-size:14px;font-weight:700;color:{color}">{lbl}</span>'
+                f'<span style="background:#0d1630;color:{color};padding:2px 9px;border-radius:10px;font-size:11px;font-weight:700;border:1px solid {bd}">{cnt} conversas</span>'
+                f'</div>'
+                f'<table style="width:100%;border-collapse:collapse;background:#0b1120;border-radius:8px;overflow:hidden">'
+                f'<thead><tr>'
+                f'<th style="padding:8px 12px;text-align:left;font-size:10px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">CLIENTE</th>'
+                f'<th style="padding:8px 12px;text-align:left;font-size:10px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">AGENTE</th>'
+                f'<th style="padding:8px 12px;text-align:left;font-size:10px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">GATILHO</th>'
+                f'<th style="padding:8px 12px;text-align:left;font-size:10px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">TRECHO</th>'
+                f'<th style="padding:8px 12px;text-align:left;font-size:10px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">QUANDO</th>'
+                f'</tr></thead><tbody>{rows}</tbody></table>{more}</div>'
+            )
+
+        audit_levels_html = "".join(
+            _audit_level_section(lid, lbl, color, bg, bd)
+            for lid, lbl, color, bg, bd in _alert_order_audit
+        )
+
+        # Top keywords
+        top_kws_audit = sorted(audit["kw_counts"].items(), key=lambda x: -x[1])[:30]
+        kw_rows_audit = "".join(
+            f'<tr>'
+            f'<td style="padding:6px 12px;border-bottom:1px solid #1a2540;font-size:11px"><span style="background:#0b1120;color:#8a96aa;padding:2px 8px;border-radius:4px;font-family:monospace">[{html_mod.escape(kw)}]</span></td>'
+            f'<td style="padding:6px 12px;border-bottom:1px solid #1a2540;font-family:monospace;font-size:13px;color:#e8ecf1;text-align:right;width:100px">{cnt}</td>'
+            f'</tr>'
+            for kw, cnt in top_kws_audit
+        ) or f'<tr><td colspan="2" style="padding:14px;color:#5a6a8a;font-size:12px;text-align:center">Nenhum gatilho disparado</td></tr>'
+
+        audit_html = f"""
+        <div class="card" style="margin-top:24px;border:1px solid #1a2540">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+            <h2 style="margin:0;font-size:15px;color:#e8ecf1">🚨 Análise de Conformidade — Histórico Completo</h2>
+            <span style="background:#0d1630;color:#8a96aa;padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;border:1px solid #1a2540">ADMIN</span>
+          </div>
+          <div style="font-size:11px;color:#5a6a8a;margin-bottom:18px">
+            Varredura de <strong style="color:#e8ecf1">{audit['total_conversations']}</strong> conversas
+            (de {audit['oldest']} a {audit['newest']}) ·
+            <strong style="color:#e8ecf1">{audit['total_alerts']}</strong> com alerta ·
+            cobertura <strong style="color:#e8ecf1">{audit['coverage_pct']}%</strong>
+            · cache 10 min
+          </div>
+
+          <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:24px">{audit_top_cards}</div>
+
+          {audit_levels_html}
+
+          <div style="margin-top:24px">
+            <div style="font-size:13px;font-weight:700;color:#8a96aa;margin-bottom:10px">🔑 Top 30 gatilhos disparados</div>
+            <table style="width:100%;border-collapse:collapse;background:#0b1120;border-radius:8px;overflow:hidden;max-width:520px">
+              <thead><tr>
+                <th style="padding:8px 12px;text-align:left;font-size:10px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">GATILHO</th>
+                <th style="padding:8px 12px;text-align:right;font-size:10px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">OCORRÊNCIAS</th>
+              </tr></thead>
+              <tbody>{kw_rows_audit}</tbody>
+            </table>
+          </div>
+        </div>"""
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo — Alertas</title>{COMMON_CSS}</head><body>
     {nav}
     <div class="container">
@@ -3830,6 +4036,8 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                 <tbody>{rows_html}</tbody>
             </table>
         </div>
+
+        {audit_html}
     </div>
     <script>
     async function ackAlertPage(phoneKey, agent, snippet, displayName, btn) {{
@@ -3990,11 +4198,11 @@ def dashboard_diagnostico(request: Request, db: Session = Depends(get_db)):
     canal = request.query_params.get("canal", "5519997733651")
     now_br = datetime.now(BRASILIA)
     today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
-    cutoff_30d  = today_start - timedelta(days=29)
-    cutoff_utc  = cutoff_30d.astimezone(timezone.utc)
+    cutoff_7d   = today_start - timedelta(days=6)
+    cutoff_utc  = cutoff_7d.astimezone(timezone.utc)
 
     all_events, _cg, _cpl, client_agent_map, client_name_map = _load_period_pipeline(
-        db, canal, cutoff_utc, 100000
+        db, canal, cutoff_utc, 50000
     )
     db.close()
 
@@ -4048,54 +4256,6 @@ def dashboard_diagnostico(request: Request, db: Session = Depends(get_db)):
     total = ok_count + len(sem_atendente) + len(conv_unresolved)
     pct_ok = round(ok_count / total * 100) if total else 0
 
-    # ── Alert analysis (30 days) ─────────────────────────────────────────────
-    _all_alert_kws = [kw for aid, _, _, kws in _INTENT_RULES if aid in ALERT_IDS for kw in kws]
-    alert_level_counts:   dict[str, int]        = defaultdict(int)
-    alert_level_examples: dict[str, list]       = defaultdict(list)
-    alert_kw_counts:      dict[str, int]        = defaultdict(int)
-
-    for _akey, _aevs in groups.items():
-        _aph = _real_phone(_akey)
-        _aagent = (phone_learned.get(_akey) or client_agent_map.get(_aph)
-                   or phone_learned.get(_aph) or "Sem atendente")
-        _conv_texts: list[tuple[str, str]] = []
-        for _ev in _aevs:
-            _p = _ev.raw_payload or {}
-            _c = _extract_content_preview(_p) or ""
-            _d = _extract_direction(_p)
-            if _c:
-                _conv_texts.append((_d, _c))
-
-        _intents = _classify_conversation(_conv_texts)
-        _top = _top_alert(_intents)
-        if not _top:
-            continue
-
-        _lid = _top[0]
-        alert_level_counts[_lid] += 1
-
-        _mkw = ""
-        _snip = ""
-        for _d2, _txt in _conv_texts:
-            _lower = _txt.lower()
-            for _kw in _all_alert_kws:
-                _hit = (_kw in _lower) if " " in _kw else bool(
-                    _re.search(r'\b' + _re.escape(_kw), _lower))
-                if _hit:
-                    _mkw  = _kw
-                    _snip = _txt[:120]
-                    alert_kw_counts[_kw] += 1
-                    break
-            if _mkw:
-                break
-
-        _acname = client_name_map.get(_aph, _aph or _akey[:20])
-        if len(alert_level_examples[_lid]) < 8:
-            alert_level_examples[_lid].append((_aagent, _acname, _snip, _mkw))
-
-    _total_alerts = sum(alert_level_counts.values())
-    _alert_coverage = round(_total_alerts / len(groups) * 100) if groups else 0
-
     nav = _nav_html("agentes", canal=canal, is_admin=True, title="Diagnóstico")
 
     table_style = "width:100%;border-collapse:collapse;background:#0b1120;border-radius:8px;overflow:hidden"
@@ -4124,69 +4284,19 @@ def dashboard_diagnostico(request: Request, db: Session = Depends(get_db)):
         )
 
     cards_html = (
-        _card("TOTAL 30D", total, "#e8ecf1") +
+        _card("TOTAL 7D", total, "#e8ecf1") +
         _card("COM AGENTE", ok_count, "#0fa968", f"{pct_ok}% cobertura") +
         _card("SEM ATENDENTE", len(sem_atendente), "#ef4444" if sem_atendente else "#0fa968") +
         _card("NÃO RESOLVIDOS", len(conv_unresolved), "#f59e0b" if conv_unresolved else "#0fa968") +
         _card("AGENTES DESCONHECIDOS", len(unknown_agents), "#f59e0b" if unknown_agents else "#0fa968")
     )
 
-    # ── Alert level summary cards ────────────────────────────────────────────
-    _alert_order = [
-        ("alerta_critico", "🔴 Crítico",       "#ef4444"),
-        ("alerta_alto",    "🟠 Alto Risco",    "#f97316"),
-        ("alerta_monit",   "🟡 Monitoramento", "#eab308"),
-        ("alerta_oper",    "🔵 Operacional",   "#3b82f6"),
-    ]
-    alert_cards_html = "".join(
-        _card(lbl.upper(), alert_level_counts.get(lid, 0), color)
-        for lid, lbl, color in _alert_order
-    ) + _card("COBERTURA", f"{_alert_coverage}%", "#8a96aa", f"{_total_alerts} de {len(groups)} convs")
-
-    # ── Alert level detail tables ────────────────────────────────────────────
-    def _alert_section(lid, lbl, color):
-        cnt = alert_level_counts.get(lid, 0)
-        exs = alert_level_examples.get(lid, [])
-        rows = "".join(
-            _row([
-                html_mod.escape(ag),
-                html_mod.escape(cl),
-                f'<span style="background:#1a2540;color:{color};padding:2px 8px;border-radius:4px;font-size:10px">[{html_mod.escape(kw)}]</span>',
-                f'<span style="color:#8a96aa;font-size:11px">{html_mod.escape(sn[:100])}</span>',
-            ])
-            for ag, cl, sn, kw in exs
-        ) or f'<tr><td colspan="4" style="padding:10px;color:#5a6a8a;font-size:12px">Nenhuma conversa neste nível</td></tr>'
-        return f"""
-  <div style="margin-bottom:28px">
-    <div style="font-size:13px;font-weight:700;color:{color};margin-bottom:8px">{lbl} — {cnt} conversas (30 dias)</div>
-    <table style="{table_style}">
-      <thead><tr>
-        <th style="{th_style}">AGENTE</th>
-        <th style="{th_style}">CLIENTE</th>
-        <th style="{th_style}">GATILHO</th>
-        <th style="{th_style}">TRECHO</th>
-      </tr></thead>
-      <tbody>{rows}</tbody>
-    </table>
-    {f'<div style="font-size:11px;color:#5a6a8a;margin-top:4px">Mostrando {len(exs)} exemplos de {cnt}</div>' if cnt > len(exs) else ''}
-  </div>"""
-
-    alert_details_html = "".join(_alert_section(lid, lbl, color) for lid, lbl, color in _alert_order)
-
-    # ── Top triggered keywords ───────────────────────────────────────────────
-    top_kws = sorted(alert_kw_counts.items(), key=lambda x: -x[1])[:25]
-    kw_rows = "".join(
-        _row([f'<span style="background:#1a2540;color:#8a96aa;padding:2px 8px;border-radius:4px;font-size:11px">[{html_mod.escape(kw)}]</span>',
-              f'<span style="font-family:monospace;font-size:13px;color:#e8ecf1">{cnt}</span>'])
-        for kw, cnt in top_kws
-    ) or f'<tr><td colspan="2" style="padding:10px;color:#5a6a8a;font-size:12px">Nenhum gatilho disparado</td></tr>'
-
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Diagnóstico</title>{COMMON_CSS}</head><body>
 {nav}
 <div style="max-width:1100px;margin:30px auto;padding:0 24px">
   <div style="margin-bottom:24px">
     <div style="font-size:20px;font-weight:700;color:#e8ecf1;margin-bottom:4px">🔍 Diagnóstico de Dados</div>
-    <div style="font-size:12px;color:#5a6a8a">Últimos 30 dias · canal {html_mod.escape(canal)}</div>
+    <div style="font-size:12px;color:#5a6a8a">Últimos 7 dias · canal {html_mod.escape(canal)}</div>
   </div>
 
   <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:32px">{cards_html}</div>
@@ -4224,31 +4334,10 @@ def dashboard_diagnostico(request: Request, db: Session = Depends(get_db)):
 
   <!-- Agentes com zero conversas -->
   <div style="margin-bottom:32px">
-    <div style="font-size:13px;font-weight:700;color:#5a6a8a;margin-bottom:10px">😶 Agentes sem conversas nos últimos 30 dias ({len(zero_agents)})</div>
+    <div style="font-size:13px;font-weight:700;color:#5a6a8a;margin-bottom:10px">😶 Agentes sem conversas nos últimos 7 dias ({len(zero_agents)})</div>
     <table style="{table_style}">
-      <thead><tr><th style="{th_style}">AGENTE</th><th style="{th_style}">SEGMENTO</th><th style="{th_style}">30 DIAS</th></tr></thead>
+      <thead><tr><th style="{th_style}">AGENTE</th><th style="{th_style}">SEGMENTO</th><th style="{th_style}">7 DIAS</th></tr></thead>
       <tbody>{zero_rows}</tbody>
-    </table>
-  </div>
-
-  <!-- ═══════════════════════════════════════════════════════════════════════ -->
-  <!-- ANÁLISE DE ALERTAS 30 DIAS                                             -->
-  <!-- ═══════════════════════════════════════════════════════════════════════ -->
-  <div style="border-top:2px solid #1a2540;padding-top:32px;margin-bottom:28px">
-    <div style="font-size:20px;font-weight:700;color:#e8ecf1;margin-bottom:4px">🚨 Análise de Alertas de Conformidade</div>
-    <div style="font-size:12px;color:#5a6a8a">Últimos 30 dias · {len(groups)} conversas analisadas · {_total_alerts} com alerta ({_alert_coverage}% cobertura)</div>
-  </div>
-
-  <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:32px">{alert_cards_html}</div>
-
-  {alert_details_html}
-
-  <!-- Top keywords -->
-  <div style="margin-bottom:32px">
-    <div style="font-size:13px;font-weight:700;color:#8a96aa;margin-bottom:10px">🔑 Top 25 gatilhos disparados (30 dias)</div>
-    <table style="{table_style};max-width:480px">
-      <thead><tr><th style="{th_style}">GATILHO</th><th style="{th_style}">OCORRÊNCIAS</th></tr></thead>
-      <tbody>{kw_rows}</tbody>
     </table>
   </div>
 
