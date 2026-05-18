@@ -3131,6 +3131,194 @@ def conv_messages_api(request: Request, db: Session = Depends(get_db)):
     return HTMLResponse(msgs_html)
 
 
+@router.get("/dashboard/conversa", response_class=HTMLResponse, include_in_schema=False)
+def dashboard_conversa(request: Request, db: Session = Depends(get_db)):
+    """Standalone conversation viewer — opens in a new tab.
+
+    Renders the full message history of one client/conversation as a self-
+    contained page so reviewers can deep-read without juggling state in the
+    Conversas tab. Permissioned: viewers only see conversations of agents
+    they are authorized for.
+    """
+    access = _get_access(request, db)
+    if access is None:
+        return _auth_redirect()
+
+    client_key = request.query_params.get("phone", "").strip()
+    canal = request.query_params.get("canal", "5519997733651").strip()
+    if not client_key:
+        return HTMLResponse(
+            f"<!DOCTYPE html><html><head><meta charset='utf-8'>{COMMON_CSS}</head>"
+            f"<body><div style='padding:30px;text-align:center;color:#ef4444'>"
+            f"Parâmetro <code>phone</code> ausente.</div></body></html>",
+            status_code=400,
+        )
+
+    # Load up to 90 days to give a long backview without stretching the cache.
+    _cutoff = (datetime.now(BRASILIA) - timedelta(days=90)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(timezone.utc)
+    all_events, _cg, _cpl, client_agent_map, client_name_map = _load_period_pipeline(
+        db, canal, _cutoff, 50000
+    )
+    db.close()
+
+    # Find every group that maps to this phone (split-by-agent variants too)
+    real_target = _real_phone(client_key)
+    target_evs: list = []
+    for k, evs in _cg.items():
+        if k == client_key or _real_phone(k) == real_target:
+            target_evs.extend(evs)
+
+    if not target_evs:
+        nav_404 = _nav_html("alertas", canal=canal, is_admin=(access or {}).get("role") == "admin", title="Conversa")
+        return HTMLResponse(
+            f"<!DOCTYPE html><html><head><meta charset='utf-8'>{COMMON_CSS}</head><body>{nav_404}"
+            f"<div style='max-width:600px;margin:80px auto;text-align:center;color:#8a96aa'>"
+            f"<div style='font-size:18px;font-weight:700;color:#e8ecf1;margin-bottom:8px'>"
+            f"Nenhuma mensagem encontrada</div>"
+            f"<div style='font-size:13px'>Telefone <code>{html_mod.escape(client_key)}</code> "
+            f"sem eventos nos últimos 90 dias.</div></div></body></html>"
+        )
+
+    # Sort chronologically
+    target_evs.sort(key=lambda e: e.received_at or datetime.min.replace(tzinfo=timezone.utc))
+
+    # Resolve agent + client name
+    agent = (
+        _cpl.get(client_key) or client_agent_map.get(real_target)
+        or _cpl.get(real_target) or "Sem atendente"
+    )
+    if not _user_sees(access, agent):
+        nav_403 = _nav_html("alertas", canal=canal, is_admin=(access or {}).get("role") == "admin", title="Conversa")
+        return HTMLResponse(
+            f"<!DOCTYPE html><html><head><meta charset='utf-8'>{COMMON_CSS}</head><body>{nav_403}"
+            f"<div style='max-width:600px;margin:80px auto;text-align:center;color:#8a96aa'>"
+            f"<div style='font-size:18px;font-weight:700;color:#ef4444;margin-bottom:8px'>"
+            f"Acesso restrito</div>"
+            f"<div style='font-size:13px'>Você não tem permissão para visualizar conversas "
+            f"do agente {html_mod.escape(agent)}.</div></div></body></html>",
+            status_code=403,
+        )
+
+    client_name = client_name_map.get(real_target, "") or _extract_contact_name_from_events(target_evs)
+    display = client_name if client_name else real_target
+    segment = _get_segment(agent) or ""
+    badge = _segment_badge(agent)
+
+    # Classify to show alert badge in header (if any)
+    conv_texts: list[tuple[str, str]] = []
+    for ev in target_evs:
+        p = ev.raw_payload or {}
+        d = _extract_direction(p)
+        c = _extract_content_preview(p, max_len=2000) or ""
+        if c:
+            conv_texts.append((d, c))
+    intents = _classify_conversation(conv_texts)
+    top_alrt = _top_alert(intents)
+    alert_badge = ""
+    if top_alrt:
+        alrt_color = top_alrt[2]
+        _bg = {"#ef4444": "#3a1414", "#f97316": "#3a1a08", "#eab308": "#2a2208", "#3b82f6": "#0d1a38"}.get(alrt_color, "#1a1a1a")
+        alert_badge = (
+            f'<span style="background:{_bg};color:{alrt_color};padding:3px 10px;'
+            f'border-radius:6px;font-size:11px;font-weight:700;margin-left:10px;'
+            f'border:1px solid {alrt_color}">{top_alrt[1]}</span>'
+        )
+
+    # Filter out status events for display
+    _evs_filtered = [
+        ev for ev in target_evs
+        if (ev.raw_payload or {}).get("type", "").upper() not in ("MESSAGE_STATUS", "CONVERSATION_STATUS")
+    ]
+    total_msgs = len(_evs_filtered)
+    first_ev = _evs_filtered[0] if _evs_filtered else None
+    last_ev = _evs_filtered[-1] if _evs_filtered else None
+    period_str = ""
+    if first_ev and last_ev and first_ev.received_at and last_ev.received_at:
+        _first_br = first_ev.received_at.astimezone(BRASILIA).strftime("%d/%m/%Y %H:%M")
+        _last_br = last_ev.received_at.astimezone(BRASILIA).strftime("%d/%m/%Y %H:%M")
+        period_str = f"{_first_br} → {_last_br}"
+
+    # Render messages
+    msgs_html = ""
+    _prev_day = None
+    for ev in _evs_filtered:
+        p = ev.raw_payload or {}
+        direction = _extract_direction(p)
+        content = _render_msg_content(p)
+        if ev.received_at:
+            _ev_br = ev.received_at.astimezone(BRASILIA)
+            msg_ts = _ev_br.strftime("%H:%M")
+            _msg_day = _ev_br.date()
+            if _msg_day != _prev_day:
+                _day_str = _ev_br.strftime("%d/%m/%Y")
+                msgs_html += (
+                    f'<div style="text-align:center;font-size:10px;color:#3a4a6a;'
+                    f'letter-spacing:1.5px;margin:12px 0 8px;font-weight:700">— {_day_str} —</div>'
+                )
+                _prev_day = _msg_day
+        else:
+            msg_ts = ""
+        if direction == "OUT":
+            msgs_html += f'<div class="gp-msg out">{content}<div class="gp-msg-t">{msg_ts} ↑</div></div>'
+        else:
+            msgs_html += f'<div class="gp-msg in">{content}<div class="gp-msg-t">{msg_ts} ↓</div></div>'
+
+    nav = _nav_html("alertas", canal=canal,
+                    is_admin=(access or {}).get("role") == "admin",
+                    title=f"Conversa · {display}")
+
+    return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Conversa · {html_mod.escape(display)} — Grampo</title>{COMMON_CSS}
+<style>
+.gp-conv-header{{background:#0d1630;border:1px solid #1a2540;border-radius:10px;
+  padding:18px 22px;margin-bottom:14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}}
+.gp-conv-body{{background:#0a0f1a;border:1px solid #1a2540;border-radius:12px;
+  height:calc(100vh - 240px);min-height:480px;overflow:hidden;display:flex;flex-direction:column}}
+.gp-conv-body .gp-chat-msgs{{flex:1;overflow-y:auto;padding:24px 32px;
+  display:flex;flex-direction:column;gap:8px}}
+</style>
+</head><body>
+{nav}
+<div style="max-width:1100px;margin:24px auto;padding:0 24px">
+  <div class="gp-conv-header">
+    <div style="flex:1;min-width:200px">
+      <div style="font-size:11px;color:#5a6a8a;letter-spacing:1px;font-weight:700;margin-bottom:4px">CLIENTE</div>
+      <div style="font-size:18px;font-weight:700;color:#e8ecf1">{html_mod.escape(display)}{alert_badge}</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:11px;color:#8a96aa;margin-top:2px">
+        {html_mod.escape(real_target)}
+      </div>
+    </div>
+    <div style="flex:1;min-width:200px">
+      <div style="font-size:11px;color:#5a6a8a;letter-spacing:1px;font-weight:700;margin-bottom:4px">AGENTE</div>
+      <div style="font-size:14px;font-weight:600;color:#e8ecf1">{html_mod.escape(agent)}{badge}</div>
+      <div style="font-size:11px;color:#8a96aa;margin-top:2px">{html_mod.escape(segment) if segment else ""}</div>
+    </div>
+    <div style="min-width:200px">
+      <div style="font-size:11px;color:#5a6a8a;letter-spacing:1px;font-weight:700;margin-bottom:4px">HISTÓRICO</div>
+      <div style="font-size:13px;color:#e8ecf1"><strong>{total_msgs}</strong> mensagens</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#8a96aa;margin-top:2px">{html_mod.escape(period_str)}</div>
+    </div>
+  </div>
+
+  <div class="gp-conv-body">
+    <div class="gp-chat-msgs" id="msgs-standalone">{msgs_html}</div>
+  </div>
+
+  <div style="text-align:center;margin-top:14px;font-size:11px;color:#5a6a8a">
+    Visualização carrega até 90 dias de histórico · Sem auto-refresh nesta tela
+  </div>
+</div>
+<script>
+(function(){{
+  var m=document.getElementById('msgs-standalone');
+  if(m) m.scrollTop=m.scrollHeight;
+}})();
+</script>
+</body></html>""")
+
+
 # ── Media proxy ─────────────────────────────────────────────────────────────
 
 @router.get("/dashboard/transcribe", include_in_schema=False)
@@ -3905,17 +4093,19 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
         safe_agent = html_mod.escape(agent)
         safe_snippet = html_mod.escape(alert_snippet).replace("'", "&#39;")
         safe_display = html_mod.escape(client_name if client_name else phone).replace("'", "&#39;")
+        from urllib.parse import quote as _uq4
+        _conv_link = f"/dashboard/conversa?phone={_uq4(phone, safe='')}&canal={_uq4(canal, safe='')}"
         n_active += 1
         active_alerts_html += f"""<div style="background:{_alrt_bg2};border:1px solid {_alrt_bd2};border-radius:8px;padding:12px 16px;margin-bottom:8px;display:flex;align-items:center;gap:12px">
   <span style="font-size:13px;font-weight:700;flex-shrink:0;color:{alrt_color}">{alrt_label}</span>
-  <div style="flex:1;min-width:0">
+  <a href="{_conv_link}" target="_blank" rel="noopener" style="flex:1;min-width:0;text-decoration:none;color:inherit" title="Abrir conversa completa em nova aba">
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-      <span style="font-size:13px;font-weight:700;color:#fff">{display}</span>{badge}
+      <span style="font-size:13px;font-weight:700;color:#fff;text-decoration:underline;text-decoration-color:rgba(255,255,255,.2);text-underline-offset:3px">{display} <span style="font-size:10px;color:#8a96aa;font-weight:400">↗</span></span>{badge}
       <span style="font-size:11px;color:#8a96aa;margin-left:4px">com {safe_agent}</span>
       <span style="font-size:10.5px;color:#5a6a8a;margin-left:auto;flex-shrink:0;font-family:'JetBrains Mono',monospace">{ts_str}</span>
     </div>
     <div style="font-size:11.5px;color:{alrt_color};opacity:.85;font-style:italic">"{html_mod.escape(alert_snippet)}..."</div>
-  </div>
+  </a>
   <button onclick="ackAlertPage('{safe_phone}','{safe_agent}','{safe_snippet}','{safe_display}',this)" style="background:#0fa968;border:none;color:#fff;padding:5px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif;flex-shrink:0">✓ OK</button>
 </div>"""
 
@@ -3939,8 +4129,10 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                 acked_str = acked_at_raw[:16]
             badge = _segment_badge(agent)
             safe_phone = html_mod.escape(phone_key)
+            from urllib.parse import quote as _uq5
+            _ack_link = f"/dashboard/conversa?phone={_uq5(phone_key, safe='')}&canal={_uq5(canal, safe='')}"
             rows_html += f"""<tr>
-                <td style="font-weight:600">{display}</td>
+                <td style="font-weight:600"><a href="{_ack_link}" target="_blank" rel="noopener" style="color:#e8ecf1;text-decoration:none;border-bottom:1px dotted #4a5a7a" title="Abrir conversa em nova aba">{display} <span style="font-size:10px;color:#5a6a8a">↗</span></a></td>
                 <td style="font-family:monospace;font-size:12px;color:#4a5a7a">{safe_phone}</td>
                 <td>{agent}{badge}</td>
                 <td style="color:#5a6a8a;max-width:340px;font-size:11px;font-style:italic">"{snippet}..."</td>
@@ -3981,7 +4173,10 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
         ) + _audit_card("COBERTURA", f"{audit['coverage_pct']}%", "#8a96aa",
                         f"{audit['total_alerts']} de {audit['total_conversations']}")
 
-        # Per-level example tables
+        # Per-level example tables. Each row is clickable — opens the full
+        # conversation in a new tab via /dashboard/conversa.
+        from urllib.parse import quote as _uq3
+
         def _audit_level_section(lid, lbl, color, bg, bd):
             cnt = audit["level_counts"].get(lid, 0)
             exs = audit["level_examples"].get(lid, [])
@@ -3989,17 +4184,29 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                 rows = f'<tr><td colspan="5" style="padding:14px;color:#5a6a8a;font-size:12px;text-align:center">Nenhuma conversa neste nível</td></tr>'
             else:
                 rows = ""
+                _row_td = "padding:8px 12px;border-bottom:1px solid #1a2540;font-size:11px"
                 for ex in exs:
+                    _ph = ex.get("phone") or ""
+                    _conv_url = f"/dashboard/conversa?phone={_uq3(_ph, safe='')}&canal={_uq3(canal, safe='')}"
+                    _row_attrs = (
+                        f'onclick="window.open(\'{_conv_url}\',\'_blank\')" '
+                        f'style="cursor:pointer;transition:background .12s" '
+                        f'onmouseover="this.style.background=\'#11203a\'" '
+                        f'onmouseout="this.style.background=\'\'"'
+                    )
                     rows += (
-                        f'<tr>'
-                        f'<td style="padding:8px 12px;border-bottom:1px solid #1a2540;font-size:12px;font-weight:600">{html_mod.escape(ex["client"])}</td>'
-                        f'<td style="padding:8px 12px;border-bottom:1px solid #1a2540;font-size:11px;color:#8a96aa">{html_mod.escape(ex["agent"])}</td>'
-                        f'<td style="padding:8px 12px;border-bottom:1px solid #1a2540;font-size:11px"><span style="background:{bg};color:{color};padding:2px 8px;border-radius:4px;font-size:10px;font-family:monospace">[{html_mod.escape(ex["keyword"])}]</span></td>'
-                        f'<td style="padding:8px 12px;border-bottom:1px solid #1a2540;font-size:11px;color:#8a96aa;font-style:italic">"{html_mod.escape(ex["snippet"])}"</td>'
-                        f'<td style="padding:8px 12px;border-bottom:1px solid #1a2540;font-size:11px;color:#5a6a8a;white-space:nowrap;font-family:monospace">{ex["when"]}</td>'
+                        f'<tr {_row_attrs} title="Abrir conversa completa em nova aba">'
+                        f'<td style="{_row_td};font-size:12px;font-weight:600;color:#e8ecf1">'
+                        f'  {html_mod.escape(ex["client"])} '
+                        f'  <span style="font-size:10px;color:#5a6a8a;margin-left:6px">↗</span>'
+                        f'</td>'
+                        f'<td style="{_row_td};color:#8a96aa">{html_mod.escape(ex["agent"])}</td>'
+                        f'<td style="{_row_td}"><span style="background:{bg};color:{color};padding:2px 8px;border-radius:4px;font-size:10px;font-family:monospace">[{html_mod.escape(ex["keyword"])}]</span></td>'
+                        f'<td style="{_row_td};color:#8a96aa;font-style:italic">"{html_mod.escape(ex["snippet"])}"</td>'
+                        f'<td style="{_row_td};color:#5a6a8a;white-space:nowrap;font-family:monospace">{ex["when"]}</td>'
                         f'</tr>'
                     )
-            more = f'<div style="font-size:11px;color:#5a6a8a;margin-top:6px">Mostrando {len(exs)} exemplos de {cnt} conversas</div>' if cnt > len(exs) else ''
+            more = f'<div style="font-size:11px;color:#5a6a8a;margin-top:6px">Mostrando {len(exs)} exemplos de {cnt} conversas · clique em qualquer linha para abrir a conversa em nova aba</div>' if exs else ''
             return (
                 f'<div style="background:{bg};border:1px solid {bd};border-radius:10px;padding:18px 20px;margin-bottom:16px">'
                 f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
