@@ -3272,12 +3272,20 @@ def dashboard_conversa(request: Request, db: Session = Depends(get_db)):
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Conversa · {html_mod.escape(display)} — Grampo</title>{COMMON_CSS}
 <style>
+/* Mesmas classes da aba Conversas — bubbles verde (OUT) e azul (IN), alinhamento, timestamp */
+.gp-chat-msgs{{flex:1;overflow-y:auto;padding:24px 32px;display:flex;flex-direction:column;gap:8px}}
+.gp-msg{{max-width:70%;padding:10px 14px;font-size:13px;line-height:1.5}}
+.gp-msg.out{{align-self:flex-end;background:#0c2e1f;color:#a8e6cf;border:1px solid #0c7d4f;border-radius:14px 14px 4px 14px}}
+.gp-msg.in{{align-self:flex-start;background:#141e35;color:#c8d6e5;border:1px solid #1a2540;border-radius:14px 14px 14px 4px}}
+.gp-msg-t{{font-size:10px;margin-top:4px;font-family:'JetBrains Mono',monospace}}
+.gp-msg.out .gp-msg-t{{color:#5a8a6a;text-align:right}}
+.gp-msg.in .gp-msg-t{{color:#5a6a8a}}
+
+/* Container específico da tela standalone */
 .gp-conv-header{{background:#0d1630;border:1px solid #1a2540;border-radius:10px;
   padding:18px 22px;margin-bottom:14px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}}
 .gp-conv-body{{background:#0a0f1a;border:1px solid #1a2540;border-radius:12px;
   height:calc(100vh - 240px);min-height:480px;overflow:hidden;display:flex;flex-direction:column}}
-.gp-conv-body .gp-chat-msgs{{flex:1;overflow-y:auto;padding:24px 32px;
-  display:flex;flex-direction:column;gap:8px}}
 </style>
 </head><body>
 {nav}
