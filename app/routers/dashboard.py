@@ -3998,13 +3998,28 @@ def _compute_full_audit(db: Session, canal: str) -> dict:
             for _d, text in conv_texts:
                 lower = text.lower()
                 for kw in level_kws:
-                    hit = (kw in lower) if " " in kw else bool(
-                        _re.search(r'\b' + _re.escape(kw), lower))
-                    if hit:
-                        matched_kw = kw
-                        snippet = text[:140]
-                        kw_counts[kw] += 1
-                        break
+                    if " " in kw:
+                        pos = lower.find(kw)
+                        if pos < 0:
+                            continue
+                        kw_end = pos + len(kw)
+                    else:
+                        m = _re.search(r'\b' + _re.escape(kw), lower)
+                        if not m:
+                            continue
+                        pos = m.start()
+                        kw_end = m.end()
+                    matched_kw = kw
+                    # Extract a window AROUND the trigger so the user always
+                    # sees why it fired (not just the first 140 chars).
+                    before, after = 70, 90
+                    start = max(0, pos - before)
+                    end = min(len(text), kw_end + after)
+                    prefix = "…" if start > 0 else ""
+                    suffix = "…" if end < len(text) else ""
+                    snippet = prefix + text[start:end] + suffix
+                    kw_counts[kw] += 1
+                    break
                 if matched_kw:
                     break
 
@@ -4087,10 +4102,30 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
         _matched_levels = {i[0] for i in intents if i[0] in ALERT_IDS}
         _level_kws = [kw for aid, _, _, kws in _INTENT_RULES if aid in _matched_levels for kw in kws]
         alert_snippet = ""
+        alert_matched_kw = ""
         for _d, text in conv_texts:
+            _lower = text.lower()
             for kw in _level_kws:
-                if (kw in text.lower()) if " " in kw else bool(_re.search(r'\b' + _re.escape(kw), text.lower())):
-                    alert_snippet = text[:120]; break
+                if " " in kw:
+                    _pos = _lower.find(kw)
+                    if _pos < 0:
+                        continue
+                    _kw_end = _pos + len(kw)
+                else:
+                    _m = _re.search(r'\b' + _re.escape(kw), _lower)
+                    if not _m:
+                        continue
+                    _pos = _m.start()
+                    _kw_end = _m.end()
+                alert_matched_kw = kw
+                # Window around trigger so the snippet always shows WHY it fired
+                _before, _after = 55, 75
+                _start = max(0, _pos - _before)
+                _end = min(len(text), _kw_end + _after)
+                _pfx = "…" if _start > 0 else ""
+                _sfx = "…" if _end < len(text) else ""
+                alert_snippet = _pfx + text[_start:_end] + _sfx
+                break
             if alert_snippet: break
         client_name = client_name_map.get(phone, "")
         display = html_mod.escape(client_name if client_name else phone)
@@ -4103,6 +4138,22 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
         safe_display = html_mod.escape(client_name if client_name else phone).replace("'", "&#39;")
         from urllib.parse import quote as _uq4
         _conv_link = f"/dashboard/conversa?phone={_uq4(phone, safe='')}&canal={_uq4(canal, safe='')}"
+        # Highlight the trigger keyword inside the snippet so the reason
+        # for the alert is visually obvious.
+        _esc_snip = html_mod.escape(alert_snippet)
+        if alert_matched_kw:
+            _kw_esc = html_mod.escape(alert_matched_kw)
+            _pat = _re.compile(_re.escape(_kw_esc), _re.IGNORECASE)
+            _snip_html = _pat.sub(
+                lambda mo: (
+                    f'<mark style="background:{alrt_color}55;color:{alrt_color};'
+                    f'padding:1px 4px;border-radius:3px;font-weight:700">'
+                    f'{mo.group(0)}</mark>'
+                ),
+                _esc_snip,
+            )
+        else:
+            _snip_html = _esc_snip
         n_active += 1
         active_alerts_html += f"""<div style="background:{_alrt_bg2};border:1px solid {_alrt_bd2};border-radius:8px;padding:12px 16px;margin-bottom:8px;display:flex;align-items:center;gap:12px">
   <span style="font-size:13px;font-weight:700;flex-shrink:0;color:{alrt_color}">{alrt_label}</span>
@@ -4112,7 +4163,7 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
       <span style="font-size:11px;color:#8a96aa;margin-left:4px">com {safe_agent}</span>
       <span style="font-size:10.5px;color:#5a6a8a;margin-left:auto;flex-shrink:0;font-family:'JetBrains Mono',monospace">{ts_str}</span>
     </div>
-    <div style="font-size:11.5px;color:{alrt_color};opacity:.85;font-style:italic">"{html_mod.escape(alert_snippet)}..."</div>
+    <div style="font-size:11.5px;color:{alrt_color};opacity:.85;font-style:italic">"{_snip_html}"</div>
   </a>
   <button onclick="ackAlertPage('{safe_phone}','{safe_agent}','{safe_snippet}','{safe_display}',this)" style="background:#0fa968;border:none;color:#fff;padding:5px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif;flex-shrink:0">✓ OK</button>
 </div>"""
@@ -4185,6 +4236,23 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
         # conversation in a new tab via /dashboard/conversa.
         from urllib.parse import quote as _uq3
 
+        def _highlight_kw(snippet_text: str, kw: str, color: str) -> str:
+            """HTML-escape snippet and wrap kw occurrences (case-insensitive)
+            in a colored <mark> so reviewer immediately sees WHY it fired."""
+            escaped = html_mod.escape(snippet_text)
+            if not kw:
+                return escaped
+            kw_escaped = html_mod.escape(kw)
+            pattern = _re.compile(_re.escape(kw_escaped), _re.IGNORECASE)
+            return pattern.sub(
+                lambda m: (
+                    f'<mark style="background:{color}44;color:{color};'
+                    f'padding:1px 4px;border-radius:3px;font-weight:700">'
+                    f'{m.group(0)}</mark>'
+                ),
+                escaped,
+            )
+
         def _audit_level_section(lid, lbl, color, bg, bd):
             cnt = audit["level_counts"].get(lid, 0)
             exs = audit["level_examples"].get(lid, [])
@@ -4202,6 +4270,7 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                         f'onmouseover="this.style.background=\'#11203a\'" '
                         f'onmouseout="this.style.background=\'\'"'
                     )
+                    _snippet_html = _highlight_kw(ex.get("snippet", ""), ex.get("keyword", ""), color)
                     rows += (
                         f'<tr {_row_attrs} title="Abrir conversa completa em nova aba">'
                         f'<td style="{_row_td};font-size:12px;font-weight:600;color:#e8ecf1">'
@@ -4210,7 +4279,7 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                         f'</td>'
                         f'<td style="{_row_td};color:#8a96aa">{html_mod.escape(ex["agent"])}</td>'
                         f'<td style="{_row_td}"><span style="background:{bg};color:{color};padding:2px 8px;border-radius:4px;font-size:10px;font-family:monospace">[{html_mod.escape(ex["keyword"])}]</span></td>'
-                        f'<td style="{_row_td};color:#8a96aa;font-style:italic">"{html_mod.escape(ex["snippet"])}"</td>'
+                        f'<td style="{_row_td};color:#8a96aa;font-style:italic">"{_snippet_html}"</td>'
                         f'<td style="{_row_td};color:#5a6a8a;white-space:nowrap;font-family:monospace">{ex["when"]}</td>'
                         f'</tr>'
                     )
