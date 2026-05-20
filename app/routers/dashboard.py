@@ -3189,17 +3189,9 @@ def dashboard_conversa(request: Request, db: Session = Depends(get_db)):
         _cpl.get(client_key) or client_agent_map.get(real_target)
         or _cpl.get(real_target) or "Sem atendente"
     )
-    if not _user_sees(access, agent):
-        nav_403 = _nav_html("alertas", canal=canal, is_admin=(access or {}).get("role") == "admin", title="Conversa")
-        return HTMLResponse(
-            f"<!DOCTYPE html><html><head><meta charset='utf-8'>{COMMON_CSS}</head><body>{nav_403}"
-            f"<div style='max-width:600px;margin:80px auto;text-align:center;color:#8a96aa'>"
-            f"<div style='font-size:18px;font-weight:700;color:#ef4444;margin-bottom:8px'>"
-            f"Acesso restrito</div>"
-            f"<div style='font-size:13px'>Você não tem permissão para visualizar conversas "
-            f"do agente {html_mod.escape(agent)}.</div></div></body></html>",
-            status_code=403,
-        )
+    # NOTE: standalone viewer is open to ALL authenticated users.
+    # Compliance decision (May/2026): every reviewer can read any flagged
+    # conversation, regardless of which agent they are mapped to.
 
     client_name = client_name_map.get(real_target, "") or _extract_contact_name_from_events(target_evs)
     display = client_name if client_name else real_target
@@ -4155,7 +4147,9 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
 
     # Full-history audit (cached 10min). Admins only see the audit section.
     is_admin = (access or {}).get("role") == "admin"
-    audit = _compute_full_audit(db, canal) if is_admin else None
+    # Full-history audit is visible to EVERY authenticated user (compliance
+    # decision May/2026 — universal visibility of alerts).
+    audit = _compute_full_audit(db, canal)
     db.close()
     filtered_events = all_events  # already filtered by canal
     groups, phone_learned = _cg, _cpl  # cached groups
@@ -4169,8 +4163,8 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
         if phone in acked:
             continue
         agent = phone_learned.get(client_num) or client_agent_map.get(phone) or phone_learned.get(phone) or "Sem atendente"
-        if not _user_sees(access, agent):
-            continue
+        # Active alerts are visible to every authenticated user — no per-agent
+        # filtering (compliance decision May/2026).
         conv_texts = []
         for ev in evs:
             p = ev.raw_payload or {}
@@ -4257,8 +4251,8 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
   <button onclick="ackAlertPage('{safe_phone}','{safe_agent}','{safe_snippet}','{safe_display}',this)" style="background:#0fa968;border:none;color:#fff;padding:5px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif;flex-shrink:0">✓ OK</button>
 </div>"""
 
-    # Filter reviewed alerts for visibility
-    acked = {k: v for k, v in acked.items() if _user_sees(access, v.get("agent", ""))}
+    # Reviewed (acked) alerts are visible to every authenticated user
+    # (compliance decision May/2026 — universal visibility of alerts).
 
     rows_html = ""
     if not acked:
@@ -4408,7 +4402,6 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
         <div class="card" style="margin-top:24px;border:1px solid #1a2540">
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
             <h2 style="margin:0;font-size:15px;color:#e8ecf1">🚨 Análise de Conformidade — Histórico Completo</h2>
-            <span style="background:#0d1630;color:#8a96aa;padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;border:1px solid #1a2540">ADMIN</span>
           </div>
           <div style="font-size:11px;color:#5a6a8a;margin-bottom:18px">
             Varredura de <strong style="color:#e8ecf1">{audit['total_conversations']}</strong> conversas
