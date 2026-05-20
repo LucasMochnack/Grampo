@@ -3217,6 +3217,8 @@ def dashboard_conversa(request: Request, db: Session = Depends(get_db)):
     intents = _classify_conversation(conv_texts)
     top_alrt = _top_alert(intents)
     alert_badge = ""
+    alrt_color = "#ef4444"
+    _matched_alert_kws: list[str] = []
     if top_alrt:
         alrt_color = top_alrt[2]
         _bg = {"#ef4444": "#3a1414", "#f97316": "#3a1a08", "#eab308": "#2a2208", "#3b82f6": "#0d1a38"}.get(alrt_color, "#1a1a1a")
@@ -3225,6 +3227,52 @@ def dashboard_conversa(request: Request, db: Session = Depends(get_db)):
             f'border-radius:6px;font-size:11px;font-weight:700;margin-left:10px;'
             f'border:1px solid {alrt_color}">{top_alrt[1]}</span>'
         )
+        # Build the list of keywords from EVERY matched alert level so we can
+        # highlight them in the message bodies below.
+        _matched_alert_ids = {i[0] for i in intents if i[0] in ALERT_IDS}
+        _matched_alert_kws = [
+            kw for aid, _, _, kws in _INTENT_RULES
+            if aid in _matched_alert_ids for kw in kws
+        ]
+
+    def _render_with_highlight(payload: dict) -> tuple[str, bool]:
+        """Render message HTML; if any matched alert keyword appears in the
+        plain text body, wrap each occurrence in a colored <mark>.
+        Returns (html, has_alert_match)."""
+        if not _matched_alert_kws:
+            return _render_msg_content(payload), False
+        raw = _extract_content_preview(payload, max_len=10000) or ""
+        if not raw:
+            return _render_msg_content(payload), False
+        lower = raw.lower()
+        hits: list[str] = []
+        for kw in _matched_alert_kws:
+            if " " in kw:
+                if kw in lower:
+                    hits.append(kw)
+            else:
+                if _re.search(r'\b' + _re.escape(kw), lower):
+                    hits.append(kw)
+        if not hits:
+            return _render_msg_content(payload), False
+        media_url, _ = _extract_media_url(payload)
+        if media_url:
+            # Mixed media+caption — keep the rich renderer, just signal a match
+            return _render_msg_content(payload), True
+        # Plain-text message — escape then wrap each hit in <mark>
+        escaped = html_mod.escape(raw)
+        for kw in hits:
+            kw_esc = html_mod.escape(kw)
+            pat = _re.compile(_re.escape(kw_esc), _re.IGNORECASE)
+            escaped = pat.sub(
+                lambda mo: (
+                    f'<mark style="background:{alrt_color}55;color:{alrt_color};'
+                    f'padding:1px 5px;border-radius:3px;font-weight:700">'
+                    f'{mo.group(0)}</mark>'
+                ),
+                escaped,
+            )
+        return escaped, True
 
     # Filter out status events for display
     _evs_filtered = [
@@ -3243,10 +3291,16 @@ def dashboard_conversa(request: Request, db: Session = Depends(get_db)):
     # Render messages
     msgs_html = ""
     _prev_day = None
+    _first_hit_idx = -1   # first alerted msg, used to auto-scroll there
+    _hit_count = 0
     for ev in _evs_filtered:
         p = ev.raw_payload or {}
         direction = _extract_direction(p)
-        content = _render_msg_content(p)
+        content, _is_hit = _render_with_highlight(p)
+        if _is_hit:
+            _hit_count += 1
+            if _first_hit_idx < 0:
+                _first_hit_idx = _hit_count  # 1-based; used as the data-hit attribute target
         if ev.received_at:
             _ev_br = ev.received_at.astimezone(BRASILIA)
             msg_ts = _ev_br.strftime("%H:%M")
@@ -3260,10 +3314,15 @@ def dashboard_conversa(request: Request, db: Session = Depends(get_db)):
                 _prev_day = _msg_day
         else:
             msg_ts = ""
+        _hit_attrs = (
+            f' data-hit="{_hit_count}" style="outline:2px solid {alrt_color}aa;'
+            f'box-shadow:0 0 14px {alrt_color}44;outline-offset:2px"'
+            if _is_hit else ""
+        )
         if direction == "OUT":
-            msgs_html += f'<div class="gp-msg out">{content}<div class="gp-msg-t">{msg_ts} ↑</div></div>'
+            msgs_html += f'<div class="gp-msg out"{_hit_attrs}>{content}<div class="gp-msg-t">{msg_ts} ↑</div></div>'
         else:
-            msgs_html += f'<div class="gp-msg in">{content}<div class="gp-msg-t">{msg_ts} ↓</div></div>'
+            msgs_html += f'<div class="gp-msg in"{_hit_attrs}>{content}<div class="gp-msg-t">{msg_ts} ↓</div></div>'
 
     nav = _nav_html("alertas", canal=canal,
                     is_admin=(access or {}).get("role") == "admin",
@@ -3305,7 +3364,7 @@ def dashboard_conversa(request: Request, db: Session = Depends(get_db)):
     </div>
     <div style="min-width:200px">
       <div style="font-size:11px;color:#5a6a8a;letter-spacing:1px;font-weight:700;margin-bottom:4px">HISTÓRICO</div>
-      <div style="font-size:13px;color:#e8ecf1"><strong>{total_msgs}</strong> mensagens</div>
+      <div style="font-size:13px;color:#e8ecf1"><strong>{total_msgs}</strong> mensagens{f' · <strong style=\"color:{alrt_color}\">{_hit_count}</strong> com alerta' if _hit_count else ''}</div>
       <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#8a96aa;margin-top:2px">{html_mod.escape(period_str)}</div>
     </div>
   </div>
@@ -3315,13 +3374,43 @@ def dashboard_conversa(request: Request, db: Session = Depends(get_db)):
   </div>
 
   <div style="text-align:center;margin-top:14px;font-size:11px;color:#5a6a8a">
-    Visualização carrega até 90 dias de histórico · Sem auto-refresh nesta tela
+    Visualização carrega até 90 dias de histórico · Sem auto-refresh nesta tela{f' · Use ↑/↓ para navegar entre os {_hit_count} alertas' if _hit_count > 1 else ''}
   </div>
 </div>
 <script>
 (function(){{
   var m=document.getElementById('msgs-standalone');
-  if(m) m.scrollTop=m.scrollHeight;
+  if(!m) return;
+  var hits=m.querySelectorAll('[data-hit]');
+  if(hits.length){{
+    // Scroll to the FIRST alerted message so reviewers don't waste time
+    // hunting it down — the whole reason they opened the standalone view.
+    var first=hits[0];
+    first.scrollIntoView({{block:'center', behavior:'instant'}});
+    // Brief flash to draw attention
+    var orig=first.style.outline;
+    first.style.transition='outline-color .3s';
+    setTimeout(function(){{ first.style.outlineWidth='4px'; }}, 200);
+    setTimeout(function(){{ first.style.outlineWidth='2px'; }}, 700);
+    // ↑/↓ keyboard navigation between hits
+    if(hits.length > 1){{
+      var idx=0;
+      document.addEventListener('keydown', function(e){{
+        if(e.key==='ArrowDown' || e.key==='j'){{
+          idx=Math.min(idx+1, hits.length-1);
+          hits[idx].scrollIntoView({{block:'center', behavior:'smooth'}});
+          e.preventDefault();
+        }} else if(e.key==='ArrowUp' || e.key==='k'){{
+          idx=Math.max(idx-1, 0);
+          hits[idx].scrollIntoView({{block:'center', behavior:'smooth'}});
+          e.preventDefault();
+        }}
+      }});
+    }}
+  }} else {{
+    // No alerts in this conversation — go to the bottom (most recent)
+    m.scrollTop=m.scrollHeight;
+  }}
 }})();
 </script>
 </body></html>""")
