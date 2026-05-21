@@ -4338,9 +4338,18 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
 
         def _audit_level_section(lid, lbl, color, bg, bd):
             cnt = audit["level_counts"].get(lid, 0)
-            exs = audit["level_examples"].get(lid, [])
+            exs_all = audit["level_examples"].get(lid, [])
+            # Hide conversations that have already been reviewed — they show up
+            # in the Revisados table below. Keeps the audit focused on pending.
+            exs = [e for e in exs_all if _real_phone(e.get("phone") or "") not in acked]
+            already_reviewed = len(exs_all) - len(exs)
             if not exs:
-                rows = f'<tr><td colspan="5" style="padding:14px;color:#5a6a8a;font-size:12px;text-align:center">Nenhuma conversa neste nível</td></tr>'
+                rows = (
+                    f'<tr><td colspan="6" style="padding:14px;color:#0fa968;font-size:12px;text-align:center">'
+                    f'✅ Nenhuma conversa pendente neste nível'
+                    f'{f" (todos os {already_reviewed} exemplos já foram revisados)" if already_reviewed else ""}'
+                    f'</td></tr>'
+                )
             else:
                 rows = ""
                 _row_td = "padding:8px 12px;border-bottom:1px solid #1a2540;font-size:11px"
@@ -4354,6 +4363,11 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                         f'onmouseout="this.style.background=\'\'"'
                     )
                     _snippet_html = _highlight_kw(ex.get("snippet", ""), ex.get("keyword", ""), color)
+                    # JS-safe values for inline onclick
+                    _js_phone   = html_mod.escape(_ph).replace("'", "&#39;")
+                    _js_agent   = html_mod.escape(ex.get("agent", "")).replace("'", "&#39;")
+                    _js_snippet = html_mod.escape(ex.get("snippet", "")[:200]).replace("'", "&#39;")
+                    _js_display = html_mod.escape(ex.get("client", "")).replace("'", "&#39;")
                     rows += (
                         f'<tr {_row_attrs} title="Abrir conversa completa em nova aba">'
                         f'<td style="{_row_td};font-size:12px;font-weight:600;color:#e8ecf1">'
@@ -4364,9 +4378,22 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                         f'<td style="{_row_td}"><span style="background:{bg};color:{color};padding:2px 8px;border-radius:4px;font-size:10px;font-family:monospace">[{html_mod.escape(ex["keyword"])}]</span></td>'
                         f'<td style="{_row_td};color:#8a96aa;font-style:italic">"{_snippet_html}"</td>'
                         f'<td style="{_row_td};color:#5a6a8a;white-space:nowrap;font-family:monospace">{ex["when"]}</td>'
+                        f'<td style="{_row_td};text-align:center;white-space:nowrap" onclick="event.stopPropagation()">'
+                        f'<button onclick="event.stopPropagation();ackAlertRow(\'{_js_phone}\',\'{_js_agent}\',\'{_js_snippet}\',\'{_js_display}\',this)" '
+                        f'style="background:#0fa968;border:none;color:#fff;padding:4px 11px;border-radius:5px;font-size:10.5px;font-weight:700;cursor:pointer;font-family:\'Montserrat\',sans-serif">✓ Revisar</button>'
+                        f'</td>'
                         f'</tr>'
                     )
-            more = f'<div style="font-size:11px;color:#5a6a8a;margin-top:6px">Mostrando {len(exs)} exemplos de {cnt} conversas · clique em qualquer linha para abrir a conversa em nova aba</div>' if exs else ''
+            _shown = len(exs)
+            _hidden_note = (
+                f' · {already_reviewed} já revisado{"s" if already_reviewed != 1 else ""}'
+                if already_reviewed else ''
+            )
+            more = (
+                f'<div style="font-size:11px;color:#5a6a8a;margin-top:6px">'
+                f'Mostrando {_shown} pendente{"s" if _shown != 1 else ""} de {cnt} no nível{_hidden_note} · clique na linha para abrir a conversa, ou em ✓ Revisar para movê-la para Revisados'
+                f'</div>'
+            ) if exs_all else ''
             return (
                 f'<div style="background:{bg};border:1px solid {bd};border-radius:10px;padding:18px 20px;margin-bottom:16px">'
                 f'<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">'
@@ -4380,6 +4407,7 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                 f'<th style="padding:8px 12px;text-align:left;font-size:10px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">GATILHO</th>'
                 f'<th style="padding:8px 12px;text-align:left;font-size:10px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">TRECHO</th>'
                 f'<th style="padding:8px 12px;text-align:left;font-size:10px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">QUANDO</th>'
+                f'<th style="padding:8px 12px;text-align:center;font-size:10px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540;width:100px">AÇÃO</th>'
                 f'</tr></thead><tbody>{rows}</tbody></table>{more}</div>'
             )
 
@@ -4480,6 +4508,33 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
             }});
             if (resp.ok) {{ btn.closest('div[style]').remove(); }}
         }} catch(e) {{ console.error(e); }}
+    }}
+    // Same ack flow, but for the audit-table rows (removes the <tr>).
+    async function ackAlertRow(phoneKey, agent, snippet, displayName, btn) {{
+        btn.disabled = true;
+        var _orig = btn.textContent;
+        btn.textContent = '⏳';
+        try {{
+            var resp = await fetch('/dashboard/ack-alert', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{phone_key: phoneKey, agent: agent, snippet: snippet, display_name: displayName}})
+            }});
+            if (resp.ok) {{
+                var row = btn.closest('tr');
+                if (row) {{
+                    row.style.transition = 'opacity .3s';
+                    row.style.opacity = '0';
+                    setTimeout(function(){{ row.remove(); }}, 280);
+                }}
+            }} else {{
+                btn.disabled = false; btn.textContent = _orig;
+                alert('Falha ao registrar revisão.');
+            }}
+        }} catch(e) {{
+            console.error(e);
+            btn.disabled = false; btn.textContent = _orig;
+        }}
     }}
     async function unackAlert(phoneKey, btn) {{
         try {{
