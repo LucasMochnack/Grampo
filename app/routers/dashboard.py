@@ -4363,11 +4363,16 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                         f'onmouseout="this.style.background=\'\'"'
                     )
                     _snippet_html = _highlight_kw(ex.get("snippet", ""), ex.get("keyword", ""), color)
-                    # JS-safe values for inline onclick
-                    _js_phone   = html_mod.escape(_ph).replace("'", "&#39;")
-                    _js_agent   = html_mod.escape(ex.get("agent", "")).replace("'", "&#39;")
-                    _js_snippet = html_mod.escape(ex.get("snippet", "")[:200]).replace("'", "&#39;")
-                    _js_display = html_mod.escape(ex.get("client", "")).replace("'", "&#39;")
+                    # Encode ack params as JSON in a data attribute — avoids
+                    # the apostrophe-in-snippet bug that breaks inline onclick
+                    # string boundaries.
+                    _ack_payload = json.dumps({
+                        "phone_key":    _ph,
+                        "agent":        ex.get("agent", ""),
+                        "snippet":      (ex.get("snippet", "") or "")[:200],
+                        "display_name": ex.get("client", ""),
+                    }, ensure_ascii=False)
+                    _ack_attr = html_mod.escape(_ack_payload, quote=True)
                     rows += (
                         f'<tr {_row_attrs} title="Abrir conversa completa em nova aba">'
                         f'<td style="{_row_td};font-size:12px;font-weight:600;color:#e8ecf1">'
@@ -4379,8 +4384,8 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                         f'<td style="{_row_td};color:#8a96aa;font-style:italic">"{_snippet_html}"</td>'
                         f'<td style="{_row_td};color:#5a6a8a;white-space:nowrap;font-family:monospace">{ex["when"]}</td>'
                         f'<td style="{_row_td};text-align:center;white-space:nowrap" onclick="event.stopPropagation()">'
-                        f'<button onclick="event.stopPropagation();ackAlertRow(\'{_js_phone}\',\'{_js_agent}\',\'{_js_snippet}\',\'{_js_display}\',this)" '
-                        f'style="background:#0fa968;border:none;color:#fff;padding:4px 11px;border-radius:5px;font-size:10.5px;font-weight:700;cursor:pointer;font-family:\'Montserrat\',sans-serif">✓ Revisar</button>'
+                        f'<button data-ack="{_ack_attr}" onclick="event.stopPropagation();ackAlertRow(this)" '
+                        f'style="background:#0fa968;border:none;color:#fff;padding:4px 11px;border-radius:5px;font-size:10.5px;font-weight:700;cursor:pointer;font-family:Montserrat,sans-serif">✓ Revisar</button>'
                         f'</td>'
                         f'</tr>'
                     )
@@ -4510,7 +4515,13 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
         }} catch(e) {{ console.error(e); }}
     }}
     // Same ack flow, but for the audit-table rows (removes the <tr>).
-    async function ackAlertRow(phoneKey, agent, snippet, displayName, btn) {{
+    // Reads payload from the button's data-ack attribute to avoid quoting
+    // issues with apostrophes/quotes in client names or snippets.
+    async function ackAlertRow(btn) {{
+        var raw = btn.getAttribute('data-ack') || '{{}}';
+        var data;
+        try {{ data = JSON.parse(raw); }}
+        catch(e) {{ console.error('Bad ack payload', e, raw); alert('Erro lendo dados do alerta.'); return; }}
         btn.disabled = true;
         var _orig = btn.textContent;
         btn.textContent = '⏳';
@@ -4518,7 +4529,12 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
             var resp = await fetch('/dashboard/ack-alert', {{
                 method: 'POST',
                 headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{phone_key: phoneKey, agent: agent, snippet: snippet, display_name: displayName}})
+                body: JSON.stringify({{
+                    phone_key:    data.phone_key,
+                    agent:        data.agent,
+                    snippet:      data.snippet,
+                    display_name: data.display_name
+                }})
             }});
             if (resp.ok) {{
                 var row = btn.closest('tr');
@@ -4529,11 +4545,14 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                 }}
             }} else {{
                 btn.disabled = false; btn.textContent = _orig;
-                alert('Falha ao registrar revisão.');
+                var msg = 'Falha ao registrar revisão (HTTP ' + resp.status + ').';
+                try {{ var j = await resp.json(); if (j && j.error) msg += ' ' + j.error; }} catch(_){{}}
+                alert(msg);
             }}
         }} catch(e) {{
             console.error(e);
             btn.disabled = false; btn.textContent = _orig;
+            alert('Erro de rede ao registrar revisão.');
         }}
     }}
     async function unackAlert(phoneKey, btn) {{
