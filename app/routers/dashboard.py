@@ -4522,22 +4522,6 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
           {active_alerts_html}
         </div>''' if n_active > 0 else ""}
 
-        <div class="card" style="border:1px solid #1d4d36;background:rgba(15,169,104,.04);margin-bottom:16px">
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
-                <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
-                <h2 style="margin:0;font-size:15px;color:#86efac">✓ OK · Sem Problema</h2>
-                <span style="background:#0a2a1a;color:#0fa968;padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;border:1px solid #1d4d36;letter-spacing:.5px">{len(_acked_ok)} REVISADO{"S" if len(_acked_ok) != 1 else ""}</span>
-            </div>
-            <p style="font-size:11px;color:#4a5a7a;margin-bottom:16px;font-weight:500">
-                Conversas revisadas e classificadas como sem problema (falso positivo ou ruído).
-                Clique em <strong style="color:#ef4444">Reabrir</strong> para devolver à fila.
-            </p>
-            <table>
-                <thead><tr><th>Cliente</th><th>Telefone</th><th>Agente</th><th>Trecho do alerta</th><th>Revisado em</th><th style="width:80px"></th></tr></thead>
-                <tbody>{rows_ok_html}</tbody>
-            </table>
-        </div>
-
         <div class="card" style="border:1px solid #5a2424;background:rgba(220,38,38,.05);margin-bottom:16px">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
                 <span style="width:8px;height:8px;border-radius:50%;background:#dc2626;box-shadow:0 0 10px #dc2626;display:inline-block"></span>
@@ -4555,6 +4539,22 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
         </div>
 
         {audit_html}
+
+        <div class="card" style="border:1px solid #1d4d36;background:rgba(15,169,104,.04);margin-top:24px;margin-bottom:16px">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+                <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
+                <h2 style="margin:0;font-size:15px;color:#86efac">✓ Itens Avaliados sem problema</h2>
+                <span style="background:#0a2a1a;color:#0fa968;padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;border:1px solid #1d4d36;letter-spacing:.5px">{len(_acked_ok)} ITEM{"S" if len(_acked_ok) != 1 else ""}</span>
+            </div>
+            <p style="font-size:11px;color:#4a5a7a;margin-bottom:16px;font-weight:500">
+                Conversas que foram revisadas e classificadas como sem problema (falso positivo ou ruído).
+                Clique em <strong style="color:#ef4444">Reabrir</strong> para devolver à fila de triagem.
+            </p>
+            <table>
+                <thead><tr><th>Cliente</th><th>Telefone</th><th>Agente</th><th>Trecho do alerta</th><th>Revisado em</th><th style="width:80px"></th></tr></thead>
+                <tbody>{rows_ok_html}</tbody>
+            </table>
+        </div>
     </div>
     <script>
     async function ackAlertPage(phoneKey, agent, snippet, displayName, btn, status) {{
