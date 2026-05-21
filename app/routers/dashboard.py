@@ -4522,7 +4522,7 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
           {active_alerts_html}
         </div>''' if n_active > 0 else ""}
 
-        <div class="card" style="border:1px solid #5a2424;background:rgba(220,38,38,.05);margin-bottom:16px">
+        <div id="section-problema" class="card" style="border:1px solid #5a2424;background:rgba(220,38,38,.05);margin-bottom:16px">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
                 <span style="width:8px;height:8px;border-radius:50%;background:#dc2626;box-shadow:0 0 10px #dc2626;display:inline-block"></span>
                 <h2 style="margin:0;font-size:15px;color:#fca5a5">⚠ PROBLEMA · Confirmado</h2>
@@ -4540,7 +4540,7 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
 
         {audit_html}
 
-        <div class="card" style="border:1px solid #1d4d36;background:rgba(15,169,104,.04);margin-top:24px;margin-bottom:16px">
+        <div id="section-ok" class="card" style="border:1px solid #1d4d36;background:rgba(15,169,104,.04);margin-top:24px;margin-bottom:16px">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
                 <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
                 <h2 style="margin:0;font-size:15px;color:#86efac">✓ Itens Avaliados sem problema</h2>
@@ -4557,6 +4557,14 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
         </div>
     </div>
     <script>
+    // After a successful ack we reload so the OK / PROBLEMA tables include
+    // the new row. We also remember WHICH bucket it landed in, so on the
+    // next page load we can scroll the user straight to that section.
+    function _scheduleAckReload(status) {{
+        try {{ sessionStorage.setItem('grampo_ack_jump', status); }} catch(_) {{}}
+        setTimeout(function(){{ window.location.reload(); }}, 500);
+    }}
+
     async function ackAlertPage(phoneKey, agent, snippet, displayName, btn, status) {{
         status = status || 'ok';
         try {{
@@ -4566,25 +4574,26 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                 body: JSON.stringify({{phone_key: phoneKey, agent: agent, snippet: snippet, display_name: displayName, status: status}})
             }});
             if (resp.ok) {{
-                // Remove the whole alert card (ancestor div with background)
                 var card = btn.closest('div[style*="border-radius:8px"]');
                 if (!card) card = btn.closest('div[style*="margin-bottom:8px"]');
-                if (card) card.remove();
+                if (card) {{ card.style.transition = 'opacity .25s'; card.style.opacity = '0.4'; }}
+                _scheduleAckReload(status);
             }} else {{
                 alert('Falha ao registrar (HTTP ' + resp.status + ').');
             }}
         }} catch(e) {{ console.error(e); alert('Erro de rede ao registrar.'); }}
     }}
+
     // Audit-table row variant — reads payload from data-ack attribute and
     // accepts a status ("ok" or "problema") so the same row can be classified
-    // either way. Removes the <tr> with a fade-out on success.
+    // either way. Fades the row and reloads to surface the new row in the
+    // OK / PROBLEMA section.
     async function markAlertRow(btn, status) {{
         status = status || 'ok';
         var raw = btn.getAttribute('data-ack') || '{{}}';
         var data;
         try {{ data = JSON.parse(raw); }}
         catch(e) {{ console.error('Bad ack payload', e, raw); alert('Erro lendo dados do alerta.'); return; }}
-        // Disable BOTH buttons in this row's action group while submitting
         var group = btn.parentElement;
         var btns = group ? group.querySelectorAll('button') : [btn];
         btns.forEach(function(b){{ b.disabled = true; }});
@@ -4605,10 +4614,10 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
             if (resp.ok) {{
                 var row = btn.closest('tr');
                 if (row) {{
-                    row.style.transition = 'opacity .3s';
-                    row.style.opacity = '0';
-                    setTimeout(function(){{ row.remove(); }}, 280);
+                    row.style.transition = 'opacity .25s';
+                    row.style.opacity = '0.3';
                 }}
+                _scheduleAckReload(status);
             }} else {{
                 btns.forEach(function(b){{ b.disabled = false; }}); btn.textContent = _orig;
                 var msg = 'Falha ao registrar (HTTP ' + resp.status + ').';
@@ -4621,6 +4630,27 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
             alert('Erro de rede ao registrar.');
         }}
     }}
+
+    // On page load, if the previous click left a hint, scroll to that bucket.
+    (function(){{
+        try {{
+            var jump = sessionStorage.getItem('grampo_ack_jump');
+            if (!jump) return;
+            sessionStorage.removeItem('grampo_ack_jump');
+            window.addEventListener('load', function(){{
+                var id = (jump === 'problema') ? 'section-problema' : 'section-ok';
+                var el = document.getElementById(id);
+                if (!el) return;
+                el.scrollIntoView({{behavior:'smooth', block:'start'}});
+                // Subtle flash so the user notices the new row
+                el.style.transition = 'box-shadow .4s';
+                el.style.boxShadow = (jump === 'problema')
+                    ? '0 0 0 2px #dc2626, 0 0 24px rgba(220,38,38,.35)'
+                    : '0 0 0 2px #0fa968, 0 0 24px rgba(15,169,104,.35)';
+                setTimeout(function(){{ el.style.boxShadow = ''; }}, 1600);
+            }});
+        }} catch(_) {{}}
+    }})();
     async function unackAlert(phoneKey, btn) {{
         try {{
             var resp = await fetch('/dashboard/unack-alert', {{
