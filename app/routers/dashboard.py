@@ -3498,15 +3498,22 @@ async def ack_alert_endpoint(request: Request, db: Session = Depends(get_db)):
     phone_key = (body.get("phone_key") or "").strip()
     if not phone_key:
         return JSONResponse({"error": "missing phone_key"}, status_code=400)
+    # `status` is "ok" (false positive / no real issue) or "problema"
+    # (confirmed compliance issue). Default to "ok" for backward compatibility
+    # with old payloads that didn't send the field.
+    status = (body.get("status") or "ok").strip().lower()
+    if status not in ("ok", "problema"):
+        status = "ok"
     acked = _get_acked_alerts(db)
     acked[phone_key] = {
         "agent": body.get("agent", ""),
         "snippet": body.get("snippet", ""),
         "display_name": body.get("display_name", phone_key),
         "acked_at": datetime.now(BRASILIA).isoformat(),
+        "status": status,
     }
     _save_acked_alerts(db, acked)
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "status": status})
 
 
 @router.post("/dashboard/unack-alert", include_in_schema=False)
@@ -4248,41 +4255,62 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
     </div>
     <div style="font-size:11.5px;color:{alrt_color};opacity:.85;font-style:italic">"{_snip_html}"</div>
   </a>
-  <button onclick="ackAlertPage('{safe_phone}','{safe_agent}','{safe_snippet}','{safe_display}',this)" style="background:#0fa968;border:none;color:#fff;padding:5px 14px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif;flex-shrink:0">✓ OK</button>
+  <div style="display:flex;gap:6px;flex-shrink:0">
+    <button onclick="ackAlertPage('{safe_phone}','{safe_agent}','{safe_snippet}','{safe_display}',this,'ok')" title="Revisado — sem problema" style="background:#0fa968;border:none;color:#fff;padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif">✓ OK</button>
+    <button onclick="ackAlertPage('{safe_phone}','{safe_agent}','{safe_snippet}','{safe_display}',this,'problema')" title="Confirmar como problema real" style="background:#dc2626;border:none;color:#fff;padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif">⚠ PROBLEMA</button>
+  </div>
 </div>"""
 
     # Reviewed (acked) alerts are visible to every authenticated user
     # (compliance decision May/2026 — universal visibility of alerts).
+    # Split into TWO buckets: "ok" (false positive / no real issue) and
+    # "problema" (confirmed compliance issue). Legacy entries without status
+    # field default to "ok".
+    from urllib.parse import quote as _uq5
 
-    rows_html = ""
-    if not acked:
-        rows_html = '<tr><td colspan="6" style="text-align:center;color:#4a5a7a;padding:32px;font-size:13px">Nenhum alerta revisado ainda. Clique em <strong>✓ OK</strong> em um alerta ativo para movê-lo aqui.</td></tr>'
+    def _ack_row(phone_key: str, info: dict) -> str:
+        agent_raw = info.get("agent", "")
+        agent = html_mod.escape(agent_raw)
+        snippet = html_mod.escape(info.get("snippet", ""))
+        display_raw = info.get("display_name") or client_name_map.get(phone_key, phone_key)
+        display = html_mod.escape(display_raw)
+        acked_at_raw = info.get("acked_at", "")
+        try:
+            acked_str = datetime.fromisoformat(acked_at_raw).strftime("%d/%m %H:%M")
+        except Exception:
+            acked_str = acked_at_raw[:16]
+        badge = _segment_badge(agent_raw)
+        safe_phone = html_mod.escape(phone_key)
+        _link = f"/dashboard/conversa?phone={_uq5(phone_key, safe='')}&canal={_uq5(canal, safe='')}"
+        return (
+            f'<tr>'
+            f'<td style="font-weight:600"><a href="{_link}" target="_blank" rel="noopener" style="color:#e8ecf1;text-decoration:none;border-bottom:1px dotted #4a5a7a" title="Abrir conversa em nova aba">{display} <span style="font-size:10px;color:#5a6a8a">↗</span></a></td>'
+            f'<td style="font-family:monospace;font-size:12px;color:#4a5a7a">{safe_phone}</td>'
+            f'<td>{agent}{badge}</td>'
+            f'<td style="color:#5a6a8a;max-width:340px;font-size:11px;font-style:italic">"{snippet}..."</td>'
+            f'<td style="color:#5a6a8a;font-size:11px">{acked_str}</td>'
+            f'<td style="text-align:center">'
+            f'<button onclick="unackAlert(\'{safe_phone}\', this)" style="background:transparent;color:#ef4444;border:1px solid #ef4444;border-radius:6px;padding:3px 10px;font-size:11px;font-weight:600;cursor:pointer">Reabrir</button>'
+            f'</td></tr>'
+        )
+
+    _acked_sorted = sorted(acked.items(), key=lambda x: x[1].get("acked_at", ""), reverse=True)
+    _acked_ok      = [(k, v) for k, v in _acked_sorted if (v.get("status") or "ok") == "ok"]
+    _acked_problem = [(k, v) for k, v in _acked_sorted if (v.get("status") or "ok") == "problema"]
+
+    if _acked_ok:
+        rows_ok_html = "".join(_ack_row(k, v) for k, v in _acked_ok)
     else:
-        for phone_key, info in sorted(acked.items(), key=lambda x: x[1].get("acked_at", ""), reverse=True):
-            agent = html_mod.escape(info.get("agent", ""))
-            snippet = html_mod.escape(info.get("snippet", ""))
-            display_raw = info.get("display_name") or client_name_map.get(phone_key, phone_key)
-            display = html_mod.escape(display_raw)
-            acked_at_raw = info.get("acked_at", "")
-            try:
-                acked_dt = datetime.fromisoformat(acked_at_raw)
-                acked_str = acked_dt.strftime("%d/%m %H:%M")
-            except Exception:
-                acked_str = acked_at_raw[:16]
-            badge = _segment_badge(agent)
-            safe_phone = html_mod.escape(phone_key)
-            from urllib.parse import quote as _uq5
-            _ack_link = f"/dashboard/conversa?phone={_uq5(phone_key, safe='')}&canal={_uq5(canal, safe='')}"
-            rows_html += f"""<tr>
-                <td style="font-weight:600"><a href="{_ack_link}" target="_blank" rel="noopener" style="color:#e8ecf1;text-decoration:none;border-bottom:1px dotted #4a5a7a" title="Abrir conversa em nova aba">{display} <span style="font-size:10px;color:#5a6a8a">↗</span></a></td>
-                <td style="font-family:monospace;font-size:12px;color:#4a5a7a">{safe_phone}</td>
-                <td>{agent}{badge}</td>
-                <td style="color:#5a6a8a;max-width:340px;font-size:11px;font-style:italic">"{snippet}..."</td>
-                <td style="color:#5a6a8a;font-size:11px">{acked_str}</td>
-                <td style="text-align:center">
-                    <button onclick="unackAlert('{safe_phone}', this)" style="background:transparent;color:#ef4444;border:1px solid #ef4444;border-radius:6px;padding:3px 10px;font-size:11px;font-weight:600;cursor:pointer">Reabrir</button>
-                </td>
-            </tr>"""
+        rows_ok_html = '<tr><td colspan="6" style="text-align:center;color:#4a5a7a;padding:24px;font-size:12px">Nenhum alerta marcado como OK.</td></tr>'
+
+    if _acked_problem:
+        rows_problem_html = "".join(_ack_row(k, v) for k, v in _acked_problem)
+    else:
+        rows_problem_html = '<tr><td colspan="6" style="text-align:center;color:#4a5a7a;padding:24px;font-size:12px">Nenhum alerta marcado como problema.</td></tr>'
+
+    # Keep `rows_html` defined for backward compatibility with any old f-string
+    # interpolation; will be unused now that we render two tables.
+    rows_html = rows_ok_html
 
     _active_top_color = "#ef4444" if n_active > 0 else "#1a2540"
     _active_val_color = "#ef4444" if n_active > 0 else "#5a6a8a"
@@ -4384,8 +4412,12 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                         f'<td style="{_row_td};color:#8a96aa;font-style:italic">"{_snippet_html}"</td>'
                         f'<td style="{_row_td};color:#5a6a8a;white-space:nowrap;font-family:monospace">{ex["when"]}</td>'
                         f'<td style="{_row_td};text-align:center;white-space:nowrap" onclick="event.stopPropagation()">'
-                        f'<button data-ack="{_ack_attr}" onclick="event.stopPropagation();ackAlertRow(this)" '
-                        f'style="background:#0fa968;border:none;color:#fff;padding:4px 11px;border-radius:5px;font-size:10.5px;font-weight:700;cursor:pointer;font-family:Montserrat,sans-serif">✓ Revisar</button>'
+                        f'<div style="display:inline-flex;gap:6px">'
+                        f'<button data-ack="{_ack_attr}" onclick="event.stopPropagation();markAlertRow(this,\'ok\')" title="Revisado — sem problema" '
+                        f'style="background:#0fa968;border:none;color:#fff;padding:4px 10px;border-radius:5px;font-size:10.5px;font-weight:700;cursor:pointer;font-family:Montserrat,sans-serif">✓ OK</button>'
+                        f'<button data-ack="{_ack_attr}" onclick="event.stopPropagation();markAlertRow(this,\'problema\')" title="Confirmar como problema real" '
+                        f'style="background:#dc2626;border:none;color:#fff;padding:4px 10px;border-radius:5px;font-size:10.5px;font-weight:700;cursor:pointer;font-family:Montserrat,sans-serif">⚠ PROBLEMA</button>'
+                        f'</div>'
                         f'</td>'
                         f'</tr>'
                     )
@@ -4468,8 +4500,12 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                 <div class="label">Ativos · aguardando triagem</div>
             </div>
             <div class="kpi" style="border-top:3px solid #0fa968">
-                <div class="val">{len(acked)}</div>
-                <div class="label">Revisados · marcados OK</div>
+                <div class="val" style="color:#0fa968">{len(_acked_ok)}</div>
+                <div class="label">OK · sem problema</div>
+            </div>
+            <div class="kpi" style="border-top:3px solid #dc2626">
+                <div class="val" style="color:#dc2626">{len(_acked_problem)}</div>
+                <div class="label">Problemas confirmados</div>
             </div>
             <div class="kpi" style="border-top:3px solid #f59e0b">
                 <div class="val" style="color:#f59e0b">{n_active + len(acked)}</div>
@@ -4486,43 +4522,72 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
           {active_alerts_html}
         </div>''' if n_active > 0 else ""}
 
-        <div class="card">
+        <div class="card" style="border:1px solid #1d4d36;background:rgba(15,169,104,.04);margin-bottom:16px">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
                 <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
-                <h2 style="margin:0;font-size:15px">Revisados</h2>
-                <span style="font-size:12px;color:#5a6a8a;font-weight:500">{len(acked)} conversas marcadas como OK</span>
+                <h2 style="margin:0;font-size:15px;color:#86efac">✓ OK · Sem Problema</h2>
+                <span style="background:#0a2a1a;color:#0fa968;padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;border:1px solid #1d4d36;letter-spacing:.5px">{len(_acked_ok)} REVISADO{"S" if len(_acked_ok) != 1 else ""}</span>
             </div>
             <p style="font-size:11px;color:#4a5a7a;margin-bottom:16px;font-weight:500">
-                Clique em <strong style="color:#ef4444">Reabrir</strong> para devolver à aba Conversas.
+                Conversas revisadas e classificadas como sem problema (falso positivo ou ruído).
+                Clique em <strong style="color:#ef4444">Reabrir</strong> para devolver à fila.
             </p>
             <table>
                 <thead><tr><th>Cliente</th><th>Telefone</th><th>Agente</th><th>Trecho do alerta</th><th>Revisado em</th><th style="width:80px"></th></tr></thead>
-                <tbody>{rows_html}</tbody>
+                <tbody>{rows_ok_html}</tbody>
+            </table>
+        </div>
+
+        <div class="card" style="border:1px solid #5a2424;background:rgba(220,38,38,.05);margin-bottom:16px">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
+                <span style="width:8px;height:8px;border-radius:50%;background:#dc2626;box-shadow:0 0 10px #dc2626;display:inline-block"></span>
+                <h2 style="margin:0;font-size:15px;color:#fca5a5">⚠ PROBLEMA · Confirmado</h2>
+                <span style="background:#3a1414;color:#dc2626;padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;border:1px solid #5a2424;letter-spacing:.5px">{len(_acked_problem)} CONFIRMADO{"S" if len(_acked_problem) != 1 else ""}</span>
+            </div>
+            <p style="font-size:11px;color:#4a5a7a;margin-bottom:16px;font-weight:500">
+                Conversas confirmadas como problema real de conformidade — requerem ação do compliance/jurídico.
+                Clique em <strong style="color:#ef4444">Reabrir</strong> para devolver à fila.
+            </p>
+            <table>
+                <thead><tr><th>Cliente</th><th>Telefone</th><th>Agente</th><th>Trecho do alerta</th><th>Revisado em</th><th style="width:80px"></th></tr></thead>
+                <tbody>{rows_problem_html}</tbody>
             </table>
         </div>
 
         {audit_html}
     </div>
     <script>
-    async function ackAlertPage(phoneKey, agent, snippet, displayName, btn) {{
+    async function ackAlertPage(phoneKey, agent, snippet, displayName, btn, status) {{
+        status = status || 'ok';
         try {{
             var resp = await fetch('/dashboard/ack-alert', {{
                 method: 'POST',
                 headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{phone_key: phoneKey, agent: agent, snippet: snippet, display_name: displayName}})
+                body: JSON.stringify({{phone_key: phoneKey, agent: agent, snippet: snippet, display_name: displayName, status: status}})
             }});
-            if (resp.ok) {{ btn.closest('div[style]').remove(); }}
-        }} catch(e) {{ console.error(e); }}
+            if (resp.ok) {{
+                // Remove the whole alert card (ancestor div with background)
+                var card = btn.closest('div[style*="border-radius:8px"]');
+                if (!card) card = btn.closest('div[style*="margin-bottom:8px"]');
+                if (card) card.remove();
+            }} else {{
+                alert('Falha ao registrar (HTTP ' + resp.status + ').');
+            }}
+        }} catch(e) {{ console.error(e); alert('Erro de rede ao registrar.'); }}
     }}
-    // Same ack flow, but for the audit-table rows (removes the <tr>).
-    // Reads payload from the button's data-ack attribute to avoid quoting
-    // issues with apostrophes/quotes in client names or snippets.
-    async function ackAlertRow(btn) {{
+    // Audit-table row variant — reads payload from data-ack attribute and
+    // accepts a status ("ok" or "problema") so the same row can be classified
+    // either way. Removes the <tr> with a fade-out on success.
+    async function markAlertRow(btn, status) {{
+        status = status || 'ok';
         var raw = btn.getAttribute('data-ack') || '{{}}';
         var data;
         try {{ data = JSON.parse(raw); }}
         catch(e) {{ console.error('Bad ack payload', e, raw); alert('Erro lendo dados do alerta.'); return; }}
-        btn.disabled = true;
+        // Disable BOTH buttons in this row's action group while submitting
+        var group = btn.parentElement;
+        var btns = group ? group.querySelectorAll('button') : [btn];
+        btns.forEach(function(b){{ b.disabled = true; }});
         var _orig = btn.textContent;
         btn.textContent = '⏳';
         try {{
@@ -4533,7 +4598,8 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                     phone_key:    data.phone_key,
                     agent:        data.agent,
                     snippet:      data.snippet,
-                    display_name: data.display_name
+                    display_name: data.display_name,
+                    status:       status
                 }})
             }});
             if (resp.ok) {{
@@ -4544,15 +4610,15 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                     setTimeout(function(){{ row.remove(); }}, 280);
                 }}
             }} else {{
-                btn.disabled = false; btn.textContent = _orig;
-                var msg = 'Falha ao registrar revisão (HTTP ' + resp.status + ').';
+                btns.forEach(function(b){{ b.disabled = false; }}); btn.textContent = _orig;
+                var msg = 'Falha ao registrar (HTTP ' + resp.status + ').';
                 try {{ var j = await resp.json(); if (j && j.error) msg += ' ' + j.error; }} catch(_){{}}
                 alert(msg);
             }}
         }} catch(e) {{
             console.error(e);
-            btn.disabled = false; btn.textContent = _orig;
-            alert('Erro de rede ao registrar revisão.');
+            btns.forEach(function(b){{ b.disabled = false; }}); btn.textContent = _orig;
+            alert('Erro de rede ao registrar.');
         }}
     }}
     async function unackAlert(phoneKey, btn) {{
