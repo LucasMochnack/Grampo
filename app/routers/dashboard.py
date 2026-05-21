@@ -4318,6 +4318,7 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
 
     # ── Build full-history audit section (admin only) ───────────────────────
     audit_html = ""
+    kw_chart_html = ""
     if audit:
         _alert_order_audit = [
             ("alerta_critico", "🔴 Crítico",       "#ef4444", "#3a1414", "#5a2424"),
@@ -4453,15 +4454,72 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
             for lid, lbl, color, bg, bd in _alert_order_audit
         )
 
-        # Top keywords
+        # Top keywords — rendered as a horizontal bar chart at the bottom of
+        # the page (see kw_chart_html below). Each bar is colored by the
+        # severity level of the keyword (first level that owns it, in
+        # _INTENT_RULES order = severity order).
         top_kws_audit = sorted(audit["kw_counts"].items(), key=lambda x: -x[1])[:30]
-        kw_rows_audit = "".join(
-            f'<tr>'
-            f'<td style="padding:6px 12px;border-bottom:1px solid #1a2540;font-size:11px"><span style="background:#0b1120;color:#8a96aa;padding:2px 8px;border-radius:4px;font-family:monospace">[{html_mod.escape(kw)}]</span></td>'
-            f'<td style="padding:6px 12px;border-bottom:1px solid #1a2540;font-family:monospace;font-size:13px;color:#e8ecf1;text-align:right;width:100px">{cnt}</td>'
-            f'</tr>'
-            for kw, cnt in top_kws_audit
-        ) or f'<tr><td colspan="2" style="padding:14px;color:#5a6a8a;font-size:12px;text-align:center">Nenhum gatilho disparado</td></tr>'
+
+        kw_color_map: dict[str, tuple[str, str]] = {}
+        for _aid, _lbl, _color, _kws in _INTENT_RULES:
+            if _aid not in ALERT_IDS:
+                continue
+            for _kw in _kws:
+                if _kw not in kw_color_map:
+                    kw_color_map[_kw] = (_aid, _color)
+
+        _max_count = max((c for _, c in top_kws_audit), default=1) or 1
+        if not top_kws_audit:
+            kw_chart_inner_html = (
+                '<div style="padding:36px;text-align:center;color:#5a6a8a;font-size:12px">'
+                'Nenhum gatilho disparado no período.</div>'
+            )
+        else:
+            _bars = []
+            for _kw, _cnt in top_kws_audit:
+                _aid, _color = kw_color_map.get(_kw, ("alerta_oper", "#8a96aa"))
+                _width_pct = max(2, round(_cnt / _max_count * 100))
+                _bars.append(
+                    f'<div style="display:flex;align-items:center;gap:14px;padding:5px 0">'
+                    f'  <span style="width:220px;text-align:right;font-size:11.5px;color:#c8d6e5;font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0" title="{html_mod.escape(_kw)}">{html_mod.escape(_kw)}</span>'
+                    f'  <div style="flex:1;background:#0b1120;border-radius:4px;height:24px;position:relative;border:1px solid #1a2540;overflow:hidden">'
+                    f'    <div style="background:linear-gradient(90deg,{_color}cc,{_color});height:100%;width:{_width_pct}%;border-radius:3px;min-width:6px;display:flex;align-items:center;justify-content:flex-end;padding-right:8px;box-sizing:border-box;transition:width .35s ease-out">'
+                    f'      <span style="font-size:11.5px;font-weight:700;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.5);white-space:nowrap">{_cnt}</span>'
+                    f'    </div>'
+                    f'  </div>'
+                    f'</div>'
+                )
+            kw_chart_inner_html = "".join(_bars)
+
+        # Legend with the 4 severity colors
+        _legend_items = []
+        for _aid, _lbl, _color, _bg, _bd in _alert_order_audit:
+            _legend_items.append(
+                f'<span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;color:#8a96aa">'
+                f'<span style="width:12px;height:12px;background:{_color};border-radius:2px;display:inline-block"></span>'
+                f'{_lbl}</span>'
+            )
+        kw_legend_html = (
+            '<div style="display:flex;gap:18px;flex-wrap:wrap;margin-bottom:18px">'
+            + "".join(_legend_items) +
+            '</div>'
+        )
+
+        kw_chart_html = f"""
+        <div class="card" style="margin-top:24px;border:1px solid #1a2540">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">
+            <h2 style="margin:0;font-size:15px;color:#e8ecf1">🔑 Top 30 gatilhos disparados</h2>
+            <span style="font-size:11px;color:#5a6a8a">— ordenados por frequência</span>
+          </div>
+          <div style="font-size:11px;color:#5a6a8a;margin-bottom:14px">
+            Mostra quais palavras-chave do classificador foram acionadas com mais frequência no histórico.
+            Cor da barra reflete o nível de severidade do gatilho.
+          </div>
+          {kw_legend_html}
+          <div style="background:rgba(0,0,0,.18);border-radius:8px;padding:14px 18px;border:1px solid #111a2e">
+            {kw_chart_inner_html}
+          </div>
+        </div>"""
 
         audit_html = f"""
         <div class="card" style="margin-top:24px;border:1px solid #1a2540">
@@ -4479,17 +4537,6 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
           <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:24px">{audit_top_cards}</div>
 
           {audit_levels_html}
-
-          <div style="margin-top:24px">
-            <div style="font-size:13px;font-weight:700;color:#8a96aa;margin-bottom:10px">🔑 Top 30 gatilhos disparados</div>
-            <table style="width:100%;border-collapse:collapse;background:#0b1120;border-radius:8px;overflow:hidden;max-width:520px">
-              <thead><tr>
-                <th style="padding:8px 12px;text-align:left;font-size:10px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">GATILHO</th>
-                <th style="padding:8px 12px;text-align:right;font-size:10px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">OCORRÊNCIAS</th>
-              </tr></thead>
-              <tbody>{kw_rows_audit}</tbody>
-            </table>
-          </div>
         </div>"""
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo — Alertas</title>{COMMON_CSS}</head><body>
     {nav}
@@ -4555,6 +4602,8 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                 <tbody>{rows_ok_html}</tbody>
             </table>
         </div>
+
+        {kw_chart_html}
     </div>
     <script>
     // After a successful ack we reload so the OK / PROBLEMA tables include
