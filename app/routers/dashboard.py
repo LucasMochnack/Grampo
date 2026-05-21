@@ -4256,7 +4256,7 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
     <div style="font-size:11.5px;color:{alrt_color};opacity:.85;font-style:italic">"{_snip_html}"</div>
   </a>
   <div style="display:flex;gap:6px;flex-shrink:0">
-    <button onclick="ackAlertPage('{safe_phone}','{safe_agent}','{safe_snippet}','{safe_display}',this,'ok')" title="Revisado — sem problema" style="background:#0fa968;border:none;color:#fff;padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif">✓ OK</button>
+    <button onclick="ackAlertPage('{safe_phone}','{safe_agent}','{safe_snippet}','{safe_display}',this,'ok')" title="Revisado — sem problemas" style="background:#0fa968;border:none;color:#fff;padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif">✓ OK</button>
     <button onclick="ackAlertPage('{safe_phone}','{safe_agent}','{safe_snippet}','{safe_display}',this,'problema')" title="Confirmar como problema real" style="background:#dc2626;border:none;color:#fff;padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif">⚠ PROBLEMA</button>
   </div>
 </div>"""
@@ -4414,7 +4414,7 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                         f'<td style="{_row_td};color:#5a6a8a;white-space:nowrap;font-family:monospace">{ex["when"]}</td>'
                         f'<td style="{_row_td};text-align:center;white-space:nowrap" onclick="event.stopPropagation()">'
                         f'<div style="display:inline-flex;gap:6px">'
-                        f'<button data-ack="{_ack_attr}" onclick="event.stopPropagation();markAlertRow(this,\'ok\')" title="Revisado — sem problema" '
+                        f'<button data-ack="{_ack_attr}" onclick="event.stopPropagation();markAlertRow(this,\'ok\')" title="Revisado — sem problemas" '
                         f'style="background:#0fa968;border:none;color:#fff;padding:4px 10px;border-radius:5px;font-size:10.5px;font-weight:700;cursor:pointer;font-family:Montserrat,sans-serif">✓ OK</button>'
                         f'<button data-ack="{_ack_attr}" onclick="event.stopPropagation();markAlertRow(this,\'problema\')" title="Confirmar como problema real" '
                         f'style="background:#dc2626;border:none;color:#fff;padding:4px 10px;border-radius:5px;font-size:10.5px;font-weight:700;cursor:pointer;font-family:Montserrat,sans-serif">⚠ PROBLEMA</button>'
@@ -4548,7 +4548,7 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
             </div>
             <div class="kpi" style="border-top:3px solid #0fa968">
                 <div class="val" style="color:#0fa968">{len(_acked_ok)}</div>
-                <div class="label">OK · sem problema</div>
+                <div class="label">OK · sem problemas</div>
             </div>
             <div class="kpi" style="border-top:3px solid #dc2626">
                 <div class="val" style="color:#dc2626">{len(_acked_problem)}</div>
@@ -4590,11 +4590,11 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
         <div id="section-ok" class="card" style="border:1px solid #1d4d36;background:rgba(15,169,104,.04);margin-top:24px;margin-bottom:16px">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
                 <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
-                <h2 style="margin:0;font-size:15px;color:#86efac">✓ Itens Avaliados sem problema</h2>
+                <h2 style="margin:0;font-size:15px;color:#86efac">✓ Itens Avaliados sem problemas</h2>
                 <span style="background:#0a2a1a;color:#0fa968;padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;border:1px solid #1d4d36;letter-spacing:.5px">{len(_acked_ok)} ITEM{"S" if len(_acked_ok) != 1 else ""}</span>
             </div>
             <p style="font-size:11px;color:#4a5a7a;margin-bottom:16px;font-weight:500">
-                Conversas que foram revisadas e classificadas como sem problema (falso positivo ou ruído).
+                Conversas que foram revisadas e classificadas como sem problemas (falso positivo ou ruído).
                 Clique em <strong style="color:#ef4444">Reabrir</strong> para devolver à fila de triagem.
             </p>
             <table>
