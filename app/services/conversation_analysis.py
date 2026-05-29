@@ -248,23 +248,33 @@ def analyze_many(
     db: Session,
     candidates: list[tuple[str, str, list[tuple[str, str, datetime]]]],
     max_new: int = 15,
-) -> dict[str, ConversationAnalysis]:
-    """Analyze up to `max_new` candidates and return a dict of {phone: result}.
+) -> dict[str, dict]:
+    """Analyze up to `max_new` candidates and return a dict of {phone: result_dict}.
 
-    `candidates` is a list of (phone, last_event_id, messages). Already-cached
-    entries are returned without consuming an LLM call.
+    Returns plain dicts (not ORM instances) so callers can safely use the data
+    after the SQLAlchemy session is closed without DetachedInstanceError.
+
+    Dict shape: {"status", "confidence", "reason", "priority"}
     """
-    out: dict[str, ConversationAnalysis] = {}
+    def _to_dict(row: ConversationAnalysis) -> dict:
+        return {
+            "status":     row.status,
+            "confidence": row.confidence,
+            "reason":     row.reason or "",
+            "priority":   row.priority or "",
+        }
+
+    out: dict[str, dict] = {}
     new_attempts = 0  # cap on LLM ATTEMPTS (not successes) to keep page load fast
     for phone, last_event_id, messages in candidates:
         existing = get_cached(db, phone, last_event_id)
         if existing and existing.prompt_version == PROMPT_VERSION:
-            out[phone] = existing
+            out[phone] = _to_dict(existing)
             continue
         if new_attempts >= max_new:
             break
         new_attempts += 1
         result = analyze_conversation(db, phone, last_event_id, messages)
         if result:
-            out[phone] = result
+            out[phone] = _to_dict(result)
     return out

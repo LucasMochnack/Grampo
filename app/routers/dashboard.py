@@ -4880,51 +4880,72 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
     silence_cutoff_utc = (now_br - timedelta(hours=MIN_SILENCE_HOURS)).astimezone(timezone.utc)
 
     for key, evs in groups.items():
-        # Filter status/system events
-        msg_evs = [
-            e for e in evs
-            if (e.raw_payload or {}).get("type", "").upper() not in
-            ("MESSAGE_STATUS", "CONVERSATION_STATUS")
-        ]
+        # Filter status/system events — access raw_payload (JSON, always loaded)
+        try:
+            msg_evs = [
+                e for e in evs
+                if (e.raw_payload or {}).get("type", "").upper() not in
+                ("MESSAGE_STATUS", "CONVERSATION_STATUS")
+            ]
+        except Exception:
+            continue
         if not msg_evs:
             continue
         # Sort by received_at; last is most recent
-        msg_evs.sort(key=lambda e: e.received_at or datetime.min.replace(tzinfo=timezone.utc))
+        _epoch = datetime.min.replace(tzinfo=timezone.utc)
+        msg_evs.sort(key=lambda e: e.received_at or _epoch)
         last_ev = msg_evs[-1]
-        if not last_ev.received_at:
+        # Copy scalar values out of the ORM object immediately so we never
+        # need to touch the instance again after the session might close.
+        try:
+            _last_ev_id       = str(last_ev.id)
+            _last_ev_at       = last_ev.received_at
+            _last_ev_payload  = last_ev.raw_payload or {}
+        except Exception:
             continue
-        last_direction = _extract_direction(last_ev.raw_payload or {})
+        if not _last_ev_at:
+            continue
+        last_direction = _extract_direction(_last_ev_payload)
         if last_direction != "IN":
             continue
-        # How long since last message?
-        if last_ev.received_at > silence_cutoff_utc:
-            continue  # too recent — give the agent time
+        if _last_ev_at > silence_cutoff_utc:
+            continue  # too recent
 
         phone = _real_phone(key)
         agent = (_cpl.get(key) or client_agent_map.get(phone)
                  or _cpl.get(phone) or "Sem atendente")
         if agent == "Sem atendente":
-            continue  # can't action without an agent
+            continue
 
-        # Build chronological message tuples for the LLM
+        # Build chronological message tuples for the LLM — extract all data
+        # from ORM objects here, inside the session scope.
         msg_tuples = []
+        contact_name = ""
         for ev in msg_evs:
-            d = _extract_direction(ev.raw_payload or {})
-            text = _extract_content_preview(ev.raw_payload or {}, max_len=1500) or ""
-            ts = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
-            if text:
-                msg_tuples.append((d, text, ts))
+            try:
+                _p = ev.raw_payload or {}
+                _d = _extract_direction(_p)
+                _text = _extract_content_preview(_p, max_len=1500) or ""
+                _ts = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
+                if _text:
+                    msg_tuples.append((_d, _text, _ts))
+                if not contact_name:
+                    _cname = _extract_contact_name(_p)
+                    if _cname:
+                        contact_name = _cname
+            except Exception:
+                continue
         if not msg_tuples:
             continue
 
         candidates.append({
-            "phone": phone,
-            "key": key,
-            "agent": agent,
-            "last_event_id": str(last_ev.id),
-            "last_event_at": last_ev.received_at,
-            "msg_tuples": msg_tuples,
-            "client_name": client_name_map.get(phone, "") or _extract_contact_name_from_events(msg_evs),
+            "phone":          phone,
+            "key":            key,
+            "agent":          agent,
+            "last_event_id":  _last_ev_id,
+            "last_event_at":  _last_ev_at,
+            "msg_tuples":     msg_tuples,
+            "client_name":    client_name_map.get(phone, "") or contact_name,
         })
 
     # Sort newest-silence first so the freshest tail of pendentes goes first;
@@ -4935,8 +4956,9 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
     # ── Run LLM analysis (cached) ────────────────────────────────────────────
     # Tuple shape expected by analyze_many: (phone, last_event_id, messages)
     to_analyze = [(c["phone"], c["last_event_id"], c["msg_tuples"]) for c in candidates]
+    # analyze_many returns plain dicts so results are safe after db.close()
     results = analyze_many(db, to_analyze, max_new=MAX_NEW_ANALYSES)
-    db.close()
+    db.close()  # safe now — results are plain dicts, not ORM instances
 
     # Build a lookup so we can decorate the candidates
     enriched = []
@@ -4950,13 +4972,14 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
             c["verdict"] = None
             enriched.append(c)
             continue
+        # r is already a plain dict — no ORM access needed
         c["verdict"] = {
-            "status": r.status,
-            "confidence": r.confidence,
-            "reason": r.reason or "",
-            "priority": r.priority or "",
+            "status":     r["status"],
+            "confidence": r["confidence"],
+            "reason":     r["reason"],
+            "priority":   r["priority"],
         }
-        if r.status == "pendente":
+        if r["status"] == "pendente":
             pending_count += 1
         else:
             closed_count += 1
