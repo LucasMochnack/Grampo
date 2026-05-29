@@ -2742,7 +2742,11 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
     <div style="padding:14px 18px 10px;border-bottom:1px solid #1a2540;flex-shrink:0">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
         <span id="list-count" style="font-size:10px;color:#5a6a8a;letter-spacing:1.2px;font-weight:700">{len(groups)} CONVERSAS · {_conv_label}{' (top 500)' if _conv_truncated else ''}</span>
-        <a href="/dashboard/export?canal={canal}&periodo={'hoje' if _periodo_conv == 'hoje' else '7dias' if _periodo_conv == '7dias' else '30dias'}" style="font-size:10px;color:#0fa968;font-weight:700;text-decoration:none;display:flex;align-items:center;gap:4px" title="Exportar lista de conversas">⬇ CSV</a>
+        <div style="display:flex;gap:8px;align-items:center">
+          <a href="/dashboard/export?canal={canal}&periodo={'hoje' if _periodo_conv == 'hoje' else '7dias' if _periodo_conv == '7dias' else '30dias'}" style="font-size:10px;color:#0fa968;font-weight:700;text-decoration:none;display:flex;align-items:center;gap:4px" title="Exportar lista de conversas">⬇ CSV</a>
+          <button onclick="startScoreBatch('{html_mod.escape(canal)}')" title="Avaliar todas as conversas desta semana com IA"
+            style="font-size:10px;color:#eab308;font-weight:700;background:transparent;border:none;cursor:pointer;padding:0;font-family:Montserrat,sans-serif">⭐ Avaliar semana</button>
+        </div>
       </div>
       <div style="display:flex;gap:5px;margin-bottom:8px">
         <a href="?canal={canal}&periodo_conv=hoje" style="text-decoration:none"><span class="gp-chip{' active' if _periodo_conv == 'hoje' else ''}" style="font-size:10px;padding:3px 10px">Hoje</span></a>
@@ -2799,9 +2803,82 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
   </div>
 </div>
 
+<!-- Batch scoring modal -->
+<div id="score-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center">
+  <div style="background:#0d1630;border:1px solid #1a2540;border-radius:12px;padding:28px 32px;min-width:360px;max-width:480px;width:90%">
+    <div style="font-size:15px;font-weight:700;color:#e8ecf1;margin-bottom:6px">⭐ Avaliando conversas desta semana</div>
+    <div id="score-modal-sub" style="font-size:12px;color:#5a6a8a;margin-bottom:18px">Iniciando...</div>
+    <div style="background:#0b1120;border-radius:8px;height:8px;overflow:hidden;margin-bottom:14px">
+      <div id="score-progress-bar" style="background:#0fa968;height:100%;width:0%;transition:width .3s ease"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <span id="score-progress-label" style="font-size:12px;color:#8a96aa">0 / 0</span>
+      <button onclick="cancelScoreBatch()" id="score-cancel-btn"
+        style="background:transparent;border:1px solid #1a2540;color:#5a6a8a;padding:4px 14px;border-radius:6px;font-size:11px;cursor:pointer;font-family:Montserrat,sans-serif">
+        Cancelar
+      </button>
+    </div>
+    <div id="score-modal-done" style="display:none;margin-top:14px;text-align:center;color:#0fa968;font-size:13px;font-weight:700">✅ Concluído!</div>
+  </div>
+</div>
+
 <script>
 var _activeId=null;
 var _canal='{canal}';
+var _scoreBatchCancel = false;
+
+function cancelScoreBatch() {{
+  _scoreBatchCancel = true;
+  document.getElementById('score-modal').style.display = 'none';
+}}
+
+async function startScoreBatch(canal) {{
+  _scoreBatchCancel = false;
+  var modal = document.getElementById('score-modal');
+  var bar   = document.getElementById('score-progress-bar');
+  var label = document.getElementById('score-progress-label');
+  var sub   = document.getElementById('score-modal-sub');
+  var done  = document.getElementById('score-modal-done');
+  var btn   = document.getElementById('score-cancel-btn');
+  bar.style.width = '0%';
+  label.textContent = '0 / ?';
+  sub.textContent = 'Avaliando conversas dos últimos 7 dias…';
+  done.style.display = 'none';
+  btn.textContent = 'Cancelar';
+  btn.onclick = cancelScoreBatch;
+  modal.style.display = 'flex';
+
+  var offset = 0;
+  var total  = 0;
+  while (true) {{
+    if (_scoreBatchCancel) break;
+    try {{
+      var resp = await fetch('/dashboard/score-batch', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{canal: canal, offset: offset, batch_size: 10, days: 7}})
+      }});
+      if (!resp.ok) {{ sub.textContent = 'Erro HTTP ' + resp.status; break; }}
+      var data = await resp.json();
+      if (data.error) {{ sub.textContent = '⚠ ' + data.error; break; }}
+      total  = data.total;
+      offset = data.next_offset;
+      var pct = total > 0 ? Math.round(data.done / total * 100) : 0;
+      bar.style.width = pct + '%';
+      label.textContent = data.done + ' / ' + total;
+      sub.textContent = 'Avaliando conversas dos últimos 7 dias… (' + data.scored_this_call + ' nesta rodada)';
+      if (data.finished) {{
+        done.style.display = 'block';
+        btn.textContent = 'Fechar';
+        btn.onclick = function() {{ document.getElementById('score-modal').style.display='none'; }};
+        break;
+      }}
+    }} catch(e) {{
+      sub.textContent = 'Erro de rede: ' + e.message;
+      break;
+    }}
+  }}
+}}
 function _scrollToBottom(m){{
   var imgs=m.querySelectorAll('img');
   if(!imgs.length){{m.scrollTop=m.scrollHeight;return;}}
@@ -3680,73 +3757,8 @@ async def dismiss_sr_endpoint(request: Request, db: Session = Depends(get_db)):
     return JSONResponse({"ok": True})
 
 
-@router.post("/dashboard/score-conv", include_in_schema=False)
-async def score_conv_endpoint(request: Request, db: Session = Depends(get_db)):
-    """Score a conversation quality 0-10 using Claude."""
-    if not _check_auth(request):
-        return JSONResponse({"error": "unauth"}, status_code=401)
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse({"error": "bad json"}, status_code=400)
-
-    phone = (body.get("phone") or "").strip()
-    canal = (body.get("canal") or "5519997733651").strip()
-    if not phone:
-        return JSONResponse({"error": "missing phone"}, status_code=400)
-
-    from app.crud import get_events_since, get_agent_mappings
-    from app.config import settings as _settings
-
-    if not _settings.ANTHROPIC_API_KEY:
-        return JSONResponse({"error": "ANTHROPIC_API_KEY não configurada"}, status_code=503)
-
-    cutoff_utc = (datetime.now(BRASILIA) - timedelta(days=30)).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    ).astimezone(timezone.utc)
-
-    raw_evs = get_events_since(db, since=cutoff_utc, limit=30000)
-    raw_evs = _filter_events_by_channel(raw_evs, canal)
-    cam = get_agent_mappings(db)
-    db.close()
-
-    groups_orm, _ = _group_events(raw_evs, cam)
-    cp = _real_phone(canal)
-    real_target = phone
-
-    msg_tuples = []
-    _epoch = datetime.min.replace(tzinfo=timezone.utc)
-    for key, evs in groups_orm.items():
-        if _real_phone(key) != real_target or _real_phone(key) == cp:
-            continue
-        sorted_evs = sorted(
-            [e for e in evs if (e.raw_payload or {}).get("type", "").upper()
-             not in ("MESSAGE_STATUS", "CONVERSATION_STATUS")],
-            key=lambda e: e.received_at or _epoch
-        )
-        for ev in sorted_evs:
-            _p   = ev.raw_payload or {}
-            _d   = _extract_direction(_p)
-            _txt = _extract_content_preview(_p, max_len=1000) or ""
-            _ts  = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
-            if _txt:
-                msg_tuples.append((_d, _txt, _ts))
-
-    if not msg_tuples:
-        return JSONResponse({"error": "Sem mensagens para avaliar"}, status_code=404)
-
-    # Build transcript
-    lines = []
-    for d, txt, ts in msg_tuples[-40:]:
-        who = "CLIENTE" if d.upper() == "IN" else "ASSESSOR"
-        ts_str = ts.strftime("%d/%m %H:%M") if ts else "?"
-        body_txt = txt.strip().replace("\n", " ")
-        if len(body_txt) > 500:
-            body_txt = body_txt[:500] + "…"
-        lines.append(f"[{ts_str}] {who}: {body_txt}")
-    transcript = "\n".join(lines)
-
-    system = """Você é um avaliador de qualidade de atendimento de uma assessoria de investimentos.
+_SCORE_VERSION = "v1"
+_SCORE_SYSTEM = """Você é um avaliador de qualidade de atendimento de uma assessoria de investimentos.
 Analise a conversa entre ASSESSOR e CLIENTE e dê uma nota de 0 a 10 para o atendimento do assessor.
 
 Critérios:
@@ -3759,27 +3771,246 @@ Critérios:
 Responda SOMENTE em JSON, sem texto adicional:
 {"nota": 8, "resumo": "frase de 1-2 linhas resumindo o atendimento", "pontos_positivos": ["item1", "item2"], "pontos_melhoria": ["item1"]}"""
 
-    try:
-        import anthropic as _anthropic
-        client = _anthropic.Anthropic(api_key=_settings.ANTHROPIC_API_KEY)
-        resp = client.messages.create(
-            model=_settings.ANTHROPIC_MODEL,
-            max_tokens=400,
-            system=system,
-            messages=[{"role": "user", "content": f"Avalie a conversa abaixo:\n\n{transcript}"}],
+
+def _build_transcript(msg_tuples: list) -> str:
+    lines = []
+    for d, txt, ts in msg_tuples[-40:]:
+        who = "CLIENTE" if (d or "").upper() == "IN" else "ASSESSOR"
+        ts_str = ts.strftime("%d/%m %H:%M") if ts else "?"
+        body_txt = (txt or "").strip().replace("\n", " ")
+        if len(body_txt) > 500:
+            body_txt = body_txt[:500] + "…"
+        lines.append(f"[{ts_str}] {who}: {body_txt}")
+    return "\n".join(lines)
+
+
+def _call_score_llm(transcript: str) -> dict:
+    """Call Claude and return parsed score dict. Raises on failure."""
+    import anthropic as _anthropic, re as _re
+    client = _anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+    resp = client.messages.create(
+        model=settings.ANTHROPIC_MODEL,
+        max_tokens=400,
+        system=_SCORE_SYSTEM,
+        messages=[{"role": "user", "content": f"Avalie a conversa abaixo:\n\n{transcript}"}],
+    )
+    raw = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+    m = _re.search(r"\{[\s\S]*\}", raw)
+    data = json.loads(m.group(0)) if m else {}
+    nota = max(0, min(10, int(data.get("nota", 5))))
+    return {
+        "nota":             nota,
+        "resumo":           str(data.get("resumo", ""))[:300],
+        "pontos_positivos": [str(x)[:200] for x in (data.get("pontos_positivos") or [])[:4]],
+        "pontos_melhoria":  [str(x)[:200] for x in (data.get("pontos_melhoria")  or [])[:4]],
+    }
+
+
+def _upsert_score(db: Session, phone: str, last_event_id: str, canal: str, scored: dict) -> None:
+    from app.models import ConversationScore as _CS
+    row = db.get(_CS, (phone, last_event_id))
+    now_utc = datetime.now(timezone.utc)
+    if row:
+        row.nota             = scored["nota"]
+        row.resumo           = scored["resumo"]
+        row.pontos_positivos = scored["pontos_positivos"]
+        row.pontos_melhoria  = scored["pontos_melhoria"]
+        row.score_version    = _SCORE_VERSION
+        row.scored_at        = now_utc
+    else:
+        row = _CS(
+            phone=phone, last_event_id=last_event_id, canal=canal,
+            nota=scored["nota"], resumo=scored["resumo"],
+            pontos_positivos=scored["pontos_positivos"],
+            pontos_melhoria=scored["pontos_melhoria"],
+            score_version=_SCORE_VERSION, scored_at=now_utc,
         )
-        raw = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
-        import re as _re
-        m = _re.search(r"\{[\s\S]*\}", raw)
-        data = json.loads(m.group(0)) if m else {}
-        nota = max(0, min(10, int(data.get("nota", 5))))
-        resumo = str(data.get("resumo", ""))[:300]
-        positivos = [str(x)[:200] for x in (data.get("pontos_positivos") or [])[:4]]
-        melhorias = [str(x)[:200] for x in (data.get("pontos_melhoria") or [])[:4]]
-        return JSONResponse({"nota": nota, "resumo": resumo,
-                             "pontos_positivos": positivos, "pontos_melhoria": melhorias})
+        db.add(row)
+    db.commit()
+
+
+@router.post("/dashboard/score-conv", include_in_schema=False)
+async def score_conv_endpoint(request: Request, db: Session = Depends(get_db)):
+    """Score a single conversation 0-10.  Uses cache: if already scored with
+    the current last_event_id, returns the cached result immediately."""
+    if not _check_auth(request):
+        return JSONResponse({"error": "unauth"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+
+    phone = (body.get("phone") or "").strip()
+    canal = (body.get("canal") or "5519997733651").strip()
+    if not phone:
+        return JSONResponse({"error": "missing phone"}, status_code=400)
+
+    if not settings.ANTHROPIC_API_KEY:
+        return JSONResponse({"error": "ANTHROPIC_API_KEY não configurada"}, status_code=503)
+
+    from app.crud import get_events_since, get_agent_mappings
+    from app.models import ConversationScore as _CS
+
+    cutoff_utc = (datetime.now(BRASILIA) - timedelta(days=30)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(timezone.utc)
+
+    raw_evs = get_events_since(db, since=cutoff_utc, limit=30000)
+    raw_evs = _filter_events_by_channel(raw_evs, canal)
+    cam = get_agent_mappings(db)
+
+    groups_orm, _ = _group_events(raw_evs, cam)
+    cp = _real_phone(canal)
+
+    msg_tuples = []
+    last_event_id = ""
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
+    for key, evs in groups_orm.items():
+        if _real_phone(key) != phone or _real_phone(key) == cp:
+            continue
+        sorted_evs = sorted(
+            [e for e in evs if (e.raw_payload or {}).get("type", "").upper()
+             not in ("MESSAGE_STATUS", "CONVERSATION_STATUS")],
+            key=lambda e: e.received_at or _epoch
+        )
+        for ev in sorted_evs:
+            _p   = ev.raw_payload or {}
+            _txt = _extract_content_preview(_p, max_len=1000) or ""
+            _ts  = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
+            if _txt:
+                msg_tuples.append((_extract_direction(_p), _txt, _ts))
+        if sorted_evs:
+            last_event_id = str(sorted_evs[-1].id)
+
+    if not msg_tuples:
+        db.close()
+        return JSONResponse({"error": "Sem mensagens para avaliar"}, status_code=404)
+
+    # Cache hit?
+    if last_event_id:
+        cached = db.get(_CS, (phone, last_event_id))
+        if cached and cached.score_version == _SCORE_VERSION:
+            db.close()
+            return JSONResponse({
+                "nota": cached.nota, "resumo": cached.resumo or "",
+                "pontos_positivos": cached.pontos_positivos or [],
+                "pontos_melhoria":  cached.pontos_melhoria  or [],
+                "from_cache": True,
+            })
+
+    try:
+        scored = _call_score_llm(_build_transcript(msg_tuples))
+        if last_event_id:
+            _upsert_score(db, phone, last_event_id, canal, scored)
+        db.close()
+        return JSONResponse(scored)
     except Exception as exc:
+        db.close()
         return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.post("/dashboard/score-batch", include_in_schema=False)
+async def score_batch_endpoint(request: Request, db: Session = Depends(get_db)):
+    """Score up to `batch_size` conversations in one request.
+
+    Body: { canal, offset, batch_size, days }
+    Returns: { done, total, next_offset, finished, scored_this_call, errors }
+
+    Intended to be called repeatedly (AJAX polling) until finished=true.
+    Already-scored conversations (same last_event_id + score_version) are
+    skipped instantly without an LLM call.
+    """
+    if not _check_auth(request):
+        return JSONResponse({"error": "unauth"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+
+    canal      = (body.get("canal") or "5519997733651").strip()
+    offset     = max(0, int(body.get("offset") or 0))
+    batch_size = max(1, min(20, int(body.get("batch_size") or 10)))
+    days       = max(1, min(30, int(body.get("days") or 7)))
+
+    if not settings.ANTHROPIC_API_KEY:
+        db.close()
+        return JSONResponse({"error": "ANTHROPIC_API_KEY não configurada"}, status_code=503)
+
+    from app.crud import get_events_since, get_agent_mappings, get_client_names
+    from app.models import ConversationScore as _CS
+
+    cutoff_utc = (datetime.now(BRASILIA) - timedelta(days=days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(timezone.utc)
+
+    raw_evs = get_events_since(db, since=cutoff_utc, limit=60000)
+    raw_evs = _filter_events_by_channel(raw_evs, canal)
+    cam = get_agent_mappings(db)
+    cnm = get_client_names(db)
+
+    groups_orm, phone_learned = _group_events(raw_evs, cam)
+    cp = _real_phone(canal)
+
+    # Build candidate list: (phone, last_event_id, agent, client_name, msg_tuples)
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
+    candidates = []
+    for key, evs in groups_orm.items():
+        if _real_phone(key) == cp:
+            continue
+        phone = _real_phone(key)
+        agent = (phone_learned.get(key) or cam.get(phone)
+                 or phone_learned.get(phone) or "Sem atendente")
+        if agent == "Sem atendente":
+            continue
+        sorted_evs = sorted(
+            [e for e in evs if (e.raw_payload or {}).get("type", "").upper()
+             not in ("MESSAGE_STATUS", "CONVERSATION_STATUS")],
+            key=lambda e: e.received_at or _epoch
+        )
+        if not sorted_evs:
+            continue
+        last_event_id = str(sorted_evs[-1].id)
+        msg_tuples = []
+        for ev in sorted_evs:
+            _p   = ev.raw_payload or {}
+            _txt = _extract_content_preview(_p, max_len=1000) or ""
+            _ts  = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
+            if _txt:
+                msg_tuples.append((_extract_direction(_p), _txt, _ts))
+        if not msg_tuples:
+            continue
+        client_name = cnm.get(phone, "") or phone
+        candidates.append((phone, last_event_id, agent, client_name, msg_tuples))
+
+    total = len(candidates)
+    slice_ = candidates[offset: offset + batch_size]
+
+    scored_this = 0
+    errors = 0
+    for phone, last_event_id, agent, client_name, msg_tuples in slice_:
+        # Skip if already cached
+        cached = db.get(_CS, (phone, last_event_id))
+        if cached and cached.score_version == _SCORE_VERSION:
+            scored_this += 1
+            continue
+        try:
+            scored = _call_score_llm(_build_transcript(msg_tuples))
+            _upsert_score(db, phone, last_event_id, canal, scored)
+            scored_this += 1
+        except Exception:
+            errors += 1
+
+    next_offset = offset + batch_size
+    finished = next_offset >= total
+    db.close()
+    return JSONResponse({
+        "done":             min(next_offset, total),
+        "total":            total,
+        "next_offset":      next_offset if not finished else total,
+        "finished":         finished,
+        "scored_this_call": scored_this,
+        "errors":           errors,
+    })
 
 
 @router.post("/dashboard/suggest-reply", include_in_schema=False)
