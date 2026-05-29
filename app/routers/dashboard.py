@@ -2257,6 +2257,21 @@ def _save_acked_alerts(db, acked: dict) -> None:
     set_setting(db, "acked_alerts", json.dumps(acked, ensure_ascii=False))
 
 
+def _get_dismissed_sr(db) -> set:
+    """Return the set of phone numbers manually dismissed from the Sem Resposta list."""
+    raw = get_setting(db, "dismissed_sr")
+    if not raw:
+        return set()
+    try:
+        return set(json.loads(raw))
+    except Exception:
+        return set()
+
+
+def _save_dismissed_sr(db, dismissed: set) -> None:
+    set_setting(db, "dismissed_sr", json.dumps(list(dismissed), ensure_ascii=False))
+
+
 # ── Nav HTML ─────────────────────────────────────────────────────────────────
 
 _PAGE_TITLES: dict[str, str] = {
@@ -3562,6 +3577,28 @@ async def unack_alert_endpoint(request: Request, db: Session = Depends(get_db)):
     acked = _get_acked_alerts(db)
     acked.pop(phone_key, None)
     _save_acked_alerts(db, acked)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/dashboard/dismiss-sr", include_in_schema=False)
+async def dismiss_sr_endpoint(request: Request, db: Session = Depends(get_db)):
+    """Mark a Sem Resposta candidate as dismissed (green ✓).
+    The phone is added to the dismissed_sr set and will not reappear
+    in the list until a new message arrives (at which point the
+    conversation_analyses cache key changes and it may reappear).
+    """
+    if not _check_auth(request):
+        return JSONResponse({"error": "unauth"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    phone = (body.get("phone") or "").strip()
+    if not phone:
+        return JSONResponse({"error": "missing phone"}, status_code=400)
+    dismissed = _get_dismissed_sr(db)
+    dismissed.add(phone)
+    _save_dismissed_sr(db, dismissed)
     return JSONResponse({"ok": True})
 
 
@@ -4974,6 +5011,10 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
     candidates.sort(key=lambda c: c["last_event_at"], reverse=True)
     candidates = candidates[:MAX_CANDIDATES]
 
+    # ── Load dismissed set and filter candidates ─────────────────────────────
+    dismissed_sr = _get_dismissed_sr(db)
+    candidates = [c for c in candidates if c["phone"] not in dismissed_sr]
+
     # ── Run LLM analysis (cached) ────────────────────────────────────────────
     to_analyze = [(c["phone"], c["last_event_id"], c["msg_tuples"]) for c in candidates]
     results = analyze_many(db, to_analyze, max_new=MAX_NEW_ANALYSES)
@@ -5060,8 +5101,17 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
         badge = _segment_badge(c["agent"])
         last_ts_br  = c["last_event_at"].astimezone(BRASILIA).strftime("%d/%m %H:%M") if c["last_event_at"] else ""
 
-        # Left card — clicking loads the chat panel
+        # Left card — clicking loads the chat panel; buttons stop propagation
         _last_ev_id_safe = html_mod.escape(c["last_event_id"])
+        # Payload for the red "escalate to PROBLEMA" button
+        import json as _json
+        _esc_payload = html_mod.escape(_json.dumps({
+            "phone_key":    c["phone"],
+            "agent":        c["agent"],
+            "snippet":      (c["msg_tuples"][-1][1][:200] if c["msg_tuples"] else ""),
+            "display_name": c["client_name"] or c["phone"],
+            "status":       "problema",
+        }, ensure_ascii=False), quote=True)
         left_cards_html += (
             f'<div id="sr-card-{card_id}" onclick="openSrConv(\'{card_id}\',\'{phone_safe}\',\'{html_mod.escape(canal)}\',\'{_last_ev_id_safe}\')" '
             f'style="padding:12px 16px;border-bottom:1px solid #111a2e;border-left:3px solid {silence_color};'
@@ -5072,8 +5122,16 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
             f'  <span style="margin-left:auto;font-family:\'JetBrains Mono\',monospace;font-size:10px;color:{silence_color};font-weight:700">⏱ {silence_label}</span>'
             f'</div>'
             f'<div style="font-size:11px;color:#8a96aa;margin-bottom:4px">{agent_safe} · {last_ts_br}</div>'
-            f'<div style="font-size:11px;color:#c8d4e8;background:#0a0f1a;padding:5px 8px;border-radius:4px;border:1px solid #1a2540">'
+            f'<div style="font-size:11px;color:#c8d4e8;background:#0a0f1a;padding:5px 8px;border-radius:4px;border:1px solid #1a2540;margin-bottom:8px">'
             f'  🤖 {reason_safe}'
+            f'</div>'
+            f'<div style="display:flex;gap:7px" onclick="event.stopPropagation()">'
+            f'  <button onclick="dismissSr(\'{phone_safe}\',this)" title="Atendido — remover da lista" '
+            f'    style="flex:1;background:#0fa968;border:none;color:#fff;padding:5px 0;border-radius:5px;'
+            f'    font-size:11px;font-weight:700;cursor:pointer;font-family:Montserrat,sans-serif">✓ OK</button>'
+            f'  <button data-esc="{_esc_payload}" onclick="escalateSr(this)" title="Escalar como problema para aba Alertas" '
+            f'    style="flex:1;background:#dc2626;border:none;color:#fff;padding:5px 0;border-radius:5px;'
+            f'    font-size:11px;font-weight:700;cursor:pointer;font-family:Montserrat,sans-serif">⚠ PROBLEMA</button>'
             f'</div>'
             f'</div>'
         )
@@ -5164,6 +5222,57 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
 
 </div>
 <script>
+// ── Dismiss / Escalate ──────────────────────────────────────────────────────
+async function _srFadeRemove(btn) {{
+  var card = btn.closest('[id^="sr-card-"]');
+  if (card) {{
+    card.style.transition = 'opacity .25s';
+    card.style.opacity = '0';
+    await new Promise(function(r){{ setTimeout(r, 260); }});
+    card.remove();
+  }}
+}}
+
+async function dismissSr(phone, btn) {{
+  btn.disabled = true; btn.textContent = '⏳';
+  try {{
+    var r = await fetch('/dashboard/dismiss-sr', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{phone: phone}})
+    }});
+    if (r.ok) {{ await _srFadeRemove(btn); }}
+    else {{ btn.disabled=false; btn.textContent='✓ OK'; alert('Erro ao dispensar.'); }}
+  }} catch(e) {{ btn.disabled=false; btn.textContent='✓ OK'; console.error(e); }}
+}}
+
+async function escalateSr(btn) {{
+  var raw = btn.getAttribute('data-esc') || '{{}}';
+  var data;
+  try {{ data = JSON.parse(raw); }} catch(e) {{ alert('Erro ao ler dados.'); return; }}
+  btn.disabled = true; btn.textContent = '⏳';
+  try {{
+    var r = await fetch('/dashboard/ack-alert', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify(data)
+    }});
+    if (r.ok) {{
+      await _srFadeRemove(btn);
+      // Brief toast so the user knows it went to Alertas
+      var toast = document.createElement('div');
+      toast.textContent = '⚠ Escalado para Alertas → PROBLEMA';
+      toast.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);'
+        + 'background:#3a1414;color:#fca5a5;border:1px solid #5a2424;padding:10px 20px;'
+        + 'border-radius:8px;font-size:12px;font-weight:700;z-index:9999;pointer-events:none;'
+        + 'font-family:Montserrat,sans-serif;';
+      document.body.appendChild(toast);
+      setTimeout(function(){{ toast.remove(); }}, 3000);
+    }} else {{ btn.disabled=false; btn.textContent='⚠ PROBLEMA'; alert('Erro ao escalar.'); }}
+  }} catch(e) {{ btn.disabled=false; btn.textContent='⚠ PROBLEMA'; console.error(e); }}
+}}
+
+// ── Open conversation panel ──────────────────────────────────────────────────
 var _srActive = null;
 function openSrConv(id, phone, canal, lastInId) {{
   if (_srActive) {{
