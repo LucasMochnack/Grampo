@@ -3117,7 +3117,10 @@ def conv_messages_api(request: Request, db: Session = Depends(get_db)):
         content = _render_msg_content(p)
         if ev.received_at:
             _ev_br = ev.received_at.astimezone(BRASILIA)
-            msg_ts = _ev_br.strftime("%H:%M")
+            # Show full "dd/mm HH:MM" so the reviewer always knows the date,
+            # not just the time. The day-separator still appears when the date
+            # changes, but the timestamp on each bubble now carries both.
+            msg_ts = _ev_br.strftime("%d/%m %H:%M")
             _msg_day = _ev_br.date()
             if _msg_day != _prev_day:
                 _day_str = _ev_br.strftime("%d/%m/%Y")
@@ -3297,7 +3300,7 @@ def dashboard_conversa(request: Request, db: Session = Depends(get_db)):
                 _first_hit_idx = _hit_count  # 1-based; used as the data-hit attribute target
         if ev.received_at:
             _ev_br = ev.received_at.astimezone(BRASILIA)
-            msg_ts = _ev_br.strftime("%H:%M")
+            msg_ts = _ev_br.strftime("%d/%m %H:%M")
             _msg_day = _ev_br.date()
             if _msg_day != _prev_day:
                 _day_str = _ev_br.strftime("%d/%m/%Y")
