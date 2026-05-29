@@ -4015,6 +4015,92 @@ async def score_batch_endpoint(request: Request, db: Session = Depends(get_db)):
     })
 
 
+@router.post("/dashboard/cron/score-daily", include_in_schema=False)
+async def cron_score_daily(request: Request, db: Session = Depends(get_db)):
+    """Cron endpoint: score all conversations from the last 30 days in batches.
+
+    Protected by the DASHBOARD_PASSWORD token sent in the Authorization header
+    as 'Bearer <password>'. Designed to be called once a day without a browser
+    session. Processes all batches in one HTTP call (may take several minutes).
+    """
+    auth = request.headers.get("Authorization", "")
+    token = auth.removeprefix("Bearer ").strip()
+    if not token or token != settings.DASHBOARD_PASSWORD:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    canal = request.query_params.get("canal", "5519997733651")
+    days  = int(request.query_params.get("days", "30"))
+
+    from app.crud import get_events_since, get_agent_mappings, get_client_names
+    from app.models import ConversationScore as _CS
+
+    if not settings.ANTHROPIC_API_KEY:
+        db.close()
+        return JSONResponse({"error": "ANTHROPIC_API_KEY not set"}, status_code=503)
+
+    cutoff_utc = (datetime.now(BRASILIA) - timedelta(days=days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(timezone.utc)
+
+    raw_evs = get_events_since(db, since=cutoff_utc, limit=80000)
+    raw_evs = _filter_events_by_channel(raw_evs, canal)
+    cam = get_agent_mappings(db)
+    cnm = get_client_names(db)
+    groups_orm, phone_learned = _group_events(raw_evs, cam)
+    cp  = _real_phone(canal)
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
+
+    total_scored = 0
+    total_skipped = 0
+    total_errors  = 0
+
+    for key, evs in groups_orm.items():
+        if _real_phone(key) == cp:
+            continue
+        phone = _real_phone(key)
+        agent = (phone_learned.get(key) or cam.get(phone)
+                 or phone_learned.get(phone) or "Sem atendente")
+        if agent == "Sem atendente":
+            continue
+        sorted_evs = sorted(
+            [e for e in evs if (e.raw_payload or {}).get("type", "").upper()
+             not in ("MESSAGE_STATUS", "CONVERSATION_STATUS")],
+            key=lambda e: e.received_at or _epoch
+        )
+        if not sorted_evs:
+            continue
+        last_event_id = str(sorted_evs[-1].id)
+        # Skip if already cached
+        cached = db.get(_CS, (phone, last_event_id))
+        if cached and cached.score_version == _SCORE_VERSION:
+            total_skipped += 1
+            continue
+        msg_tuples = []
+        for ev in sorted_evs:
+            _p   = ev.raw_payload or {}
+            _txt = _extract_content_preview(_p, max_len=1000) or ""
+            _ts  = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
+            if _txt:
+                msg_tuples.append((_extract_direction(_p), _txt, _ts))
+        if not msg_tuples:
+            continue
+        try:
+            scored = _call_score_llm(_build_transcript(msg_tuples))
+            _upsert_score(db, phone, last_event_id, canal, scored)
+            total_scored += 1
+        except Exception as exc:
+            total_errors += 1
+
+    db.close()
+    return JSONResponse({
+        "ok": True,
+        "scored": total_scored,
+        "skipped_cached": total_skipped,
+        "errors": total_errors,
+        "days": days,
+    })
+
+
 @router.post("/dashboard/suggest-reply", include_in_schema=False)
 async def suggest_reply_endpoint(request: Request, db: Session = Depends(get_db)):
     """Generate a suggested advisor reply for a pending Sem Resposta conversation.
