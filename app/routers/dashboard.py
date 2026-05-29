@@ -3598,6 +3598,70 @@ async def dismiss_sr_endpoint(request: Request, db: Session = Depends(get_db)):
     return JSONResponse({"ok": True})
 
 
+@router.post("/dashboard/suggest-reply", include_in_schema=False)
+async def suggest_reply_endpoint(request: Request, db: Session = Depends(get_db)):
+    """Generate a suggested advisor reply for a pending Sem Resposta conversation.
+
+    Body: { phone, canal, reason }
+    Returns: { suggestion: "..." }
+    """
+    if not _check_auth(request):
+        return JSONResponse({"error": "unauth"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+
+    phone   = (body.get("phone") or "").strip()
+    canal   = (body.get("canal") or "5519997733651").strip()
+    reason  = (body.get("reason") or "").strip()
+
+    if not phone:
+        return JSONResponse({"error": "missing phone"}, status_code=400)
+
+    # Fresh query to get conversation messages
+    from app.crud import get_events_since, get_agent_mappings
+    from app.services.conversation_analysis import suggest_reply as _suggest_reply
+
+    cutoff_utc = (datetime.now(BRASILIA) - timedelta(days=7)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(timezone.utc)
+
+    raw_evs = get_events_since(db, since=cutoff_utc, limit=30000)
+    raw_evs = _filter_events_by_channel(raw_evs, canal)
+    cam = get_agent_mappings(db)
+    db.close()
+
+    groups_orm, _ = _group_events(raw_evs, cam)
+    cp = _real_phone(canal)
+    real_target = phone
+
+    # Collect messages for this phone
+    msg_tuples: list[tuple] = []
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
+    for key, evs in groups_orm.items():
+        if _real_phone(key) != real_target or _real_phone(key) == cp:
+            continue
+        sorted_evs = sorted(
+            [e for e in evs if (e.raw_payload or {}).get("type", "").upper()
+             not in ("MESSAGE_STATUS", "CONVERSATION_STATUS")],
+            key=lambda e: e.received_at or _epoch
+        )
+        for ev in sorted_evs:
+            _p   = ev.raw_payload or {}
+            _d   = _extract_direction(_p)
+            _txt = _extract_content_preview(_p, max_len=1000) or ""
+            _ts  = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
+            if _txt:
+                msg_tuples.append((_d, _txt, _ts))
+
+    if not msg_tuples:
+        return JSONResponse({"suggestion": "Não foi possível carregar o histórico da conversa."})
+
+    suggestion = _suggest_reply(msg_tuples, reason=reason)
+    return JSONResponse({"suggestion": suggestion})
+
+
 # ── Agente Detalhe ───────────────────────────────────────────────────────────
 
 @router.get("/dashboard/agente-detalhe", response_class=HTMLResponse, include_in_schema=False)
@@ -5099,15 +5163,6 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
 
         # Left card — clicking loads the chat panel; buttons stop propagation
         _last_ev_id_safe = html_mod.escape(c["last_event_id"])
-        # Payload for the red "escalate to PROBLEMA" button
-        import json as _json
-        _esc_payload = html_mod.escape(_json.dumps({
-            "phone_key":    c["phone"],
-            "agent":        c["agent"],
-            "snippet":      (c["msg_tuples"][-1][1][:200] if c["msg_tuples"] else ""),
-            "display_name": c["client_name"] or c["phone"],
-            "status":       "problema",
-        }, ensure_ascii=False), quote=True)
         left_cards_html += (
             f'<div id="sr-card-{card_id}" onclick="openSrConv(\'{card_id}\',\'{phone_safe}\',\'{html_mod.escape(canal)}\',\'{_last_ev_id_safe}\')" '
             f'style="padding:12px 16px;border-bottom:1px solid #111a2e;border-left:3px solid {silence_color};'
@@ -5121,13 +5176,15 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
             f'<div style="font-size:11px;color:#c8d4e8;background:#0a0f1a;padding:5px 8px;border-radius:4px;border:1px solid #1a2540;margin-bottom:8px">'
             f'  🤖 {reason_safe}'
             f'</div>'
+            f'<div id="sr-suggest-{card_id}" style="display:none;margin-bottom:8px"></div>'
             f'<div style="display:flex;gap:7px" onclick="event.stopPropagation()">'
             f'  <button onclick="dismissSr(\'{phone_safe}\',this)" title="Atendido — remover da lista" '
             f'    style="flex:1;background:#0fa968;border:none;color:#fff;padding:5px 0;border-radius:5px;'
             f'    font-size:11px;font-weight:700;cursor:pointer;font-family:Montserrat,sans-serif">✓ OK</button>'
-            f'  <button data-esc="{_esc_payload}" onclick="escalateSr(this)" title="Escalar como problema para aba Alertas" '
-            f'    style="flex:1;background:#dc2626;border:none;color:#fff;padding:5px 0;border-radius:5px;'
-            f'    font-size:11px;font-weight:700;cursor:pointer;font-family:Montserrat,sans-serif">⚠ PROBLEMA</button>'
+            f'  <button onclick="suggestReply(\'{card_id}\',\'{phone_safe}\',\'{html_mod.escape(canal)}\',\'{html_mod.escape(v["reason"]).replace(chr(39), chr(39))}\',this)" '
+            f'    title="Gerar sugestão de como atender este cliente" '
+            f'    style="flex:2;background:#2563eb;border:none;color:#fff;padding:5px 0;border-radius:5px;'
+            f'    font-size:11px;font-weight:700;cursor:pointer;font-family:Montserrat,sans-serif">💬 Como atender</button>'
             f'</div>'
             f'</div>'
         )
@@ -5242,30 +5299,43 @@ async function dismissSr(phone, btn) {{
   }} catch(e) {{ btn.disabled=false; btn.textContent='✓ OK'; console.error(e); }}
 }}
 
-async function escalateSr(btn) {{
-  var raw = btn.getAttribute('data-esc') || '{{}}';
-  var data;
-  try {{ data = JSON.parse(raw); }} catch(e) {{ alert('Erro ao ler dados.'); return; }}
-  btn.disabled = true; btn.textContent = '⏳';
+async function suggestReply(cardId, phone, canal, reason, btn) {{
+  var box = document.getElementById('sr-suggest-' + cardId);
+  if (!box) return;
+  btn.disabled = true;
+  var origText = btn.textContent;
+  btn.textContent = '⏳ Gerando...';
+  box.style.display = 'none';
   try {{
-    var r = await fetch('/dashboard/ack-alert', {{
+    var r = await fetch('/dashboard/suggest-reply', {{
       method: 'POST',
       headers: {{'Content-Type': 'application/json'}},
-      body: JSON.stringify(data)
+      body: JSON.stringify({{phone: phone, canal: canal, reason: reason}})
     }});
     if (r.ok) {{
-      await _srFadeRemove(btn);
-      // Brief toast so the user knows it went to Alertas
-      var toast = document.createElement('div');
-      toast.textContent = '⚠ Escalado para Alertas → PROBLEMA';
-      toast.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);'
-        + 'background:#3a1414;color:#fca5a5;border:1px solid #5a2424;padding:10px 20px;'
-        + 'border-radius:8px;font-size:12px;font-weight:700;z-index:9999;pointer-events:none;'
-        + 'font-family:Montserrat,sans-serif;';
-      document.body.appendChild(toast);
-      setTimeout(function(){{ toast.remove(); }}, 3000);
-    }} else {{ btn.disabled=false; btn.textContent='⚠ PROBLEMA'; alert('Erro ao escalar.'); }}
-  }} catch(e) {{ btn.disabled=false; btn.textContent='⚠ PROBLEMA'; console.error(e); }}
+      var data = await r.json();
+      var suggestion = (data.suggestion || '').trim();
+      box.innerHTML =
+        '<div style="background:#0d1a38;border:1px solid #2563eb;border-radius:6px;padding:10px 12px">'
+        + '<div style="font-size:10px;color:#2563eb;font-weight:700;letter-spacing:.5px;margin-bottom:6px">💬 SUGESTÃO DE RESPOSTA</div>'
+        + '<div style="font-size:12px;color:#c8d4e8;line-height:1.55;white-space:pre-wrap">' + suggestion + '</div>'
+        + '<div style="display:flex;gap:6px;margin-top:8px">'
+        + '<button onclick="navigator.clipboard.writeText(' + JSON.stringify(suggestion) + ').then(function(){{this.textContent=\'✓ Copiado!\';setTimeout(function(){{this.textContent=\'📋 Copiar\'}}.bind(this),1500)}}.bind(this))" '
+        + 'style="flex:1;background:#1a2540;border:1px solid #2563eb;color:#93c5fd;padding:4px 0;border-radius:4px;font-size:11px;cursor:pointer;font-family:Montserrat,sans-serif">📋 Copiar</button>'
+        + '<button onclick="var b=this.closest(\'[id^=sr-suggest-]\');if(b){{b.style.display=\'none\';}}" '
+        + 'style="background:transparent;border:1px solid #1a2540;color:#5a6a8a;padding:4px 10px;border-radius:4px;font-size:11px;cursor:pointer;font-family:Montserrat,sans-serif">✕</button>'
+        + '</div></div>';
+      box.style.display = 'block';
+      btn.textContent = '↺ Gerar outra';
+    }} else {{
+      btn.textContent = origText;
+      alert('Erro ao gerar sugestão.');
+    }}
+  }} catch(e) {{
+    btn.textContent = origText;
+    console.error(e);
+  }}
+  btn.disabled = false;
 }}
 
 // ── Open conversation panel ──────────────────────────────────────────────────

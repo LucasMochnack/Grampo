@@ -278,3 +278,75 @@ def analyze_many(
         if result:
             out[phone] = _to_dict(result)
     return out
+
+
+# ── Reply suggestion ─────────────────────────────────────────────────────────
+
+_REPLY_SYSTEM = """Você é um assessor de investimentos sênior da Alto Valor, \
+parceira XP Investimentos. Você deve sugerir UMA resposta curta e profissional \
+para retomar a conversa com o cliente que ficou sem resposta.
+
+Regras:
+- Escreva como se fosse o próprio assessor (1ª pessoa, tom informal-profissional)
+- Máximo 3 frases curtas
+- NÃO inclua saudações genéricas como "Bom dia" ou "Tudo bem?"
+  a menos que o contexto seja claramente uma retomada após longa ausência
+- Se o cliente fez uma pergunta específica, responda/aborde ela diretamente
+- Se o cliente pediu uma cotação ou informação, ofereça buscar
+- Não invente números, taxas ou produtos — diga que vai verificar se não sabe
+- Use a linguagem natural do assessor na conversa (informal mas respeitoso)
+- Responda APENAS com o texto da mensagem, sem aspas, sem introdução, sem nada mais
+"""
+
+
+def suggest_reply(
+    messages: list[tuple[str, str, datetime]],
+    reason: str = "",
+) -> str:
+    """Generate a suggested advisor reply for a pending conversation.
+
+    Returns the suggested text, or an error string starting with '[Erro'.
+    No caching — one-shot call triggered by the user.
+    """
+    if not settings.ANTHROPIC_API_KEY:
+        return "[Erro: ANTHROPIC_API_KEY não configurada]"
+
+    try:
+        import anthropic
+    except ImportError:
+        return "[Erro: SDK anthropic não instalado]"
+
+    msgs = messages[-MAX_MESSAGES_IN_PROMPT:]
+    lines: list[str] = []
+    for direction, text, ts in msgs:
+        who = "CLIENTE" if direction.upper() == "IN" else "ASSESSOR"
+        ts_str = ts.strftime("%d/%m %H:%M") if ts else "??/??"
+        body = (text or "").strip().replace("\n", " ")
+        if len(body) > MAX_CHARS_PER_MESSAGE:
+            body = body[:MAX_CHARS_PER_MESSAGE] + "…"
+        lines.append(f"[{ts_str}] {who}: {body}")
+
+    transcript = "\n".join(lines)
+    context = f"\n\nContexto: {reason}" if reason else ""
+    user_prompt = (
+        f"Conversa abaixo. Sugira uma resposta para o ASSESSOR retomar o atendimento.{context}\n\n"
+        f"=== CONVERSA ===\n{transcript}\n=== FIM ===\n\n"
+        "Escreva APENAS a mensagem sugerida, sem mais nada:"
+    )
+
+    try:
+        client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+        resp = client.messages.create(
+            model=settings.ANTHROPIC_MODEL,
+            max_tokens=300,
+            system=_REPLY_SYSTEM,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        raw = ""
+        for block in (resp.content or []):
+            if getattr(block, "type", "") == "text":
+                raw += block.text or ""
+        return raw.strip() or "[Sem sugestão gerada]"
+    except Exception as exc:
+        logger.error("suggest_reply failed: %s", exc)
+        return f"[Erro ao gerar sugestão: {exc}]"
