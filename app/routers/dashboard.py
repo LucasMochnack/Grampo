@@ -2318,13 +2318,9 @@ def _nav_html(active: str, extra: str = "", canal: str = "", unacked_alerts: int
 
     return f"""<aside class="gp-sidebar">
   <div class="sidebar-brand">
-    <div style="display:flex;align-items:center;gap:10px">
-      <div style="width:28px;height:28px;border-radius:6px;background:#0fa968;display:flex;align-items:center;justify-content:center;font-weight:800;color:#0b1120;font-size:14px;letter-spacing:-.5px;flex-shrink:0">AV</div>
-      <div style="line-height:1.2">
-        <div style="font-size:11px;letter-spacing:2px;font-weight:700;color:#fff">ALTO<span style="color:#0fa968">VALOR</span></div>
-        <div style="font-size:8px;letter-spacing:1.5px;color:#5a6a8a;margin-top:2px;font-weight:600">GRAMPO</div>
-      </div>
-    </div>
+    <img src="{ALTO_VALOR_LOGO}" alt="Alto Valor Investimentos"
+         style="width:100%;max-width:160px;height:auto;object-fit:contain;opacity:.92;display:block;margin:0 auto 4px" />
+    <div style="text-align:center;font-size:8px;letter-spacing:2px;color:#5a6a8a;font-weight:600;margin-top:2px">GRAMPO</div>
   </div>
   <div class="nav-group">
     <div class="nav-group-label">MONITORAMENTO</div>
@@ -2778,9 +2774,9 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
 
   <!-- CENTER: chat -->
   <div style="flex:1;min-width:0;display:flex;flex-direction:column;background:#0a0f1a;overflow:hidden">
-    <div id="chat-ph" style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:10px;color:#3a4a6a">
-      <div style="font-size:40px;opacity:.25">💬</div>
-      <div style="font-size:13px;font-style:italic">Selecione uma conversa para visualizar</div>
+    <div id="chat-ph" style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:16px;color:#3a4a6a;background:#0a0f1a">
+      <img src="{ALTO_VALOR_LOGO}" alt="Alto Valor" style="width:220px;opacity:.07;pointer-events:none;user-select:none" />
+      <div style="font-size:13px;font-style:italic;color:#3a4a6a">Selecione uma conversa para visualizar</div>
     </div>
     {chat_panels_html}
     <div id="hist-panels"></div>
@@ -5213,9 +5209,9 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
 
   <!-- RIGHT: chat -->
   <div style="flex:1;min-width:0;display:flex;flex-direction:column;background:#0a0f1a;overflow:hidden">
-    <div id="sr-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:10px;color:#3a4a6a">
-      <div style="font-size:40px;opacity:.25">📭</div>
-      <div style="font-size:13px;font-style:italic">Selecione uma conversa para visualizar</div>
+    <div id="sr-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:16px;color:#3a4a6a;background:#0a0f1a">
+      <img src="{ALTO_VALOR_LOGO}" alt="Alto Valor" style="width:220px;opacity:.07;pointer-events:none;user-select:none" />
+      <div style="font-size:13px;font-style:italic;color:#3a4a6a">Selecione uma conversa para visualizar</div>
     </div>
     {chat_panels_html}
   </div>
