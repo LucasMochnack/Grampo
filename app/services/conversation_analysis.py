@@ -255,17 +255,16 @@ def analyze_many(
     entries are returned without consuming an LLM call.
     """
     out: dict[str, ConversationAnalysis] = {}
-    new_calls = 0
+    new_attempts = 0  # cap on LLM ATTEMPTS (not successes) to keep page load fast
     for phone, last_event_id, messages in candidates:
         existing = get_cached(db, phone, last_event_id)
         if existing and existing.prompt_version == PROMPT_VERSION:
             out[phone] = existing
             continue
-        if new_calls >= max_new:
-            # Soft cap to keep page load fast and cost predictable
+        if new_attempts >= max_new:
             break
+        new_attempts += 1
         result = analyze_conversation(db, phone, last_event_id, messages)
         if result:
             out[phone] = result
-            new_calls += 1
     return out
