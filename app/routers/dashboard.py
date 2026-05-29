@@ -2658,8 +2658,17 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
         <div style="font-size:11px;color:#5a6a8a;margin-top:2px;font-family:'JetBrains Mono',monospace">{safe_phone} · com {safe_agent}</div>
       </div>
     </div>
-    <div style="display:flex;gap:8px;align-items:center">{alert_badge_chat}{ok_btn_chat}</div>
+    <div style="display:flex;gap:8px;align-items:center">
+      {alert_badge_chat}{ok_btn_chat}
+      <button onclick="scoreConv('{safe_phone}','{_enc_canal}',this)"
+        title="Analisar qualidade do atendimento com IA"
+        style="background:#1a2540;border:1px solid #2a3a5a;color:#8a96aa;padding:5px 12px;border-radius:6px;
+        font-size:11px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif;transition:.15s"
+        onmouseover="this.style.background='#2a3a5a';this.style.color='#e8ecf1'"
+        onmouseout="this.style.background='#1a2540';this.style.color='#8a96aa'">⭐ Avaliar</button>
+    </div>
   </div>
+  <div id="score-{chat_id}" style="display:none;padding:10px 24px;background:#0d1630;border-bottom:1px solid #1a2540;flex-shrink:0"></div>
   <div class="gp-chat-msgs" id="msgs-{chat_id}">
     <div style="text-align:center;color:#3a4a6a;font-size:12px;margin-top:60px;font-style:italic">Selecione para carregar mensagens</div>
   </div>
@@ -2862,6 +2871,51 @@ function transcribeAudio(btn,encodedUrl,mime){{
       btn.disabled=false;
     }});
 }}
+async function scoreConv(phone, canal, btn) {{
+  // Find the score box in the same panel header
+  var panel = btn.closest('.gp-chat-panel');
+  if (!panel) return;
+  var chatId = panel.id.replace('cpanel-', '');
+  var box = document.getElementById('score-' + chatId);
+  if (!box) return;
+  var orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳ Avaliando...';
+  box.style.display = 'none';
+  try {{
+    var r = await fetch('/dashboard/score-conv', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{phone: phone, canal: canal}})
+    }});
+    var data = await r.json();
+    if (!r.ok || data.error) {{
+      box.innerHTML = '<span style="color:#ef4444;font-size:12px">⚠ ' + (data.error || 'Erro') + '</span>';
+      box.style.display = 'block';
+    }} else {{
+      var nota = data.nota;
+      var color = nota >= 8 ? '#0fa968' : nota >= 6 ? '#eab308' : nota >= 4 ? '#f97316' : '#ef4444';
+      var pos = (data.pontos_positivos || []).map(function(p){{return '<li>' + p + '</li>';}}).join('');
+      var mel = (data.pontos_melhoria  || []).map(function(p){{return '<li>' + p + '</li>';}}).join('');
+      box.innerHTML =
+        '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">'
+        + '<div style="font-size:28px;font-weight:800;color:' + color + ';font-family:monospace">' + nota + '<span style="font-size:14px;color:#5a6a8a">/10</span></div>'
+        + '<div style="flex:1;min-width:200px">'
+        + '<div style="font-size:12px;color:#c8d4e8;margin-bottom:6px">' + (data.resumo || '') + '</div>'
+        + (pos ? '<div style="font-size:11px;color:#0fa968;margin-bottom:2px">✓ ' + data.pontos_positivos.join(' · ') + '</div>' : '')
+        + (mel ? '<div style="font-size:11px;color:#f97316">⚠ ' + data.pontos_melhoria.join(' · ') + '</div>' : '')
+        + '</div>'
+        + '<button onclick="this.closest(\'[id^=score-]\').style.display=\'none\'" style="background:transparent;border:none;color:#5a6a8a;cursor:pointer;font-size:14px">✕</button>'
+        + '</div>';
+      box.style.display = 'block';
+      btn.textContent = '↺ Reavaliar';
+    }}
+  }} catch(e) {{
+    console.error(e);
+    btn.textContent = orig;
+  }}
+  btn.disabled = false;
+}}
+
 async function ackAlert(phoneKey,agent,snippet,displayName,cardId){{
   try{{
     var resp=await fetch('/dashboard/ack-alert',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{phone_key:phoneKey,agent:agent,snippet:snippet,display_name:displayName}})}});
@@ -3597,6 +3651,108 @@ async def dismiss_sr_endpoint(request: Request, db: Session = Depends(get_db)):
     dismissed.add(phone)
     _save_dismissed_sr(db, dismissed)
     return JSONResponse({"ok": True})
+
+
+@router.post("/dashboard/score-conv", include_in_schema=False)
+async def score_conv_endpoint(request: Request, db: Session = Depends(get_db)):
+    """Score a conversation quality 0-10 using Claude."""
+    if not _check_auth(request):
+        return JSONResponse({"error": "unauth"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+
+    phone = (body.get("phone") or "").strip()
+    canal = (body.get("canal") or "5519997733651").strip()
+    if not phone:
+        return JSONResponse({"error": "missing phone"}, status_code=400)
+
+    from app.crud import get_events_since, get_agent_mappings
+    from app.config import settings as _settings
+
+    if not _settings.ANTHROPIC_API_KEY:
+        return JSONResponse({"error": "ANTHROPIC_API_KEY não configurada"}, status_code=503)
+
+    cutoff_utc = (datetime.now(BRASILIA) - timedelta(days=30)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(timezone.utc)
+
+    raw_evs = get_events_since(db, since=cutoff_utc, limit=30000)
+    raw_evs = _filter_events_by_channel(raw_evs, canal)
+    cam = get_agent_mappings(db)
+    db.close()
+
+    groups_orm, _ = _group_events(raw_evs, cam)
+    cp = _real_phone(canal)
+    real_target = phone
+
+    msg_tuples = []
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
+    for key, evs in groups_orm.items():
+        if _real_phone(key) != real_target or _real_phone(key) == cp:
+            continue
+        sorted_evs = sorted(
+            [e for e in evs if (e.raw_payload or {}).get("type", "").upper()
+             not in ("MESSAGE_STATUS", "CONVERSATION_STATUS")],
+            key=lambda e: e.received_at or _epoch
+        )
+        for ev in sorted_evs:
+            _p   = ev.raw_payload or {}
+            _d   = _extract_direction(_p)
+            _txt = _extract_content_preview(_p, max_len=1000) or ""
+            _ts  = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
+            if _txt:
+                msg_tuples.append((_d, _txt, _ts))
+
+    if not msg_tuples:
+        return JSONResponse({"error": "Sem mensagens para avaliar"}, status_code=404)
+
+    # Build transcript
+    lines = []
+    for d, txt, ts in msg_tuples[-40:]:
+        who = "CLIENTE" if d.upper() == "IN" else "ASSESSOR"
+        ts_str = ts.strftime("%d/%m %H:%M") if ts else "?"
+        body_txt = txt.strip().replace("\n", " ")
+        if len(body_txt) > 500:
+            body_txt = body_txt[:500] + "…"
+        lines.append(f"[{ts_str}] {who}: {body_txt}")
+    transcript = "\n".join(lines)
+
+    system = """Você é um avaliador de qualidade de atendimento de uma assessoria de investimentos.
+Analise a conversa entre ASSESSOR e CLIENTE e dê uma nota de 0 a 10 para o atendimento do assessor.
+
+Critérios:
+- Tempo de resposta (penalize silêncio longo)
+- Clareza e completude das respostas
+- Cordialidade e tom profissional
+- Se o cliente teve sua necessidade atendida
+- Proatividade do assessor
+
+Responda SOMENTE em JSON, sem texto adicional:
+{"nota": 8, "resumo": "frase de 1-2 linhas resumindo o atendimento", "pontos_positivos": ["item1", "item2"], "pontos_melhoria": ["item1"]}"""
+
+    try:
+        import anthropic as _anthropic
+        client = _anthropic.Anthropic(api_key=_settings.ANTHROPIC_API_KEY)
+        resp = client.messages.create(
+            model=_settings.ANTHROPIC_MODEL,
+            max_tokens=400,
+            system=system,
+            messages=[{"role": "user", "content": f"Avalie a conversa abaixo:\n\n{transcript}"}],
+        )
+        raw = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+        import re as _re
+        m = _re.search(r"\{[\s\S]*\}", raw)
+        data = json.loads(m.group(0)) if m else {}
+        nota = max(0, min(10, int(data.get("nota", 5))))
+        resumo = str(data.get("resumo", ""))[:300]
+        positivos = [str(x)[:200] for x in (data.get("pontos_positivos") or [])[:4]]
+        melhorias = [str(x)[:200] for x in (data.get("pontos_melhoria") or [])[:4]]
+        return JSONResponse({"nota": nota, "resumo": resumo,
+                             "pontos_positivos": positivos, "pontos_melhoria": melhorias})
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
 
 
 @router.post("/dashboard/suggest-reply", include_in_schema=False)
@@ -5191,8 +5347,9 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
         )
 
         # Right chat panel (hidden until selected)
+        # Must be flex:1 (not height:100%) so it expands inside the flex parent.
         chat_panels_html += (
-            f'<div id="sr-panel-{card_id}" style="display:none;flex-direction:column;height:100%;overflow:hidden">'
+            f'<div id="sr-panel-{card_id}" style="display:none;flex-direction:column;flex:1;overflow:hidden">'
             f'  <div style="padding:14px 20px;border-bottom:1px solid #1a2540;flex-shrink:0;background:#0d1630">'
             f'    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
             f'      <span style="font-size:15px;font-weight:700;color:#e8ecf1">{client_safe}</span>{badge}'
