@@ -4853,112 +4853,99 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
         return _auth_redirect()
 
     canal = request.query_params.get("canal", "5519997733651")
-    # Window for candidates — last 7 days of activity, with last message IN
-    # at least MIN_SILENCE_HOURS ago.
     MIN_SILENCE_HOURS = 4
     LOOKBACK_DAYS = 7
-    MAX_NEW_ANALYSES = 15  # per request — keeps the page snappy
-    MAX_CANDIDATES = 80    # safety cap on how many we even consider
+    MAX_NEW_ANALYSES = 15
+    MAX_CANDIDATES = 80
 
     now_br = datetime.now(BRASILIA)
     cutoff_utc = (now_br - timedelta(days=LOOKBACK_DAYS)).replace(
         hour=0, minute=0, second=0, microsecond=0
     ).astimezone(timezone.utc)
-
-    all_events, _cg, _cpl, client_agent_map, client_name_map = _load_period_pipeline(
-        db, canal, cutoff_utc, 50000
-    )
-
-    # Self-channel filter
-    cp = _real_phone(canal)
-    groups = {k: v for k, v in _cg.items() if _real_phone(k) != cp}
-
-    # ── Build candidate list ─────────────────────────────────────────────────
-    # A "candidate" = conversation whose last NON-STATUS event is IN (cliente)
-    # and >= MIN_SILENCE_HOURS old, but newer than the lookback cutoff.
-    candidates: list[dict] = []
     silence_cutoff_utc = (now_br - timedelta(hours=MIN_SILENCE_HOURS)).astimezone(timezone.utc)
 
-    for key, evs in groups.items():
-        # Filter status/system events — access raw_payload (JSON, always loaded)
-        try:
-            msg_evs = [
-                e for e in evs
-                if (e.raw_payload or {}).get("type", "").upper() not in
-                ("MESSAGE_STATUS", "CONVERSATION_STATUS")
-            ]
-        except Exception:
+    # ── Fresh query — do NOT use the pipeline cache ──────────────────────────
+    # The pipeline cache stores SQLAlchemy ORM objects from a previous
+    # request's session. Accessing them after that session closes raises
+    # DetachedInstanceError. We do a direct DB query here and extract
+    # everything to plain dicts BEFORE closing the session.
+    from app.crud import get_events_since, get_agent_mappings, get_client_names
+    raw_evs = get_events_since(db, since=cutoff_utc, limit=60000)
+    raw_evs = _filter_events_by_channel(raw_evs, canal)
+    client_agent_map = get_agent_mappings(db)
+    client_name_map  = get_client_names(db)
+
+    # Group events and learn phone→agent mappings — all inside session scope
+    groups_orm, phone_learned = _group_events(raw_evs, client_agent_map)
+    cp = _real_phone(canal)
+
+    # Extract everything from ORM objects while session is open → plain dicts
+    candidates: list[dict] = []
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
+
+    for key, evs in groups_orm.items():
+        if _real_phone(key) == cp:
             continue
+        msg_evs = [
+            e for e in evs
+            if (e.raw_payload or {}).get("type", "").upper() not in
+            ("MESSAGE_STATUS", "CONVERSATION_STATUS")
+        ]
         if not msg_evs:
             continue
-        # Sort by received_at; last is most recent
-        _epoch = datetime.min.replace(tzinfo=timezone.utc)
         msg_evs.sort(key=lambda e: e.received_at or _epoch)
         last_ev = msg_evs[-1]
-        # Copy scalar values out of the ORM object immediately so we never
-        # need to touch the instance again after the session might close.
-        try:
-            _last_ev_id       = str(last_ev.id)
-            _last_ev_at       = last_ev.received_at
-            _last_ev_payload  = last_ev.raw_payload or {}
-        except Exception:
+        if not last_ev.received_at:
             continue
-        if not _last_ev_at:
-            continue
-        last_direction = _extract_direction(_last_ev_payload)
+        last_direction = _extract_direction(last_ev.raw_payload or {})
         if last_direction != "IN":
             continue
-        if _last_ev_at > silence_cutoff_utc:
+        if last_ev.received_at > silence_cutoff_utc:
             continue  # too recent
 
         phone = _real_phone(key)
-        agent = (_cpl.get(key) or client_agent_map.get(phone)
-                 or _cpl.get(phone) or "Sem atendente")
+        agent = (phone_learned.get(key) or client_agent_map.get(phone)
+                 or phone_learned.get(phone) or "Sem atendente")
         if agent == "Sem atendente":
             continue
 
-        # Build chronological message tuples for the LLM — extract all data
-        # from ORM objects here, inside the session scope.
-        msg_tuples = []
+        # Extract ALL ORM data to plain Python — safe after session closes
+        last_event_id = str(last_ev.id)
+        last_event_at = last_ev.received_at
+
+        msg_tuples: list[tuple] = []
         contact_name = ""
         for ev in msg_evs:
-            try:
-                _p = ev.raw_payload or {}
-                _d = _extract_direction(_p)
-                _text = _extract_content_preview(_p, max_len=1500) or ""
-                _ts = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
-                if _text:
-                    msg_tuples.append((_d, _text, _ts))
-                if not contact_name:
-                    _cname = _extract_contact_name(_p)
-                    if _cname:
-                        contact_name = _cname
-            except Exception:
-                continue
+            _p    = ev.raw_payload or {}
+            _d    = _extract_direction(_p)
+            _text = _extract_content_preview(_p, max_len=1500) or ""
+            _ts   = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
+            if _text:
+                msg_tuples.append((_d, _text, _ts))
+            if not contact_name:
+                _cn = _extract_contact_name(_p)
+                if _cn:
+                    contact_name = _cn
+
         if not msg_tuples:
             continue
 
         candidates.append({
-            "phone":          phone,
-            "key":            key,
-            "agent":          agent,
-            "last_event_id":  _last_ev_id,
-            "last_event_at":  _last_ev_at,
-            "msg_tuples":     msg_tuples,
-            "client_name":    client_name_map.get(phone, "") or contact_name,
+            "phone":         phone,
+            "agent":         agent,
+            "last_event_id": last_event_id,
+            "last_event_at": last_event_at,
+            "msg_tuples":    msg_tuples,
+            "client_name":   client_name_map.get(phone, "") or contact_name,
         })
 
-    # Sort newest-silence first so the freshest tail of pendentes goes first;
-    # we keep the cap so a page load can't run away.
     candidates.sort(key=lambda c: c["last_event_at"], reverse=True)
     candidates = candidates[:MAX_CANDIDATES]
 
     # ── Run LLM analysis (cached) ────────────────────────────────────────────
-    # Tuple shape expected by analyze_many: (phone, last_event_id, messages)
     to_analyze = [(c["phone"], c["last_event_id"], c["msg_tuples"]) for c in candidates]
-    # analyze_many returns plain dicts so results are safe after db.close()
     results = analyze_many(db, to_analyze, max_new=MAX_NEW_ANALYSES)
-    db.close()  # safe now — results are plain dicts, not ORM instances
+    db.close()  # all ORM data already extracted to plain dicts above
 
     # Build a lookup so we can decorate the candidates
     enriched = []
