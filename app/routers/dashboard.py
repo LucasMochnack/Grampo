@@ -2334,6 +2334,7 @@ def _nav_html(active: str, extra: str = "", canal: str = "", unacked_alerts: int
   <div class="nav-group">
     <div class="nav-group-label">ANÁLISE</div>
     {_ni("temas", "Temas", f"/dashboard/temas{canal_qs}")}
+    {_ni("avaliacao", "Avaliação Agentes", f"/dashboard/avaliacao-agentes{canal_qs}")}
     {_ni("evolucao", "Evolução", f"/dashboard/evolucao{canal_qs}")}
     {_ni("mensagens", "Mensagens iniciais", f"/dashboard/mensagens{canal_qs}")}
   </div>
@@ -5798,6 +5799,227 @@ function openSrConv(id, phone, canal, lastInId) {{
     }});
 }}
 </script>
+</body></html>""")
+
+
+@router.get("/dashboard/avaliacao-agentes", response_class=HTMLResponse, include_in_schema=False)
+def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db)):
+    """Resumo de qualidade de atendimento por agente, baseado nos scores da IA."""
+    access = _get_access(request, db)
+    if access is None:
+        return _auth_redirect()
+
+    canal  = request.query_params.get("canal", "5519997733651")
+    days   = max(1, min(30, int(request.query_params.get("days", "7"))))
+
+    from app.models import ConversationScore as _CS
+    from app.crud import get_agent_mappings, get_client_names
+
+    cutoff_utc = (datetime.now(BRASILIA) - timedelta(days=days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(timezone.utc)
+
+    # Load scores for the period
+    scores = (
+        db.query(_CS)
+        .filter(_CS.canal == canal, _CS.scored_at >= cutoff_utc)
+        .all()
+    )
+
+    cam = get_agent_mappings(db)
+    cnm = get_client_names(db)
+    db.close()
+
+    # Group by agent
+    from collections import defaultdict
+    agent_scores: dict[str, list] = defaultdict(list)
+    for s in scores:
+        phone  = s.phone
+        agent  = cam.get(phone) or "Sem atendente"
+        if agent == "Sem atendente":
+            continue
+        if not _user_sees(access, agent):
+            continue
+        agent_scores[agent].append(s)
+
+    is_admin = (access or {}).get("role") == "admin"
+    nav = _nav_html("avaliacao", canal=canal, is_admin=is_admin, title="Avaliação Agentes")
+
+    # Period selector chips
+    _period_chip = lambda d, label: (
+        f'<a href="?canal={canal}&days={d}" style="text-decoration:none">'
+        f'<span style="padding:4px 12px;border-radius:20px;font-size:10.5px;font-weight:700;cursor:pointer;'
+        f'border:1px solid {"#0fa968" if days==d else "#1a2540"};color:{"#0fa968" if days==d else "#8a96aa"};'
+        f'background:{"rgba(15,169,104,.15)" if days==d else "transparent"}">{label}</span></a>'
+    )
+
+    period_chips = (
+        _period_chip(7, "7 dias")
+        + _period_chip(14, "14 dias")
+        + _period_chip(30, "30 dias")
+    )
+
+    def _score_color(nota):
+        if nota >= 8: return "#0fa968"
+        if nota >= 6: return "#eab308"
+        if nota >= 4: return "#f97316"
+        return "#ef4444"
+
+    def _score_badge(nota):
+        c = _score_color(nota)
+        bg = {"#0fa968":"#0a1a0f","#eab308":"#1a1a08","#f97316":"#1a0f00","#ef4444":"#1a0808"}.get(c,"#0a0f1a")
+        return (
+            f'<span style="font-size:22px;font-weight:800;color:{c};font-family:monospace">{nota:.1f}'
+            f'<span style="font-size:11px;color:#5a6a8a">/10</span></span>'
+        )
+
+    if not agent_scores:
+        no_data = (
+            '<div style="background:#0d1630;border:1px solid #1a2540;border-radius:10px;'
+            f'padding:40px;text-align:center;color:#5a6a8a;margin-top:24px">'
+            f'Nenhuma avaliação encontrada nos últimos {days} dias.<br>'
+            f'<span style="font-size:12px;margin-top:8px;display:block">Clique em '
+            f'<strong style="color:#eab308">⭐ Avaliar semana</strong> na aba Conversas para gerar avaliações.</span>'
+            f'</div>'
+        )
+        return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Grampo — Avaliação Agentes</title>{COMMON_CSS}</head><body>
+{nav}
+<div class="container">
+  <div style="display:flex;align-items:center;gap:16px;margin-bottom:24px;flex-wrap:wrap">
+    <div style="font-size:20px;font-weight:700;color:#e8ecf1">⭐ Avaliação de Agentes</div>
+    <div style="display:flex;gap:8px">{period_chips}</div>
+  </div>
+  {no_data}
+</div></body></html>""")
+
+    # Build agent cards (sorted by avg score desc)
+    agent_cards_html = ""
+    sorted_agents = sorted(
+        agent_scores.items(),
+        key=lambda x: sum(s.nota for s in x[1]) / len(x[1]),
+        reverse=True
+    )
+
+    for agent, slist in sorted_agents:
+        avg   = sum(s.nota for s in slist) / len(slist)
+        total = len(slist)
+        badge_html = _segment_badge(agent)
+
+        # Aggregate all points
+        from collections import Counter
+        pos_counter: Counter = Counter()
+        mel_counter: Counter = Counter()
+        erros: list[str] = []  # scored <= 4
+
+        for s in slist:
+            for p in (s.pontos_positivos or []):
+                pos_counter[p.strip()] += 1
+            for m in (s.pontos_melhoria or []):
+                mel_counter[m.strip()] += 1
+            if s.nota <= 4 and s.resumo:
+                erros.append(s.resumo.strip())
+
+        top_pos = [p for p, _ in pos_counter.most_common(5)]
+        top_mel = [m for m, _ in mel_counter.most_common(5)]
+        top_err = list(dict.fromkeys(erros))[:4]  # deduplicated
+
+        # Score distribution bar
+        dist = [0]*11
+        for s in slist:
+            dist[max(0, min(10, s.nota))] += 1
+        dist_html = ""
+        max_dist = max(dist) or 1
+        for i in range(11):
+            pct = round(dist[i] / max_dist * 100)
+            c   = _score_color(i)
+            dist_html += (
+                f'<div style="display:flex;flex-direction:column;align-items:center;gap:3px;flex:1">'
+                f'  <div style="background:{c};width:100%;height:{max(2,pct//3)}px;border-radius:2px 2px 0 0;'
+                f'      min-height:2px;opacity:{0.4 + (pct/100)*0.6:.2f}"></div>'
+                f'  <span style="font-size:9px;color:#5a6a8a">{i}</span>'
+                f'</div>'
+            )
+
+        def _list_items(items, color, icon):
+            if not items:
+                return f'<div style="font-size:11px;color:#3a4a6a;font-style:italic">Nenhum registrado</div>'
+            return "".join(
+                f'<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:5px">'
+                f'  <span style="color:{color};flex-shrink:0;font-size:12px">{icon}</span>'
+                f'  <span style="font-size:11.5px;color:#c8d4e8;line-height:1.4">{html_mod.escape(item)}</span>'
+                f'</div>'
+                for item in items
+            )
+
+        agent_cards_html += f"""
+<div style="background:#0d1630;border:1px solid #1a2540;border-radius:12px;padding:22px 24px;margin-bottom:20px">
+  <!-- Header -->
+  <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap">
+    <div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+        <span style="font-size:16px;font-weight:700;color:#e8ecf1">{html_mod.escape(agent)}</span>{badge_html}
+      </div>
+      <div style="font-size:11px;color:#5a6a8a">{total} conversa{"s" if total != 1 else ""} avaliada{"s" if total != 1 else ""} · últimos {days} dias</div>
+    </div>
+    <div style="margin-left:auto;text-align:center">
+      {_score_badge(avg)}
+      <div style="font-size:10px;color:#5a6a8a;margin-top:2px">MÉDIA</div>
+    </div>
+  </div>
+
+  <!-- Score distribution -->
+  <div style="margin-bottom:18px">
+    <div style="font-size:10px;color:#5a6a8a;letter-spacing:1px;font-weight:700;margin-bottom:8px">DISTRIBUIÇÃO DE NOTAS</div>
+    <div style="display:flex;gap:3px;align-items:flex-end;height:40px">{dist_html}</div>
+  </div>
+
+  <!-- 3-column breakdown -->
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
+    <div style="background:#0a1a0f;border:1px solid #1d4d36;border-radius:8px;padding:14px">
+      <div style="font-size:10px;color:#0fa968;letter-spacing:1px;font-weight:700;margin-bottom:10px">✓ PONTOS POSITIVOS</div>
+      {_list_items(top_pos, "#0fa968", "✓")}
+    </div>
+    <div style="background:#1a0808;border:1px solid #5a2424;border-radius:8px;padding:14px">
+      <div style="font-size:10px;color:#ef4444;letter-spacing:1px;font-weight:700;margin-bottom:10px">⚠ ERROS IDENTIFICADOS</div>
+      {_list_items(top_err, "#ef4444", "✗")}
+    </div>
+    <div style="background:#1a1a08;border:1px solid #4a4010;border-radius:8px;padding:14px">
+      <div style="font-size:10px;color:#eab308;letter-spacing:1px;font-weight:700;margin-bottom:10px">↑ PONTOS DE MELHORIA</div>
+      {_list_items(top_mel, "#eab308", "→")}
+    </div>
+  </div>
+</div>"""
+
+    total_scored = sum(len(v) for v in agent_scores.values())
+    avg_global   = sum(s.nota for sl in agent_scores.values() for s in sl) / total_scored if total_scored else 0
+
+    return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Grampo — Avaliação Agentes</title>{COMMON_CSS}
+<style>
+@media(max-width:700px){{
+  .av-grid{{grid-template-columns:1fr !important}}
+}}
+</style>
+</head><body>
+{nav}
+<div style="max-width:1100px;margin:28px auto;padding:0 24px">
+
+  <div style="display:flex;align-items:center;gap:16px;margin-bottom:24px;flex-wrap:wrap">
+    <div>
+      <div style="font-size:20px;font-weight:700;color:#e8ecf1;margin-bottom:4px">⭐ Avaliação de Agentes</div>
+      <div style="font-size:12px;color:#5a6a8a">
+        {len(agent_scores)} agente{"s" if len(agent_scores)!=1 else ""} ·
+        {total_scored} conversa{"s" if total_scored!=1 else ""} avaliada{"s" if total_scored!=1 else ""} ·
+        média geral <strong style="color:{_score_color(round(avg_global))}">{avg_global:.1f}</strong>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;margin-left:auto">{period_chips}</div>
+  </div>
+
+  {agent_cards_html}
+
+</div>
 </body></html>""")
 
 
