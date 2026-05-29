@@ -256,6 +256,7 @@ AGENT_SEGMENT: dict[str, str] = {
     "MAGNO ALENCAR DA SILVA": "On Demand",
     "Paulo José Teixeira Camarotto Manfio": "On Demand",
     "Vinícius Ruas": "On Demand",
+    "Wellington Gutierrez": "On Demand",
 }
 
 SEGMENT_COLORS: dict[str, str] = {
