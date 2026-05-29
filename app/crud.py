@@ -17,6 +17,20 @@ def create_event(
     user_agent: str | None,
     content_type: str | None,
 ) -> WebhookEvent:
+    zenvia_event_id = raw_payload.get("id")
+
+    # Idempotency: Zenvia sometimes retries the same webhook (retry storm).
+    # If we already have an event with this zenvia_event_id, return the
+    # existing row silently — same 200 to Zenvia, no duplicate in DB.
+    if zenvia_event_id:
+        existing = (
+            db.query(WebhookEvent)
+            .filter(WebhookEvent.zenvia_event_id == zenvia_event_id)
+            .first()
+        )
+        if existing:
+            return existing
+
     event = WebhookEvent(
         raw_payload=raw_payload,
         raw_headers=raw_headers,
@@ -24,7 +38,7 @@ def create_event(
         user_agent=user_agent,
         content_type=content_type,
         # Extract top-level Zenvia fields only when present; never default.
-        zenvia_event_id=raw_payload.get("id"),
+        zenvia_event_id=zenvia_event_id,
         zenvia_event_type=raw_payload.get("type"),
         zenvia_channel=raw_payload.get("channel"),
         zenvia_timestamp=raw_payload.get("timestamp"),
