@@ -2896,16 +2896,43 @@ async function scoreConv(phone, canal, btn) {{
       var color = nota >= 8 ? '#0fa968' : nota >= 6 ? '#eab308' : nota >= 4 ? '#f97316' : '#ef4444';
       var pos = (data.pontos_positivos || []).map(function(p){{return '<li>' + p + '</li>';}}).join('');
       var mel = (data.pontos_melhoria  || []).map(function(p){{return '<li>' + p + '</li>';}}).join('');
-      box.innerHTML =
-        '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">'
-        + '<div style="font-size:28px;font-weight:800;color:' + color + ';font-family:monospace">' + nota + '<span style="font-size:14px;color:#5a6a8a">/10</span></div>'
-        + '<div style="flex:1;min-width:200px">'
-        + '<div style="font-size:12px;color:#c8d4e8;margin-bottom:6px">' + (data.resumo || '') + '</div>'
-        + (pos ? '<div style="font-size:11px;color:#0fa968;margin-bottom:2px">✓ ' + data.pontos_positivos.join(' · ') + '</div>' : '')
-        + (mel ? '<div style="font-size:11px;color:#f97316">⚠ ' + data.pontos_melhoria.join(' · ') + '</div>' : '')
-        + '</div>'
-        + '<button onclick="this.closest(\'[id^=score-]\').style.display=\'none\'" style="background:transparent;border:none;color:#5a6a8a;cursor:pointer;font-size:14px">✕</button>'
-        + '</div>';
+      // Build score HTML using DOM methods to avoid any quote-in-string issues
+      var wrap = document.createElement('div');
+      wrap.style.cssText = 'display:flex;align-items:center;gap:14px;flex-wrap:wrap';
+      var noteDiv = document.createElement('div');
+      noteDiv.style.cssText = 'font-size:28px;font-weight:800;color:' + color + ';font-family:monospace';
+      noteDiv.textContent = nota;
+      var tenSpan = document.createElement('span');
+      tenSpan.style.cssText = 'font-size:14px;color:#5a6a8a';
+      tenSpan.textContent = '/10';
+      noteDiv.appendChild(tenSpan);
+      var detail = document.createElement('div');
+      detail.style.cssText = 'flex:1;min-width:200px';
+      var resumoDiv = document.createElement('div');
+      resumoDiv.style.cssText = 'font-size:12px;color:#c8d4e8;margin-bottom:6px';
+      resumoDiv.textContent = data.resumo || '';
+      detail.appendChild(resumoDiv);
+      if (pos) {{
+        var posDiv = document.createElement('div');
+        posDiv.style.cssText = 'font-size:11px;color:#0fa968;margin-bottom:2px';
+        posDiv.textContent = '✓ ' + data.pontos_positivos.join(' · ');
+        detail.appendChild(posDiv);
+      }}
+      if (mel) {{
+        var melDiv = document.createElement('div');
+        melDiv.style.cssText = 'font-size:11px;color:#f97316';
+        melDiv.textContent = '⚠ ' + data.pontos_melhoria.join(' · ');
+        detail.appendChild(melDiv);
+      }}
+      var closeBtn = document.createElement('button');
+      closeBtn.textContent = '✕';
+      closeBtn.style.cssText = 'background:transparent;border:none;color:#5a6a8a;cursor:pointer;font-size:14px';
+      closeBtn.onclick = function() {{ box.style.display = 'none'; }};
+      wrap.appendChild(noteDiv);
+      wrap.appendChild(detail);
+      wrap.appendChild(closeBtn);
+      box.innerHTML = '';
+      box.appendChild(wrap);
       box.style.display = 'block';
       btn.textContent = '↺ Reavaliar';
     }}
