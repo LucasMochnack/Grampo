@@ -5012,100 +5012,157 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
             f'font-size:10px;font-weight:700;border:1px solid {color};letter-spacing:.5px">{label}</span>'
         )
 
-    cards_html = ""
+    # ── Build left-panel card list ───────────────────────────────────────────
     from urllib.parse import quote as _uq_sr
-    for c in pendentes:
+    left_cards_html = ""
+    chat_panels_html = ""
+    for idx, c in enumerate(pendentes):
         v = c["verdict"]
+        card_id = f"sr{idx}"
         silence_label, silence_color = _fmt_silence(c["last_event_at"])
         prio_html = _prio_chip(v["priority"])
-        agent_safe = html_mod.escape(c["agent"])
+        agent_safe  = html_mod.escape(c["agent"])
         client_safe = html_mod.escape(c["client_name"] or c["phone"])
-        phone_safe = html_mod.escape(c["phone"])
+        phone_safe  = html_mod.escape(c["phone"])
         reason_safe = html_mod.escape(v["reason"])
         badge = _segment_badge(c["agent"])
-        last_msg = c["msg_tuples"][-1][1] if c["msg_tuples"] else ""
-        last_msg_short = html_mod.escape(last_msg[:200])
-        _conv_link = f"/dashboard/conversa?phone={_uq_sr(c['phone'], safe='')}&canal={_uq_sr(canal, safe='')}"
-        last_ts_br = c["last_event_at"].astimezone(BRASILIA).strftime("%d/%m %H:%M") if c["last_event_at"] else ""
+        last_ts_br  = c["last_event_at"].astimezone(BRASILIA).strftime("%d/%m %H:%M") if c["last_event_at"] else ""
 
-        cards_html += f"""<div style="background:#0d1630;border:1px solid #1a2540;border-left:3px solid {silence_color};border-radius:8px;padding:14px 18px;margin-bottom:10px">
-  <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
-    <a href="{_conv_link}" target="_blank" rel="noopener" style="font-size:14px;font-weight:700;color:#e8ecf1;text-decoration:none;border-bottom:1px dotted #4a5a7a">{client_safe} <span style="font-size:10px;color:#5a6a8a">↗</span></a>
-    {badge}
-    <span style="font-size:11px;color:#8a96aa">com <strong>{agent_safe}</strong></span>
-    {prio_html}
-    <span style="margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:11px;color:{silence_color};font-weight:700">⏱ {silence_label} sem resposta</span>
-  </div>
-  <div style="font-size:11.5px;color:#8a96aa;margin-bottom:6px;font-style:italic">💬 Última msg cliente ({last_ts_br}): "{last_msg_short}"</div>
-  <div style="font-size:12px;color:#c8d4e8;background:#0a0f1a;padding:8px 12px;border-radius:5px;border:1px solid #1a2540">
-    <strong style="color:#86efac">🤖 Análise:</strong> {reason_safe}
-    <span style="font-size:10px;color:#5a6a8a;margin-left:8px">(confiança {v['confidence']}%)</span>
-  </div>
-</div>"""
+        # Left card — clicking loads the chat panel
+        left_cards_html += (
+            f'<div id="sr-card-{card_id}" onclick="openSrConv(\'{card_id}\',\'{phone_safe}\',\'{html_mod.escape(canal)}\')" '
+            f'style="padding:12px 16px;border-bottom:1px solid #111a2e;border-left:3px solid {silence_color};'
+            f'cursor:pointer;transition:.15s;background:#0b1120" '
+            f'onmouseover="this.style.background=\'#111a2e\'" onmouseout="if(!this.classList.contains(\'sr-active\'))this.style.background=\'#0b1120\'">'
+            f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">'
+            f'  <span style="font-size:13px;font-weight:700;color:#e8ecf1">{client_safe}</span>{badge}'
+            f'  <span style="margin-left:auto;font-family:\'JetBrains Mono\',monospace;font-size:10px;color:{silence_color};font-weight:700">⏱ {silence_label}</span>'
+            f'</div>'
+            f'<div style="font-size:11px;color:#8a96aa;margin-bottom:4px">{agent_safe} · {last_ts_br}</div>'
+            f'<div style="font-size:11px;color:#c8d4e8;background:#0a0f1a;padding:5px 8px;border-radius:4px;border:1px solid #1a2540">'
+            f'  🤖 {reason_safe}'
+            f'</div>'
+            f'</div>'
+        )
+
+        # Right chat panel (hidden until selected)
+        chat_panels_html += (
+            f'<div id="sr-panel-{card_id}" style="display:none;flex-direction:column;height:100%;overflow:hidden">'
+            f'  <div style="padding:14px 20px;border-bottom:1px solid #1a2540;flex-shrink:0;background:#0d1630">'
+            f'    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+            f'      <span style="font-size:15px;font-weight:700;color:#e8ecf1">{client_safe}</span>{badge}'
+            f'      <span style="font-size:12px;color:#8a96aa">com {agent_safe}</span>'
+            f'      {prio_html}'
+            f'      <span style="margin-left:auto;font-family:\'JetBrains Mono\',monospace;font-size:11px;color:{silence_color};font-weight:700">⏱ {silence_label} sem resposta</span>'
+            f'    </div>'
+            f'    <div style="font-size:11px;color:#86efac;margin-top:6px;background:#0a1a0f;padding:6px 10px;border-radius:5px;border:1px solid #1d4d36">'
+            f'      🤖 {reason_safe} <span style="color:#5a6a8a">(confiança {v["confidence"]}%)</span>'
+            f'    </div>'
+            f'  </div>'
+            f'  <div class="gp-chat-msgs" id="sr-msgs-{card_id}">'
+            f'    <div style="text-align:center;color:#3a4a6a;font-size:12px;margin-top:60px">⏳ Carregando mensagens…</div>'
+            f'  </div>'
+            f'</div>'
+        )
 
     if not pendentes:
-        cards_html = (
-            '<div style="background:#0d1630;border:1px solid #1d4d36;border-radius:10px;'
-            'padding:30px;text-align:center;color:#86efac;font-size:13px">'
+        left_cards_html = (
+            '<div style="padding:40px 20px;text-align:center;color:#86efac;font-size:13px">'
             '✅ Nenhuma conversa pendente identificada.</div>'
         )
 
-    pending_msg = ""
+    pending_banner = ""
     if not_yet > 0:
-        pending_msg = (
-            f'<div style="font-size:11.5px;color:#eab308;background:#2a2208;border:1px solid #4a4010;'
-            f'padding:10px 14px;border-radius:6px;margin-bottom:14px">'
-            f'⏳ {not_yet} conversa{"s" if not_yet != 1 else ""} aguardando análise. '
-            f'Recarregue a página em alguns segundos para processar mais (máx {MAX_NEW_ANALYSES} '
-            f'por carregamento para controlar custo do LLM).'
+        pending_banner = (
+            f'<div style="font-size:11px;color:#eab308;background:#2a2208;border-bottom:1px solid #4a4010;'
+            f'padding:8px 14px;flex-shrink:0">'
+            f'⏳ {not_yet} conversa{"s" if not_yet != 1 else ""} aguardando análise — recarregue para processar mais.'
             f'</div>'
         )
 
     no_key_msg = ""
     if not settings.ANTHROPIC_API_KEY:
         no_key_msg = (
-            '<div style="background:#3a1414;color:#fca5a5;border:1px solid #5a2424;'
-            'padding:14px 18px;border-radius:8px;margin-bottom:16px;font-size:12.5px">'
-            '⚠ <strong>ANTHROPIC_API_KEY não configurada.</strong> A análise por IA está '
-            'indisponível. Configure a variável de ambiente <code style="background:#5a2424;'
-            'color:#fff;padding:1px 6px;border-radius:3px">ANTHROPIC_API_KEY</code> no Railway '
-            'para ativar a detecção.'
+            '<div style="font-size:11.5px;color:#fca5a5;background:#3a1414;border-bottom:1px solid #5a2424;'
+            'padding:10px 14px;flex-shrink:0">'
+            '⚠ ANTHROPIC_API_KEY não configurada — análise por IA indisponível.'
             '</div>'
         )
 
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>Grampo — Sem Resposta</title>{COMMON_CSS}</head><body>
+<title>Grampo — Sem Resposta</title>{COMMON_CSS}
+<style>
+.sr-active{{background:#141e35 !important;border-left-color:#0fa968 !important}}
+.gp-chat-msgs{{flex:1;overflow-y:auto;padding:24px 32px;display:flex;flex-direction:column;gap:8px}}
+.gp-msg{{max-width:70%;padding:10px 14px;font-size:13px;line-height:1.5}}
+.gp-msg.out{{align-self:flex-end;background:#0c2e1f;color:#a8e6cf;border:1px solid #0c7d4f;border-radius:14px 14px 4px 14px}}
+.gp-msg.in{{align-self:flex-start;background:#141e35;color:#c8d6e5;border:1px solid #1a2540;border-radius:14px 14px 14px 4px}}
+.gp-msg-t{{font-size:10px;margin-top:4px;font-family:'JetBrains Mono',monospace}}
+.gp-msg.out .gp-msg-t{{color:#5a8a6a;text-align:right}}
+.gp-msg.in .gp-msg-t{{color:#5a6a8a}}
+</style>
+</head><body>
 {nav}
-<div class="container">
-  <div style="margin-bottom:20px">
-    <div style="font-size:20px;font-weight:700;color:#e8ecf1;margin-bottom:4px">📭 Conversas Sem Resposta</div>
-    <div style="font-size:12px;color:#5a6a8a">
-      Análise automática por IA (Claude) — identifica clientes que aguardam retorno do assessor.
-      Janela: últimos {LOOKBACK_DAYS} dias · silêncio mínimo: {MIN_SILENCE_HOURS}h
+<div style="display:flex;height:calc(100vh - 60px);overflow:hidden">
+
+  <!-- LEFT: lista de pendentes -->
+  <div style="width:360px;border-right:1px solid #1a2540;display:flex;flex-direction:column;flex-shrink:0;overflow:hidden;background:#0b1120">
+    <div style="padding:12px 16px;border-bottom:1px solid #1a2540;flex-shrink:0">
+      <div style="font-size:11px;font-weight:700;color:#e8ecf1;letter-spacing:.5px;margin-bottom:2px">📭 SEM RESPOSTA</div>
+      <div style="font-size:10px;color:#5a6a8a">
+        {len(pendentes)} pendente{"s" if len(pendentes) != 1 else ""} · {len(candidates)} candidatos · Claude Sonnet
+      </div>
+    </div>
+    {no_key_msg}{pending_banner}
+    <div style="flex:1;overflow-y:auto">{left_cards_html}</div>
+    <div style="padding:8px 14px;border-top:1px solid #1a2540;font-size:10px;color:#5a6a8a;flex-shrink:0">
+      {pending_count} pendente{"s" if pending_count != 1 else ""} · {closed_count} encerrada{"s" if closed_count != 1 else ""} verificada{"s" if closed_count != 1 else ""}
     </div>
   </div>
 
-  {no_key_msg}
-
-  <div class="kpi-row">
-    <div class="kpi" style="border-top:3px solid #dc2626">
-      <div class="val" style="color:#dc2626">{len(pendentes)}</div>
-      <div class="label">Pendentes · aguardando assessor</div>
+  <!-- RIGHT: chat -->
+  <div style="flex:1;min-width:0;display:flex;flex-direction:column;background:#0a0f1a;overflow:hidden">
+    <div id="sr-placeholder" style="display:flex;align-items:center;justify-content:center;height:100%;flex-direction:column;gap:10px;color:#3a4a6a">
+      <div style="font-size:40px;opacity:.25">📭</div>
+      <div style="font-size:13px;font-style:italic">Selecione uma conversa para visualizar</div>
     </div>
-    <div class="kpi" style="border-top:3px solid #0fa968">
-      <div class="val" style="color:#0fa968">{closed_count}</div>
-      <div class="label">Encerradas (verificadas)</div>
-    </div>
-    <div class="kpi" style="border-top:3px solid #5a6a8a">
-      <div class="val">{len(candidates)}</div>
-      <div class="label">Candidatos analisados</div>
-    </div>
+    {chat_panels_html}
   </div>
 
-  {pending_msg}
-
-  <div style="margin-top:18px">{cards_html}</div>
 </div>
+<script>
+var _srActive = null;
+function openSrConv(id, phone, canal) {{
+  if (_srActive) {{
+    var old = document.getElementById('sr-panel-' + _srActive);
+    if (old) old.style.display = 'none';
+    var oldCard = document.getElementById('sr-card-' + _srActive);
+    if (oldCard) oldCard.classList.remove('sr-active');
+  }}
+  _srActive = id;
+  document.getElementById('sr-placeholder').style.display = 'none';
+  var card = document.getElementById('sr-card-' + id);
+  if (card) card.classList.add('sr-active');
+  var panel = document.getElementById('sr-panel-' + id);
+  if (!panel) return;
+  panel.style.display = 'flex';
+  var msgs = document.getElementById('sr-msgs-' + id);
+  if (!msgs || panel.getAttribute('data-loaded') === '1') {{
+    if (msgs) msgs.scrollTop = msgs.scrollHeight;
+    return;
+  }}
+  fetch('/dashboard/conv-messages?phone=' + encodeURIComponent(phone) + '&canal=' + encodeURIComponent(canal))
+    .then(function(r) {{ return r.text(); }})
+    .then(function(html) {{
+      msgs.innerHTML = html;
+      panel.setAttribute('data-loaded', '1');
+      msgs.scrollTop = msgs.scrollHeight;
+    }})
+    .catch(function() {{
+      msgs.innerHTML = '<div style="text-align:center;color:#ef4444;font-size:12px;margin-top:60px">Erro ao carregar mensagens</div>';
+    }});
+}}
+</script>
 </body></html>""")
 
 
