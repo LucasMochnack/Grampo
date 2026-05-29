@@ -3110,6 +3110,10 @@ def conv_messages_api(request: Request, db: Session = Depends(get_db)):
             f'<span style="font-size:10px;color:#3a4a6a;margin-left:10px">últimas {_MSG_LIMIT} exibidas</span>'
             f'</div>'
         )
+    # Optional: highlight the "last unanswered client message".
+    # Passed by the Sem Resposta panel as the last event id from the candidate.
+    _highlight_last_id = request.query_params.get("last_in_id", "").strip()
+
     _prev_day = None
     for ev in _evs_display:
         p = ev.raw_payload or {}
@@ -3117,9 +3121,6 @@ def conv_messages_api(request: Request, db: Session = Depends(get_db)):
         content = _render_msg_content(p)
         if ev.received_at:
             _ev_br = ev.received_at.astimezone(BRASILIA)
-            # Show full "dd/mm HH:MM" so the reviewer always knows the date,
-            # not just the time. The day-separator still appears when the date
-            # changes, but the timestamp on each bubble now carries both.
             msg_ts = _ev_br.strftime("%d/%m %H:%M")
             _msg_day = _ev_br.date()
             if _msg_day != _prev_day:
@@ -3129,10 +3130,38 @@ def conv_messages_api(request: Request, db: Session = Depends(get_db)):
                 _prev_day = _msg_day
         else:
             msg_ts = ""
+
+        # Is this the last unanswered message? Append a silence badge below it.
+        _is_last_unanswered = (
+            _highlight_last_id
+            and str(ev.id) == _highlight_last_id
+            and direction == "IN"
+        )
         if direction == "OUT":
             msgs_html += f'<div class="gp-msg out">{content}<div class="gp-msg-t">{msg_ts} ↑</div></div>'
         else:
             msgs_html += f'<div class="gp-msg in">{content}<div class="gp-msg-t">{msg_ts} ↓</div></div>'
+
+        if _is_last_unanswered and ev.received_at:
+            # Compute how long ago
+            _now_br = datetime.now(BRASILIA)
+            _delta = _now_br - ev.received_at.astimezone(BRASILIA)
+            _hrs = _delta.total_seconds() / 3600
+            if _hrs < 1:
+                _silence_str = f"{int(_hrs * 60)} min"
+            elif _hrs < 24:
+                _silence_str = f"{round(_hrs)}h"
+            else:
+                _silence_str = f"{round(_hrs / 24)}d {round(_hrs % 24)}h"
+            _silence_color = "#eab308" if _hrs < 24 else ("#f97316" if _hrs < 168 else "#dc2626")
+            msgs_html += (
+                f'<div style="align-self:flex-start;background:#2a2208;border:1px solid #4a4010;'
+                f'border-radius:6px;padding:5px 12px;font-size:11px;color:{_silence_color};'
+                f'font-weight:700;margin-top:-4px;margin-bottom:4px">'
+                f'⏱ Sem resposta há {_silence_str} · enviada em {_ev_br.strftime("%d/%m/%Y às %H:%M")}'
+                f'</div>'
+            )
+
     return HTMLResponse(msgs_html)
 
 
@@ -5032,8 +5061,9 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
         last_ts_br  = c["last_event_at"].astimezone(BRASILIA).strftime("%d/%m %H:%M") if c["last_event_at"] else ""
 
         # Left card — clicking loads the chat panel
+        _last_ev_id_safe = html_mod.escape(c["last_event_id"])
         left_cards_html += (
-            f'<div id="sr-card-{card_id}" onclick="openSrConv(\'{card_id}\',\'{phone_safe}\',\'{html_mod.escape(canal)}\')" '
+            f'<div id="sr-card-{card_id}" onclick="openSrConv(\'{card_id}\',\'{phone_safe}\',\'{html_mod.escape(canal)}\',\'{_last_ev_id_safe}\')" '
             f'style="padding:12px 16px;border-bottom:1px solid #111a2e;border-left:3px solid {silence_color};'
             f'cursor:pointer;transition:.15s;background:#0b1120" '
             f'onmouseover="this.style.background=\'#111a2e\'" onmouseout="if(!this.classList.contains(\'sr-active\'))this.style.background=\'#0b1120\'">'
@@ -5135,7 +5165,7 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
 </div>
 <script>
 var _srActive = null;
-function openSrConv(id, phone, canal) {{
+function openSrConv(id, phone, canal, lastInId) {{
   if (_srActive) {{
     var old = document.getElementById('sr-panel-' + _srActive);
     if (old) old.style.display = 'none';
@@ -5154,12 +5184,23 @@ function openSrConv(id, phone, canal) {{
     if (msgs) msgs.scrollTop = msgs.scrollHeight;
     return;
   }}
-  fetch('/dashboard/conv-messages?phone=' + encodeURIComponent(phone) + '&canal=' + encodeURIComponent(canal))
+  // Pass last_in_id so the endpoint highlights the unanswered message
+  var url = '/dashboard/conv-messages?phone=' + encodeURIComponent(phone)
+          + '&canal=' + encodeURIComponent(canal)
+          + (lastInId ? '&last_in_id=' + encodeURIComponent(lastInId) : '')
+          + '&full=1';
+  fetch(url)
     .then(function(r) {{ return r.text(); }})
     .then(function(html) {{
       msgs.innerHTML = html;
       panel.setAttribute('data-loaded', '1');
-      msgs.scrollTop = msgs.scrollHeight;
+      // Scroll to the highlighted message if present, otherwise to bottom
+      var badge = msgs.querySelector('[style*="Sem resposta há"]');
+      if (badge) {{
+        badge.scrollIntoView({{behavior:'smooth', block:'center'}});
+      }} else {{
+        msgs.scrollTop = msgs.scrollHeight;
+      }}
     }})
     .catch(function() {{
       msgs.innerHTML = '<div style="text-align:center;color:#ef4444;font-size:12px;margin-top:60px">Erro ao carregar mensagens</div>';
