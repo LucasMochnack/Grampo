@@ -13,7 +13,10 @@ class Settings(BaseSettings):
     SESSION_SECRET: str = ""
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
-    OPENAI_API_KEY: str = ""  # Required for audio transcription via Whisper
+    OPENAI_API_KEY: str = ""        # Required for audio transcription via Whisper
+    ANTHROPIC_API_KEY: str = ""     # Required for Claude-based "Sem Resposta" analysis
+    # Model id to use for conversation analysis (Claude Sonnet 4.6 default).
+    ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

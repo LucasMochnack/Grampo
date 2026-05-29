@@ -131,3 +131,36 @@ class DailyAgentStat(Base):
     )
 
 
+class ConversationAnalysis(Base):
+    """Cached LLM verdict for "Sem Resposta" detection.
+
+    The classifier (Claude) reads the latest exchange of a conversation and
+    decides if it ended naturally ("encerrada") or is still expecting an
+    advisor response ("pendente"). We cache by (phone, last_event_id) so
+    the same state is never analyzed twice — when a new message arrives,
+    last_event_id changes and the conversation gets re-analyzed.
+    """
+    __tablename__ = "conversation_analyses"
+
+    phone = Column(String(32), primary_key=True)
+    # ID of the latest event included in the analysis.
+    last_event_id = Column(String(64), primary_key=True)
+
+    status = Column(String(20), nullable=False)        # "encerrada" or "pendente"
+    confidence = Column(Integer, nullable=False, default=0)  # 0-100
+    reason = Column(Text, nullable=True)               # short Portuguese hint
+    priority = Column(String(10), nullable=True)       # "alta" | "media" | "baixa"
+    prompt_version = Column(String(16), nullable=False, default="v1")
+
+    analyzed_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_conv_analyses_status", "status"),
+        Index("ix_conv_analyses_analyzed_at", "analyzed_at"),
+    )
+
+

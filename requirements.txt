@@ -19,3 +19,6 @@ httpx==0.28.1
 
 # Audio transcription
 openai==1.82.0
+
+# Conversation analysis ("Sem Resposta" — Claude Sonnet 4.6)
+anthropic==0.39.0

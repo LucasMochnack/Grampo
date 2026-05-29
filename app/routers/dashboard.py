@@ -2265,6 +2265,7 @@ _PAGE_TITLES: dict[str, str] = {
     "agentes":    "Agentes",
     "mensagens":  "Mensagens Iniciais",
     "alertas":    "Alertas",
+    "sem-resposta": "Sem Resposta",
     "temas":      "Temas",
     "evolucao":   "Evolução",
     "acessos":    "Acessos",
@@ -2315,6 +2316,7 @@ def _nav_html(active: str, extra: str = "", canal: str = "", unacked_alerts: int
     {_ni("overview", "Visão Geral", f"/dashboard/overview{canal_qs}")}
     {_ni("conversas", "Conversas", f"/dashboard{canal_qs}", unacked_b)}
     <a href="/dashboard/alertas{canal_qs}" class="nav-item {'active' if active == 'alertas' else ''}">Alertas{acked_b_html}</a>
+    {_ni("sem-resposta", "Sem Resposta", f"/dashboard/sem-resposta{canal_qs}")}
     {_ni("agentes", "Agentes", f"/dashboard/agentes{canal_qs}")}
   </div>
   <div class="nav-group">
@@ -4833,6 +4835,268 @@ def dashboard_agentes_export(request: Request, db: Session = Depends(get_db)):
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ── "Sem Resposta" — LLM-driven detection of dropped conversations ────────────
+#
+# Uses Claude Sonnet 4.6 to read the latest exchange of each conversation and
+# decide if it ended naturally or is still expecting an advisor reply.
+# Result cached in `conversation_analyses` by (phone, last_event_id).
+
+@router.get("/dashboard/sem-resposta", response_class=HTMLResponse, include_in_schema=False)
+def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
+    from app.services.conversation_analysis import analyze_many, get_cached, PROMPT_VERSION
+    from app.models import ConversationAnalysis as _ConvAn
+
+    access = _get_access(request, db)
+    if access is None:
+        return _auth_redirect()
+
+    canal = request.query_params.get("canal", "5519997733651")
+    # Window for candidates — last 7 days of activity, with last message IN
+    # at least MIN_SILENCE_HOURS ago.
+    MIN_SILENCE_HOURS = 4
+    LOOKBACK_DAYS = 7
+    MAX_NEW_ANALYSES = 15  # per request — keeps the page snappy
+    MAX_CANDIDATES = 80    # safety cap on how many we even consider
+
+    now_br = datetime.now(BRASILIA)
+    cutoff_utc = (now_br - timedelta(days=LOOKBACK_DAYS)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(timezone.utc)
+
+    all_events, _cg, _cpl, client_agent_map, client_name_map = _load_period_pipeline(
+        db, canal, cutoff_utc, 50000
+    )
+
+    # Self-channel filter
+    cp = _real_phone(canal)
+    groups = {k: v for k, v in _cg.items() if _real_phone(k) != cp}
+
+    # ── Build candidate list ─────────────────────────────────────────────────
+    # A "candidate" = conversation whose last NON-STATUS event is IN (cliente)
+    # and >= MIN_SILENCE_HOURS old, but newer than the lookback cutoff.
+    candidates: list[dict] = []
+    silence_cutoff_utc = (now_br - timedelta(hours=MIN_SILENCE_HOURS)).astimezone(timezone.utc)
+
+    for key, evs in groups.items():
+        # Filter status/system events
+        msg_evs = [
+            e for e in evs
+            if (e.raw_payload or {}).get("type", "").upper() not in
+            ("MESSAGE_STATUS", "CONVERSATION_STATUS")
+        ]
+        if not msg_evs:
+            continue
+        # Sort by received_at; last is most recent
+        msg_evs.sort(key=lambda e: e.received_at or datetime.min.replace(tzinfo=timezone.utc))
+        last_ev = msg_evs[-1]
+        if not last_ev.received_at:
+            continue
+        last_direction = _extract_direction(last_ev.raw_payload or {})
+        if last_direction != "IN":
+            continue
+        # How long since last message?
+        if last_ev.received_at > silence_cutoff_utc:
+            continue  # too recent — give the agent time
+
+        phone = _real_phone(key)
+        agent = (_cpl.get(key) or client_agent_map.get(phone)
+                 or _cpl.get(phone) or "Sem atendente")
+        if agent == "Sem atendente":
+            continue  # can't action without an agent
+
+        # Build chronological message tuples for the LLM
+        msg_tuples = []
+        for ev in msg_evs:
+            d = _extract_direction(ev.raw_payload or {})
+            text = _extract_content_preview(ev.raw_payload or {}, max_len=1500) or ""
+            ts = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
+            if text:
+                msg_tuples.append((d, text, ts))
+        if not msg_tuples:
+            continue
+
+        candidates.append({
+            "phone": phone,
+            "key": key,
+            "agent": agent,
+            "last_event_id": str(last_ev.id),
+            "last_event_at": last_ev.received_at,
+            "msg_tuples": msg_tuples,
+            "client_name": client_name_map.get(phone, "") or _extract_contact_name_from_events(msg_evs),
+        })
+
+    # Sort newest-silence first so the freshest tail of pendentes goes first;
+    # we keep the cap so a page load can't run away.
+    candidates.sort(key=lambda c: c["last_event_at"], reverse=True)
+    candidates = candidates[:MAX_CANDIDATES]
+
+    # ── Run LLM analysis (cached) ────────────────────────────────────────────
+    # Tuple shape expected by analyze_many: (phone, last_event_id, messages)
+    to_analyze = [(c["phone"], c["last_event_id"], c["msg_tuples"]) for c in candidates]
+    results = analyze_many(db, to_analyze, max_new=MAX_NEW_ANALYSES)
+    db.close()
+
+    # Build a lookup so we can decorate the candidates
+    enriched = []
+    pending_count = 0
+    closed_count = 0
+    not_yet = 0
+    for c in candidates:
+        r = results.get(c["phone"])
+        if not r:
+            not_yet += 1
+            c["verdict"] = None
+            enriched.append(c)
+            continue
+        c["verdict"] = {
+            "status": r.status,
+            "confidence": r.confidence,
+            "reason": r.reason or "",
+            "priority": r.priority or "",
+        }
+        if r.status == "pendente":
+            pending_count += 1
+        else:
+            closed_count += 1
+        enriched.append(c)
+
+    # Filter to just the pendentes for the main card list
+    pendentes = [c for c in enriched if c.get("verdict") and c["verdict"]["status"] == "pendente"]
+    # Sort: priority alta first, then by silence time desc
+    _prio_rank = {"alta": 0, "media": 1, "baixa": 2}
+    pendentes.sort(key=lambda c: (
+        _prio_rank.get(c["verdict"]["priority"], 3),
+        -c["last_event_at"].timestamp() if c["last_event_at"] else 0,
+    ))
+
+    # ── Render ───────────────────────────────────────────────────────────────
+    is_admin = (access or {}).get("role") == "admin"
+    nav = _nav_html("sem-resposta", canal=canal, is_admin=is_admin, title="Sem Resposta")
+
+    def _fmt_silence(ts) -> tuple[str, str]:
+        """Return (label, color)."""
+        if not ts:
+            return ("?", "#5a6a8a")
+        delta = now_br - ts.astimezone(BRASILIA)
+        hours = delta.total_seconds() / 3600
+        if hours < 4:
+            return (f"{int(hours*60)}min", "#0fa968")
+        if hours < 24:
+            return (f"{round(hours)}h", "#eab308")
+        days = hours / 24
+        if days < 7:
+            return (f"{round(days)}d", "#f97316")
+        return (f"{round(days)}d", "#dc2626")
+
+    def _prio_chip(prio: str) -> str:
+        color, bg = {
+            "alta":  ("#dc2626", "#3a1414"),
+            "media": ("#eab308", "#2a2208"),
+            "baixa": ("#5a6a8a", "#0d1630"),
+        }.get(prio, ("#5a6a8a", "#0d1630"))
+        label = {"alta": "PRIORIDADE ALTA", "media": "PRIORIDADE MÉDIA", "baixa": "PRIORIDADE BAIXA"}.get(prio, prio.upper())
+        return (
+            f'<span style="background:{bg};color:{color};padding:2px 9px;border-radius:10px;'
+            f'font-size:10px;font-weight:700;border:1px solid {color};letter-spacing:.5px">{label}</span>'
+        )
+
+    cards_html = ""
+    from urllib.parse import quote as _uq_sr
+    for c in pendentes:
+        v = c["verdict"]
+        silence_label, silence_color = _fmt_silence(c["last_event_at"])
+        prio_html = _prio_chip(v["priority"])
+        agent_safe = html_mod.escape(c["agent"])
+        client_safe = html_mod.escape(c["client_name"] or c["phone"])
+        phone_safe = html_mod.escape(c["phone"])
+        reason_safe = html_mod.escape(v["reason"])
+        badge = _segment_badge(c["agent"])
+        last_msg = c["msg_tuples"][-1][1] if c["msg_tuples"] else ""
+        last_msg_short = html_mod.escape(last_msg[:200])
+        _conv_link = f"/dashboard/conversa?phone={_uq_sr(c['phone'], safe='')}&canal={_uq_sr(canal, safe='')}"
+        last_ts_br = c["last_event_at"].astimezone(BRASILIA).strftime("%d/%m %H:%M") if c["last_event_at"] else ""
+
+        cards_html += f"""<div style="background:#0d1630;border:1px solid #1a2540;border-left:3px solid {silence_color};border-radius:8px;padding:14px 18px;margin-bottom:10px">
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
+    <a href="{_conv_link}" target="_blank" rel="noopener" style="font-size:14px;font-weight:700;color:#e8ecf1;text-decoration:none;border-bottom:1px dotted #4a5a7a">{client_safe} <span style="font-size:10px;color:#5a6a8a">↗</span></a>
+    {badge}
+    <span style="font-size:11px;color:#8a96aa">com <strong>{agent_safe}</strong></span>
+    {prio_html}
+    <span style="margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:11px;color:{silence_color};font-weight:700">⏱ {silence_label} sem resposta</span>
+  </div>
+  <div style="font-size:11.5px;color:#8a96aa;margin-bottom:6px;font-style:italic">💬 Última msg cliente ({last_ts_br}): "{last_msg_short}"</div>
+  <div style="font-size:12px;color:#c8d4e8;background:#0a0f1a;padding:8px 12px;border-radius:5px;border:1px solid #1a2540">
+    <strong style="color:#86efac">🤖 Análise:</strong> {reason_safe}
+    <span style="font-size:10px;color:#5a6a8a;margin-left:8px">(confiança {v['confidence']}%)</span>
+  </div>
+</div>"""
+
+    if not pendentes:
+        cards_html = (
+            '<div style="background:#0d1630;border:1px solid #1d4d36;border-radius:10px;'
+            'padding:30px;text-align:center;color:#86efac;font-size:13px">'
+            '✅ Nenhuma conversa pendente identificada.</div>'
+        )
+
+    pending_msg = ""
+    if not_yet > 0:
+        pending_msg = (
+            f'<div style="font-size:11.5px;color:#eab308;background:#2a2208;border:1px solid #4a4010;'
+            f'padding:10px 14px;border-radius:6px;margin-bottom:14px">'
+            f'⏳ {not_yet} conversa{"s" if not_yet != 1 else ""} aguardando análise. '
+            f'Recarregue a página em alguns segundos para processar mais (máx {MAX_NEW_ANALYSES} '
+            f'por carregamento para controlar custo do LLM).'
+            f'</div>'
+        )
+
+    no_key_msg = ""
+    if not settings.ANTHROPIC_API_KEY:
+        no_key_msg = (
+            '<div style="background:#3a1414;color:#fca5a5;border:1px solid #5a2424;'
+            'padding:14px 18px;border-radius:8px;margin-bottom:16px;font-size:12.5px">'
+            '⚠ <strong>ANTHROPIC_API_KEY não configurada.</strong> A análise por IA está '
+            'indisponível. Configure a variável de ambiente <code style="background:#5a2424;'
+            'color:#fff;padding:1px 6px;border-radius:3px">ANTHROPIC_API_KEY</code> no Railway '
+            'para ativar a detecção.'
+            '</div>'
+        )
+
+    return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Grampo — Sem Resposta</title>{COMMON_CSS}</head><body>
+{nav}
+<div class="container">
+  <div style="margin-bottom:20px">
+    <div style="font-size:20px;font-weight:700;color:#e8ecf1;margin-bottom:4px">📭 Conversas Sem Resposta</div>
+    <div style="font-size:12px;color:#5a6a8a">
+      Análise automática por IA (Claude) — identifica clientes que aguardam retorno do assessor.
+      Janela: últimos {LOOKBACK_DAYS} dias · silêncio mínimo: {MIN_SILENCE_HOURS}h
+    </div>
+  </div>
+
+  {no_key_msg}
+
+  <div class="kpi-row">
+    <div class="kpi" style="border-top:3px solid #dc2626">
+      <div class="val" style="color:#dc2626">{len(pendentes)}</div>
+      <div class="label">Pendentes · aguardando assessor</div>
+    </div>
+    <div class="kpi" style="border-top:3px solid #0fa968">
+      <div class="val" style="color:#0fa968">{closed_count}</div>
+      <div class="label">Encerradas (verificadas)</div>
+    </div>
+    <div class="kpi" style="border-top:3px solid #5a6a8a">
+      <div class="val">{len(candidates)}</div>
+      <div class="label">Candidatos analisados</div>
+    </div>
+  </div>
+
+  {pending_msg}
+
+  <div style="margin-top:18px">{cards_html}</div>
+</div>
+</body></html>""")
 
 
 @router.get("/dashboard/diagnostico", response_class=HTMLResponse, include_in_schema=False)
