@@ -6154,6 +6154,45 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
     <span style="font-size:10.5px;color:#5a6a8a">Varre o banco inteiro · pula o que já foi avaliado</span>
   </div>"""
 
+    # ── Methodology box: what is evaluated + rubric (collapsible) ────────────
+    criteria_box = """
+  <details style="background:#0d1630;border:1px solid #1a2540;border-radius:10px;padding:0;margin-bottom:24px">
+    <summary style="padding:14px 18px;cursor:pointer;font-size:13px;font-weight:700;color:#e8ecf1;list-style:none;display:flex;align-items:center;gap:8px">
+      <span style="color:#2563eb">ℹ️</span> Como a nota é calculada
+      <span style="margin-left:auto;font-size:11px;color:#5a6a8a;font-weight:500">clique para expandir</span>
+    </summary>
+    <div style="padding:0 18px 18px;border-top:1px solid #1a2540">
+
+      <div style="font-size:11px;color:#8a96aa;margin:14px 0 8px;font-weight:700;letter-spacing:.5px">CRITÉRIOS AVALIADOS (apenas o que está sob controle do assessor)</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px">
+        <div style="font-size:12px;color:#c8d4e8">⏱ <strong>Tempo de resposta</strong> do assessor (silêncio causado pelo cliente não conta)</div>
+        <div style="font-size:12px;color:#c8d4e8">💬 <strong>Clareza e completude</strong> das respostas</div>
+        <div style="font-size:12px;color:#c8d4e8">✅ <strong>Correção técnica</strong> das informações</div>
+        <div style="font-size:12px;color:#c8d4e8">🤝 <strong>Cordialidade</strong> e tom profissional</div>
+        <div style="font-size:12px;color:#c8d4e8">🎯 <strong>Necessidade atendida</strong> — o cliente teve a demanda resolvida</div>
+        <div style="font-size:12px;color:#c8d4e8">🚀 <strong>Proatividade</strong> — antecipar e sugerir próximos passos</div>
+      </div>
+
+      <div style="font-size:11px;color:#8a96aa;margin:18px 0 8px;font-weight:700;letter-spacing:.5px">ESCALA DE NOTAS</div>
+      <div style="display:flex;flex-direction:column;gap:5px">
+        <div style="font-size:12px;color:#c8d4e8"><span style="display:inline-block;width:46px;color:#0fa968;font-weight:700;font-family:monospace">9-10</span> Excelente — rápido, claro, proativo, cliente plenamente atendido</div>
+        <div style="font-size:12px;color:#c8d4e8"><span style="display:inline-block;width:46px;color:#0fa968;font-weight:700;font-family:monospace">7-8</span> Bom — atendeu com qualidade, pequenas oportunidades de melhoria</div>
+        <div style="font-size:12px;color:#c8d4e8"><span style="display:inline-block;width:46px;color:#eab308;font-weight:700;font-family:monospace">5-6</span> Regular — resolveu o essencial, mas com lacunas</div>
+        <div style="font-size:12px;color:#c8d4e8"><span style="display:inline-block;width:46px;color:#f97316;font-weight:700;font-family:monospace">3-4</span> Ruim — falhas claras (dúvida sem resposta, vago, demora própria)</div>
+        <div style="font-size:12px;color:#c8d4e8"><span style="display:inline-block;width:46px;color:#ef4444;font-weight:700;font-family:monospace">0-2</span> Crítico — ignorou o cliente, info errada, rude ou erro de conduta</div>
+      </div>
+
+      <div style="font-size:11px;color:#8a96aa;margin:18px 0 8px;font-weight:700;letter-spacing:.5px">O QUE NÃO ENTRA NA MÉDIA</div>
+      <div style="font-size:12px;color:#8a96aa;line-height:1.6">
+        Conversas que não são atendimento real são marcadas como <strong style="color:#c8d4e8">não avaliáveis</strong> e ficam de fora da nota:<br>
+        • <strong style="color:#c8d4e8">Disparos / templates</strong> sem interação do cliente &nbsp;
+        • <strong style="color:#c8d4e8">Mensagens sociais</strong> (só "oi", "obrigado") &nbsp;
+        • Quando o <strong style="color:#c8d4e8">cliente sumiu</strong>, avaliamos só o que o assessor fez — o silêncio do cliente não penaliza.
+      </div>
+
+    </div>
+  </details>"""
+
     # Progress modal + batch JS (shared by both render paths)
     agent_batch_modal = """
 <div id="ab-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center">
@@ -6229,6 +6268,7 @@ async function startAgentBatch(canal){
     <div style="display:flex;gap:8px">{period_chips}</div>
   </div>
   {agent_eval_box}
+  {criteria_box}
   {no_data}
 </div>
 {agent_batch_modal}
@@ -6375,6 +6415,7 @@ async function startAgentBatch(canal){
   </div>
 
   {agent_eval_box}
+  {criteria_box}
 
   {agent_cards_html}
 
