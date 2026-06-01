@@ -15,7 +15,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote as _url_quote
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Body, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -3891,14 +3891,14 @@ def _upsert_score(db: Session, phone: str, last_event_id: str, canal: str, score
 
 
 @router.post("/dashboard/score-conv", include_in_schema=False)
-async def score_conv_endpoint(request: Request, db: Session = Depends(get_db)):
+def score_conv_endpoint(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
     """Score a single conversation 0-10.  Uses cache: if already scored with
-    the current last_event_id, returns the cached result immediately."""
+    the current last_event_id, returns the cached result immediately.
+    Sync def → runs in threadpool so the blocking LLM/DB work never freezes
+    the event loop (which would stall /health and webhooks)."""
     if not _check_auth(request):
         return JSONResponse({"error": "unauth"}, status_code=401)
-    try:
-        body = await request.json()
-    except Exception:
+    if not isinstance(body, dict):
         return JSONResponse({"error": "bad json"}, status_code=400)
 
     phone = (body.get("phone") or "").strip()
@@ -3971,7 +3971,7 @@ async def score_conv_endpoint(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/dashboard/score-batch", include_in_schema=False)
-async def score_batch_endpoint(request: Request, db: Session = Depends(get_db)):
+def score_batch_endpoint(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
     """Score up to `batch_size` conversations in one request.
 
     Body: { canal, offset, batch_size, days }
@@ -3979,13 +3979,11 @@ async def score_batch_endpoint(request: Request, db: Session = Depends(get_db)):
 
     Intended to be called repeatedly (AJAX polling) until finished=true.
     Already-scored conversations (same last_event_id + score_version) are
-    skipped instantly without an LLM call.
+    skipped instantly without an LLM call. Sync def → threadpool.
     """
     if not _check_auth(request):
         return JSONResponse({"error": "unauth"}, status_code=401)
-    try:
-        body = await request.json()
-    except Exception:
+    if not isinstance(body, dict):
         return JSONResponse({"error": "bad json"}, status_code=400)
 
     canal      = (body.get("canal") or "5519997733651").strip()
@@ -4075,20 +4073,18 @@ async def score_batch_endpoint(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/dashboard/score-agent-batch", include_in_schema=False)
-async def score_agent_batch_endpoint(request: Request, db: Session = Depends(get_db)):
+def score_agent_batch_endpoint(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
     """Score ALL conversations of a single agent across the whole DB history.
 
     Body: { canal, agent, offset, batch_size }
     Returns: { done, total, next_offset, finished, scored_this_call, errors, agent }
 
     Same polling contract as /score-batch but filtered to one agent and with
-    no day window (covers the entire database).
+    no day window (covers the entire database). Sync def → threadpool.
     """
     if not _check_auth(request):
         return JSONResponse({"error": "unauth"}, status_code=401)
-    try:
-        body = await request.json()
-    except Exception:
+    if not isinstance(body, dict):
         return JSONResponse({"error": "bad json"}, status_code=400)
 
     canal      = (body.get("canal") or "5519997733651").strip()
@@ -4183,7 +4179,7 @@ async def score_agent_batch_endpoint(request: Request, db: Session = Depends(get
 
 
 @router.post("/dashboard/cron/score-daily", include_in_schema=False)
-async def cron_score_daily(request: Request, db: Session = Depends(get_db)):
+def cron_score_daily(request: Request, db: Session = Depends(get_db)):
     """Cron endpoint: score all conversations from the last 30 days in batches.
 
     Protected by the DASHBOARD_PASSWORD token sent in the Authorization header
@@ -4269,17 +4265,16 @@ async def cron_score_daily(request: Request, db: Session = Depends(get_db)):
 
 
 @router.post("/dashboard/suggest-reply", include_in_schema=False)
-async def suggest_reply_endpoint(request: Request, db: Session = Depends(get_db)):
+def suggest_reply_endpoint(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
     """Generate a suggested advisor reply for a pending Sem Resposta conversation.
 
     Body: { phone, canal, reason }
     Returns: { suggestion: "..." }
+    Sync def → threadpool (blocking LLM call must not freeze event loop).
     """
     if not _check_auth(request):
         return JSONResponse({"error": "unauth"}, status_code=401)
-    try:
-        body = await request.json()
-    except Exception:
+    if not isinstance(body, dict):
         return JSONResponse({"error": "bad json"}, status_code=400)
 
     phone   = (body.get("phone") or "").strip()
