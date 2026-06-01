@@ -146,11 +146,12 @@ class ConversationScore(Base):
     nota              = Column(Integer, nullable=False)          # 0-10 (-1 = não avaliável)
     tipo              = Column(String(20), nullable=True)        # duas_vias|cliente_sumiu|so_saida|social
     avaliavel         = Column(Integer, nullable=False, default=1)  # 1/0 — conta na média do agente
+    motivo            = Column(String(120), nullable=True)       # motivo do contato (2-5 palavras)
     resumo            = Column(Text,    nullable=True)
     pontos_positivos  = Column(JSON,    nullable=True)           # list[str]
     erros             = Column(JSON,    nullable=True)           # list[str] — falhas concretas
     pontos_melhoria   = Column(JSON,    nullable=True)           # list[str]
-    score_version     = Column(String(16), nullable=False, default="v2")
+    score_version     = Column(String(16), nullable=False, default="v3")
 
     scored_at = Column(
         DateTime(timezone=True),

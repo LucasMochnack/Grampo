@@ -3759,7 +3759,7 @@ async def dismiss_sr_endpoint(request: Request, db: Session = Depends(get_db)):
     return JSONResponse({"ok": True})
 
 
-_SCORE_VERSION = "v2"
+_SCORE_VERSION = "v3"
 _SCORE_SYSTEM = """Você é avaliador sênior de qualidade de atendimento de uma assessoria de \
 investimentos (Alto Valor / XP). Avalie o desempenho do ASSESSOR numa conversa de WhatsApp \
 com um CLIENTE.
@@ -3795,10 +3795,14 @@ pergunta sobre taxa do CDB", "Demorou 2 dias para retornar"
 
 Use frases curtas e PADRONIZADAS (reaproveitáveis entre conversas), não descrições longas.
 
-Responda SOMENTE em JSON, sem texto adicional, sem markdown:
-{"tipo":"duas_vias","avaliavel":true,"nota":8,"resumo":"frase de 1-2 linhas","pontos_positivos":["..."],"erros":["..."],"pontos_melhoria":["..."]}
+O campo "motivo" deve ser o MOTIVO DO CONTATO em 2-5 palavras (o que o cliente queria). \
+Ex: "Cotação de CDB", "Pedido de resgate", "Dúvida sobre rendimento", "Abertura de conta", \
+"Reclamação de taxa". Se for disparo/social, use "Disparo" ou "Social".
 
-Se não avaliável: {"tipo":"so_saida","avaliavel":false,"nota":null,"resumo":"motivo","pontos_positivos":[],"erros":[],"pontos_melhoria":[]}"""
+Responda SOMENTE em JSON, sem texto adicional, sem markdown:
+{"tipo":"duas_vias","avaliavel":true,"nota":8,"motivo":"Cotação de CDB","resumo":"frase de 1-2 linhas","pontos_positivos":["..."],"erros":["..."],"pontos_melhoria":["..."]}
+
+Se não avaliável: {"tipo":"so_saida","avaliavel":false,"nota":null,"motivo":"Disparo","resumo":"motivo","pontos_positivos":[],"erros":[],"pontos_melhoria":[]}"""
 
 
 def _build_transcript(msg_tuples: list) -> str:
@@ -3845,6 +3849,7 @@ def _call_score_llm(transcript: str) -> dict:
         "tipo":             tipo,
         "avaliavel":        avaliavel,
         "nota":             nota,
+        "motivo":           str(data.get("motivo", ""))[:80],
         "resumo":           str(data.get("resumo", ""))[:300],
         "pontos_positivos": [str(x)[:200] for x in (data.get("pontos_positivos") or [])[:5]],
         "erros":            [str(x)[:200] for x in (data.get("erros")            or [])[:5]],
@@ -3862,6 +3867,7 @@ def _upsert_score(db: Session, phone: str, last_event_id: str, canal: str, score
         row.nota             = nota_db
         row.tipo             = scored.get("tipo")
         row.avaliavel        = 1 if scored.get("avaliavel") else 0
+        row.motivo           = scored.get("motivo") or ""
         row.resumo           = scored["resumo"]
         row.pontos_positivos = scored["pontos_positivos"]
         row.erros            = scored.get("erros") or []
@@ -3873,6 +3879,7 @@ def _upsert_score(db: Session, phone: str, last_event_id: str, canal: str, score
             phone=phone, last_event_id=last_event_id, canal=canal,
             nota=nota_db, tipo=scored.get("tipo"),
             avaliavel=1 if scored.get("avaliavel") else 0,
+            motivo=scored.get("motivo") or "",
             resumo=scored["resumo"],
             pontos_positivos=scored["pontos_positivos"],
             erros=scored.get("erros") or [],
@@ -6375,12 +6382,14 @@ async function startAgentBatch(canal){
             _nc = _score_color(sc.nota)
             _conv_url = f"/dashboard/conversa?phone={_uq_av(sc.phone, safe='')}&canal={_uq_av(canal, safe='')}"
             _resumo = html_mod.escape((sc.resumo or "")[:90])
+            _motivo = html_mod.escape((getattr(sc, "motivo", "") or "—")[:60])
             _detail_rows.append(
                 f'<tr onclick="window.open(\'{_conv_url}\',\'_blank\')" '
                 f'style="cursor:pointer;border-bottom:1px solid #111a2e;transition:background .12s" '
                 f'onmouseover="this.style.background=\'#11203a\'" onmouseout="this.style.background=\'\'">'
                 f'<td style="padding:7px 10px;font-size:12px;color:#e8ecf1;font-weight:600">{html_mod.escape(_cli)} '
                 f'<span style="font-size:9px;color:#5a6a8a">↗</span></td>'
+                f'<td style="padding:7px 10px;font-size:11px;color:#93c5fd;white-space:nowrap">{_motivo}</td>'
                 f'<td style="padding:7px 10px;font-size:11px;color:#8a96aa;font-style:italic">{_resumo}</td>'
                 f'<td style="padding:7px 10px;font-family:monospace;font-size:11px;color:#5a6a8a;white-space:nowrap">{_dt_str}</td>'
                 f'<td style="padding:7px 10px;text-align:center;white-space:nowrap">'
@@ -6392,6 +6401,7 @@ async function startAgentBatch(canal){
             '<table style="width:100%;border-collapse:collapse;background:#0b1120;border-radius:8px;overflow:hidden">'
             '<thead><tr>'
             '<th style="padding:7px 10px;text-align:left;font-size:9px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">CLIENTE</th>'
+            '<th style="padding:7px 10px;text-align:left;font-size:9px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">MOTIVO DO CONTATO</th>'
             '<th style="padding:7px 10px;text-align:left;font-size:9px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">RESUMO</th>'
             '<th style="padding:7px 10px;text-align:left;font-size:9px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">DATA</th>'
             '<th style="padding:7px 10px;text-align:center;font-size:9px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">NOTA</th>'
