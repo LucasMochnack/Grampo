@@ -143,11 +143,14 @@ class ConversationScore(Base):
     last_event_id = Column(String(64),  primary_key=True)
     canal         = Column(String(32),  nullable=True)
 
-    nota              = Column(Integer, nullable=False)          # 0-10
+    nota              = Column(Integer, nullable=False)          # 0-10 (-1 = não avaliável)
+    tipo              = Column(String(20), nullable=True)        # duas_vias|cliente_sumiu|so_saida|social
+    avaliavel         = Column(Integer, nullable=False, default=1)  # 1/0 — conta na média do agente
     resumo            = Column(Text,    nullable=True)
     pontos_positivos  = Column(JSON,    nullable=True)           # list[str]
+    erros             = Column(JSON,    nullable=True)           # list[str] — falhas concretas
     pontos_melhoria   = Column(JSON,    nullable=True)           # list[str]
-    score_version     = Column(String(16), nullable=False, default="v1")
+    score_version     = Column(String(16), nullable=False, default="v2")
 
     scored_at = Column(
         DateTime(timezone=True),

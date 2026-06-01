@@ -3759,19 +3759,46 @@ async def dismiss_sr_endpoint(request: Request, db: Session = Depends(get_db)):
     return JSONResponse({"ok": True})
 
 
-_SCORE_VERSION = "v1"
-_SCORE_SYSTEM = """Você é um avaliador de qualidade de atendimento de uma assessoria de investimentos.
-Analise a conversa entre ASSESSOR e CLIENTE e dê uma nota de 0 a 10 para o atendimento do assessor.
+_SCORE_VERSION = "v2"
+_SCORE_SYSTEM = """Você é avaliador sênior de qualidade de atendimento de uma assessoria de \
+investimentos (Alto Valor / XP). Avalie o desempenho do ASSESSOR numa conversa de WhatsApp \
+com um CLIENTE.
 
-Critérios:
-- Tempo de resposta (penalize silêncio longo)
-- Clareza e completude das respostas
+═══════ PASSO 1 — CLASSIFIQUE O TIPO DA CONVERSA ═══════
+- "duas_vias": houve troca real — cliente perguntou/respondeu e assessor interagiu. AVALIÁVEL.
+- "cliente_sumiu": assessor respondeu adequadamente mas o CLIENTE parou de responder. \
+AVALIÁVEL, porém NUNCA penalize o assessor pelo silêncio do cliente — avalie só o que o assessor fez.
+- "so_saida": apenas mensagens do assessor (template, disparo, follow-up) sem o cliente \
+ter interagido de verdade. NÃO AVALIÁVEL (avaliavel=false, nota=null).
+- "social": apenas saudações/agradecimentos sem demanda real. NÃO AVALIÁVEL (avaliavel=false, nota=null).
+
+═══════ PASSO 2 — SE AVALIÁVEL, DÊ UMA NOTA 0-10 ═══════
+Rubrica ancorada:
+- 9-10: Excelente. Respondeu rápido, com clareza e profundidade, proativo, cliente plenamente atendido.
+- 7-8: Bom. Atendeu a necessidade com qualidade, pequenas oportunidades de melhoria.
+- 5-6: Regular. Resolveu o essencial mas com lacunas (demora, resposta incompleta, pouca proatividade).
+- 3-4: Ruim. Falhas claras: deixou dúvida sem resposta, foi vago, demorou muito por culpa própria.
+- 0-2: Crítico. Ignorou o cliente, deu informação errada, foi rude, ou cometeu erro grave de conduta.
+
+Critérios (avalie só o que está sob controle do ASSESSOR):
+- Tempo de resposta do assessor (não conte silêncio causado pelo cliente)
+- Clareza, completude e correção técnica das respostas
 - Cordialidade e tom profissional
-- Se o cliente teve sua necessidade atendida
-- Proatividade do assessor
+- Se a necessidade do cliente foi efetivamente atendida
+- Proatividade (antecipar, sugerir próximos passos)
 
-Responda SOMENTE em JSON, sem texto adicional:
-{"nota": 8, "resumo": "frase de 1-2 linhas resumindo o atendimento", "pontos_positivos": ["item1", "item2"], "pontos_melhoria": ["item1"]}"""
+═══════ PASSO 3 — ESTRUTURE OS APRENDIZADOS ═══════
+- pontos_positivos: o que o assessor fez BEM (frases curtas, objetivas, reaproveitáveis)
+- erros: falhas concretas COMETIDAS nesta conversa (vazio se não houver). Ex: "Não respondeu a \
+pergunta sobre taxa do CDB", "Demorou 2 dias para retornar"
+- pontos_melhoria: sugestões acionáveis para o assessor melhorar (mesmo em notas boas)
+
+Use frases curtas e PADRONIZADAS (reaproveitáveis entre conversas), não descrições longas.
+
+Responda SOMENTE em JSON, sem texto adicional, sem markdown:
+{"tipo":"duas_vias","avaliavel":true,"nota":8,"resumo":"frase de 1-2 linhas","pontos_positivos":["..."],"erros":["..."],"pontos_melhoria":["..."]}
+
+Se não avaliável: {"tipo":"so_saida","avaliavel":false,"nota":null,"resumo":"motivo","pontos_positivos":[],"erros":[],"pontos_melhoria":[]}"""
 
 
 def _build_transcript(msg_tuples: list) -> str:
@@ -3792,19 +3819,36 @@ def _call_score_llm(transcript: str) -> dict:
     client = _anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
     resp = client.messages.create(
         model=settings.ANTHROPIC_MODEL,
-        max_tokens=400,
+        max_tokens=600,
         system=_SCORE_SYSTEM,
         messages=[{"role": "user", "content": f"Avalie a conversa abaixo:\n\n{transcript}"}],
     )
     raw = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
     m = _re.search(r"\{[\s\S]*\}", raw)
     data = json.loads(m.group(0)) if m else {}
-    nota = max(0, min(10, int(data.get("nota", 5))))
+
+    tipo = (data.get("tipo") or "duas_vias").strip().lower()
+    if tipo not in ("duas_vias", "cliente_sumiu", "so_saida", "social"):
+        tipo = "duas_vias"
+    avaliavel = bool(data.get("avaliavel", tipo in ("duas_vias", "cliente_sumiu")))
+
+    raw_nota = data.get("nota")
+    if avaliavel and raw_nota is not None:
+        try:
+            nota = max(0, min(10, int(raw_nota)))
+        except (TypeError, ValueError):
+            nota = None
+    else:
+        nota = None
+
     return {
+        "tipo":             tipo,
+        "avaliavel":        avaliavel,
         "nota":             nota,
         "resumo":           str(data.get("resumo", ""))[:300],
-        "pontos_positivos": [str(x)[:200] for x in (data.get("pontos_positivos") or [])[:4]],
-        "pontos_melhoria":  [str(x)[:200] for x in (data.get("pontos_melhoria")  or [])[:4]],
+        "pontos_positivos": [str(x)[:200] for x in (data.get("pontos_positivos") or [])[:5]],
+        "erros":            [str(x)[:200] for x in (data.get("erros")            or [])[:5]],
+        "pontos_melhoria":  [str(x)[:200] for x in (data.get("pontos_melhoria")  or [])[:5]],
     }
 
 
@@ -3812,18 +3856,26 @@ def _upsert_score(db: Session, phone: str, last_event_id: str, canal: str, score
     from app.models import ConversationScore as _CS
     row = db.get(_CS, (phone, last_event_id))
     now_utc = datetime.now(timezone.utc)
+    # nota is non-nullable in DB; store -1 sentinel for non-evaluable convs
+    nota_db = scored["nota"] if scored.get("nota") is not None else -1
     if row:
-        row.nota             = scored["nota"]
+        row.nota             = nota_db
+        row.tipo             = scored.get("tipo")
+        row.avaliavel        = 1 if scored.get("avaliavel") else 0
         row.resumo           = scored["resumo"]
         row.pontos_positivos = scored["pontos_positivos"]
+        row.erros            = scored.get("erros") or []
         row.pontos_melhoria  = scored["pontos_melhoria"]
         row.score_version    = _SCORE_VERSION
         row.scored_at        = now_utc
     else:
         row = _CS(
             phone=phone, last_event_id=last_event_id, canal=canal,
-            nota=scored["nota"], resumo=scored["resumo"],
+            nota=nota_db, tipo=scored.get("tipo"),
+            avaliavel=1 if scored.get("avaliavel") else 0,
+            resumo=scored["resumo"],
             pontos_positivos=scored["pontos_positivos"],
+            erros=scored.get("erros") or [],
             pontos_melhoria=scored["pontos_melhoria"],
             score_version=_SCORE_VERSION, scored_at=now_utc,
         )
@@ -5917,9 +5969,12 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
     cnm = get_client_names(db)
     db.close()
 
-    # Group by agent
+    # Group by agent. Only "avaliável" conversations count toward the score
+    # average (broadcasts / social-only convs are excluded — they would
+    # otherwise drag the average down unfairly).
     from collections import defaultdict
-    agent_scores: dict[str, list] = defaultdict(list)
+    agent_scores: dict[str, list] = defaultdict(list)   # evaluable only
+    agent_skipped: dict[str, int] = defaultdict(int)    # non-evaluable count
     for s in scores:
         phone  = s.phone
         agent  = cam.get(phone) or "Sem atendente"
@@ -5927,7 +5982,12 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
             continue
         if not _user_sees(access, agent):
             continue
-        agent_scores[agent].append(s)
+        # avaliavel may be None on legacy v1 rows → treat as evaluable if nota>=0
+        _is_eval = (getattr(s, "avaliavel", 1) in (1, None)) and (s.nota is not None and s.nota >= 0)
+        if _is_eval:
+            agent_scores[agent].append(s)
+        else:
+            agent_skipped[agent] += 1
 
     is_admin = (access or {}).get("role") == "admin"
     nav = _nav_html("avaliacao", canal=canal, is_admin=is_admin, title="Avaliação Agentes")
@@ -5993,23 +6053,39 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
         total = len(slist)
         badge_html = _segment_badge(agent)
 
-        # Aggregate all points
+        # Aggregate points. Use case-insensitive normalized keys so slight
+        # phrasing differences ("Resposta rápida" / "respondeu rápido") still
+        # cluster together; keep the most common original spelling for display.
         from collections import Counter
-        pos_counter: Counter = Counter()
-        mel_counter: Counter = Counter()
-        erros: list[str] = []  # scored <= 4
 
-        for s in slist:
-            for p in (s.pontos_positivos or []):
-                pos_counter[p.strip()] += 1
-            for m in (s.pontos_melhoria or []):
-                mel_counter[m.strip()] += 1
-            if s.nota <= 4 and s.resumo:
-                erros.append(s.resumo.strip())
+        def _norm(s: str) -> str:
+            return _re.sub(r"\s+", " ", s.strip().lower())
 
-        top_pos = [p for p, _ in pos_counter.most_common(5)]
-        top_mel = [m for m, _ in mel_counter.most_common(5)]
-        top_err = list(dict.fromkeys(erros))[:4]  # deduplicated
+        def _aggregate(field: str, top_n: int) -> list[str]:
+            norm_count: Counter = Counter()
+            display: dict[str, str] = {}
+            for sc in slist:
+                for item in (getattr(sc, field, None) or []):
+                    item = (item or "").strip()
+                    if not item:
+                        continue
+                    k = _norm(item)
+                    norm_count[k] += 1
+                    display.setdefault(k, item)
+            return [
+                (f"{display[k]} ({c}×)" if c > 1 else display[k])
+                for k, c in norm_count.most_common(top_n)
+            ]
+
+        top_pos = _aggregate("pontos_positivos", 5)
+        top_mel = _aggregate("pontos_melhoria", 5)
+        # Errors come from the structured `erros` field (v2). Fall back to
+        # low-score resumos for legacy v1 rows that have no `erros`.
+        top_err = _aggregate("erros", 5)
+        if not top_err:
+            _legacy = [s.resumo.strip() for s in slist
+                       if s.nota is not None and 0 <= s.nota <= 4 and s.resumo]
+            top_err = list(dict.fromkeys(_legacy))[:4]
 
         # Score distribution bar
         dist = [0]*11
@@ -6047,7 +6123,7 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
         <span style="font-size:16px;font-weight:700;color:#e8ecf1">{html_mod.escape(agent)}</span>{badge_html}
       </div>
-      <div style="font-size:11px;color:#5a6a8a">{total} conversa{"s" if total != 1 else ""} avaliada{"s" if total != 1 else ""} · últimos {days} dias</div>
+      <div style="font-size:11px;color:#5a6a8a">{total} atendimento{"s" if total != 1 else ""} avaliado{"s" if total != 1 else ""} · últimos {days} dias{f' · {agent_skipped.get(agent,0)} disparo(s)/social ignorado(s)' if agent_skipped.get(agent,0) else ''}</div>
     </div>
     <div style="margin-left:auto;text-align:center">
       {_score_badge(avg)}
