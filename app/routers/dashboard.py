@@ -6051,40 +6051,651 @@ function openSrConv(id, phone, canal, lastInId) {{
 </body></html>""")
 
 
+_AVAL_HTML = r'''<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Avaliação de Agentes — Alto Valor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+
+:root{
+  --bg:#080c16;
+  --sidebar:#0b1120;
+  --panel:#101a30;
+  --panel-2:#142038;
+  --panel-3:#18243f;
+  --line:rgba(150,170,210,.10);
+  --line-2:rgba(150,170,210,.18);
+  --text:#e9eefb;
+  --muted:#8995b3;
+  --muted-2:#5e6b8a;
+  --accent:#16c784;
+  --gold:#f5b400;
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+  --sans:'IBM Plex Sans',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg);color:var(--text);font-family:var(--sans);
+  font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;
+  display:grid;grid-template-columns:236px 1fr;
+}
+a{color:inherit;text-decoration:none}
+::selection{background:var(--accent);color:#04130d}
+.sidebar{
+  background:var(--sidebar);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;position:sticky;top:0;height:100vh;
+}
+.brand{padding:22px 22px 18px;display:flex;align-items:center;gap:11px;border-bottom:1px solid var(--line)}
+.brand-mark{width:30px;height:30px;border:1.5px solid var(--text);display:grid;place-items:center;font-family:var(--mono);font-weight:600;font-size:15px;flex:none}
+.brand-name{font-family:var(--mono);font-weight:600;letter-spacing:.14em;font-size:13px}
+.brand-sub{font-family:var(--mono);font-size:9px;letter-spacing:.34em;color:var(--muted-2);margin-top:2px}
+.nav{flex:1;overflow:auto;padding:16px 12px}
+.nav-group{font-family:var(--mono);font-size:10px;letter-spacing:.22em;color:var(--muted-2);padding:16px 12px 8px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:7px;color:var(--muted);font-size:13px;cursor:pointer;transition:.13s}
+.nav-item:hover{background:var(--panel);color:var(--text)}
+.nav-item.active{background:var(--accent);color:#04130d;font-weight:600}
+.nav-item .dot{width:5px;height:5px;border-radius:50%;background:currentColor;opacity:.5;flex:none}
+.nav-item.active .dot{opacity:1}
+.side-foot{border-top:1px solid var(--line);padding:14px 18px;display:flex;align-items:center;gap:11px}
+.side-foot .av{width:32px;height:32px;border-radius:50%;background:var(--accent);color:#04130d;display:grid;place-items:center;font-family:var(--mono);font-weight:600;font-size:12px}
+.side-foot .nm{font-size:13px;font-weight:600}
+.side-foot .lk{font-size:11px;color:var(--muted-2)}
+.main{min-width:0;display:flex;flex-direction:column}
+.topbar{
+  position:sticky;top:0;z-index:20;background:rgba(8,12,22,.86);backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line);padding:14px 32px;
+  display:flex;align-items:center;gap:18px;
+}
+.topbar h1{font-size:15px;font-weight:600;letter-spacing:.01em}
+.topbar .spacer{flex:1}
+.ds-select{
+  font-family:var(--mono);font-size:12px;background:var(--panel);color:var(--text);
+  border:1px solid var(--line-2);border-radius:8px;padding:7px 30px 7px 12px;cursor:pointer;
+  appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238995b3' stroke-width='1.4' fill='none'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 11px center;
+}
+.upd{font-family:var(--mono);font-size:11px;color:var(--muted-2);display:flex;align-items:center;gap:8px}
+.upd b{color:var(--muted);font-weight:500}
+.refresh{width:30px;height:30px;border:1px solid var(--line-2);background:var(--panel);border-radius:8px;color:var(--muted);cursor:pointer;font-size:14px}
+.refresh:hover{color:var(--accent);border-color:var(--accent)}
+.content{padding:28px 32px 80px;max-width:1280px;width:100%;margin:0 auto}
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:22px}
+.page-title{display:flex;align-items:center;gap:12px;font-size:25px;font-weight:700;letter-spacing:-.01em}
+.page-title .star{color:var(--gold);font-size:21px}
+.page-sub{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:8px}
+.page-sub b{color:var(--text)}
+.seg{display:inline-flex;background:var(--panel);border:1px solid var(--line-2);border-radius:9px;padding:3px}
+.seg button{font-family:var(--mono);font-size:12px;color:var(--muted);background:none;border:none;padding:7px 14px;border-radius:6px;cursor:pointer;transition:.12s}
+.seg button.on{background:var(--accent);color:#04130d;font-weight:600}
+.calc{background:var(--panel);border:1px solid var(--line);border-radius:12px;margin-bottom:18px;overflow:hidden}
+.calc-head{display:flex;align-items:center;gap:11px;padding:14px 18px;cursor:pointer;font-size:13px;font-weight:600}
+.calc-head .ico{width:20px;height:20px;border-radius:5px;background:#1d6fff22;color:#5b9bff;display:grid;place-items:center;font-family:var(--mono);font-size:12px;flex:none}
+.calc-head .arr{margin-left:auto;color:var(--muted-2);font-family:var(--mono);font-size:12px;transition:.15s}
+.calc.open .calc-head .arr{transform:rotate(90deg)}
+.calc-body{display:none;padding:0 18px 18px 49px;color:var(--muted);font-size:13px;line-height:1.65}
+.calc.open .calc-body{display:block}
+.calc-body code{font-family:var(--mono);color:var(--accent);background:#16c78415;padding:1px 6px;border-radius:4px;font-size:12px}
+.panorama{
+  display:grid;grid-template-columns:1fr 1.15fr 1.5fr;gap:1px;background:var(--line);
+  border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-bottom:24px;
+}
+.panorama>div{background:var(--panel);padding:20px 22px}
+.pano-left{display:flex;flex-direction:column;gap:18px}
+.pano-gauge{display:flex;flex-direction:column;gap:2px}
+.gauge-num{font-family:var(--mono);font-size:46px;font-weight:600;line-height:1}
+.gauge-num small{font-size:18px;color:var(--muted-2);font-weight:400}
+.gauge-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.pano-stats{display:flex;gap:26px;margin-top:auto}
+.pstat-num{font-family:var(--mono);font-size:24px;font-weight:600;display:block;line-height:1}
+.pstat-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em}
+.ag-section-label{font-family:var(--mono);font-size:10px;letter-spacing:.2em;color:var(--muted-2);text-transform:uppercase;margin-bottom:14px}
+.pano-buckets .bk{display:grid;grid-template-columns:auto 26px 1fr;align-items:center;gap:9px;margin-bottom:11px}
+.bk-dot{width:8px;height:8px;border-radius:2px}
+.bk-n{font-family:var(--mono);font-weight:600;font-size:14px;text-align:right}
+.bk-lbl{font-size:12px;color:var(--muted);grid-column:3;grid-row:1}
+.bk-bar{grid-column:2 / 4;grid-row:2;height:4px;background:var(--panel-3);border-radius:3px;overflow:hidden;margin-top:-4px}
+.bk-bar i{display:block;height:100%;border-radius:3px}
+.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+.search{position:relative;flex:1;min-width:220px;max-width:340px}
+.search input{
+  width:100%;background:var(--panel);border:1px solid var(--line-2);border-radius:9px;
+  color:var(--text);font-family:var(--sans);font-size:13px;padding:9px 12px 9px 34px;
+}
+.search input::placeholder{color:var(--muted-2)}
+.search input:focus{outline:none;border-color:var(--accent)}
+.search svg{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--muted-2)}
+.filters{display:inline-flex;background:var(--panel);border:1px solid var(--line-2);border-radius:9px;padding:3px}
+.filters button{font-family:var(--mono);font-size:11px;color:var(--muted);background:none;border:none;padding:7px 12px;border-radius:6px;cursor:pointer;transition:.12s;white-space:nowrap}
+.filters button.on{background:var(--panel-3);color:var(--text);font-weight:600}
+.sort-sel{
+  font-family:var(--mono);font-size:12px;background:var(--panel);color:var(--text);
+  border:1px solid var(--line-2);border-radius:9px;padding:8px 30px 8px 12px;cursor:pointer;appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238995b3' stroke-width='1.4' fill='none'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 11px center;
+}
+.tool-btn{font-family:var(--mono);font-size:11px;color:var(--muted);background:var(--panel);border:1px solid var(--line-2);border-radius:9px;padding:8px 13px;cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:.12s}
+.tool-btn:hover{color:var(--text);border-color:var(--line-2)}
+.tool-btn .ti{color:var(--muted-2)}
+.result-count{font-family:var(--mono);font-size:11px;color:var(--muted-2);margin-left:auto}
+.agents{display:flex;flex-direction:column;gap:12px}
+.agent-card{
+  background:var(--panel);border:1px solid var(--line);border-radius:13px;overflow:hidden;
+  transition:border-color .15s;position:relative;
+}
+.agent-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--sc);opacity:.0;transition:.15s}
+.agent-card:hover{border-color:var(--line-2)}
+.agent-card.is-open{border-color:var(--line-2)}
+.agent-card.is-open::before{opacity:.9}
+.ag-head{
+  width:100%;background:none;border:none;cursor:pointer;color:inherit;text-align:left;
+  display:grid;grid-template-columns:34px 44px minmax(180px,1fr) 200px auto 22px;
+  align-items:center;gap:16px;padding:16px 20px;
+}
+.ag-rank{font-family:var(--mono);font-size:13px;color:var(--muted-2);font-weight:500}
+.ag-avatar{width:40px;height:40px;border-radius:50%;border:1px solid;display:grid;place-items:center;font-family:var(--mono);font-weight:600;font-size:14px}
+.ag-ident{min-width:0}
+.ag-nameline{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.ag-name{font-size:15px;font-weight:600;letter-spacing:-.005em}
+.ag-meta{font-family:var(--mono);font-size:11px;color:var(--muted-2);margin-top:3px;display:block}
+.ag-hist{width:200px}
+.ag-score{text-align:right;display:flex;flex-direction:column;align-items:flex-end}
+.ag-score-num{font-family:var(--mono);font-size:30px;font-weight:600;line-height:1}
+.ag-score-num small{font-size:13px;color:var(--muted-2);font-weight:400}
+.ag-score-lbl{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted-2);margin-top:3px}
+.ag-chevron{color:var(--muted-2);font-size:13px;justify-self:end}
+.badge{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;padding:3px 8px;border-radius:5px;white-space:nowrap}
+.tier-alta{background:#f5b40020;color:#f5c542;border:1px solid #f5b40040}
+.tier-ondemand{background:#8b5cf622;color:#a78bfa;border:1px solid #8b5cf640}
+.tier-externo{background:#3b82f622;color:#7cb0ff;border:1px solid #3b82f640}
+.tier-interno{background:#64748b22;color:#9fb0c9;border:1px solid #64748b40}
+.ag-glimpse{display:flex;gap:10px;padding:0 20px 15px 94px;flex-wrap:wrap}
+.gl{font-size:12px;color:var(--muted);display:flex;align-items:flex-start;gap:7px;max-width:48%;line-height:1.4}
+.gl i{font-style:normal;font-family:var(--mono);font-weight:700;flex:none;margin-top:1px}
+.gl-pos i{color:var(--accent)}
+.gl-neg i{color:#f0606a}
+body[data-density="compact"] .ag-glimpse{display:none}
+.histogram{width:100%}
+.histogram.mini .hbars{height:34px}
+.histogram.mini .haxis{display:none}
+.hbars{display:flex;align-items:flex-end;gap:3px;height:34px}
+.hbar-col{flex:1;display:flex;align-items:flex-end;height:100%}
+.hbar-track{width:100%;height:100%;display:flex;align-items:flex-end;background:linear-gradient(var(--line),transparent);border-radius:2px}
+.hbar{width:100%;border-radius:2px 2px 0 0;min-height:3px}
+.histogram.full .hbars{height:80px;gap:5px}
+.haxis{position:relative;height:16px;margin-top:6px;border-top:1px solid var(--line)}
+.haxis span{position:absolute;top:5px;transform:translateX(-50%);font-family:var(--mono);font-size:9px;color:var(--muted-2)}
+.ag-body{padding:6px 20px 20px;border-top:1px solid var(--line);margin-top:2px}
+.ag-dist-full{max-width:520px;margin:18px 0 22px}
+.insights{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.insight{border-radius:11px;padding:15px 16px;border:1px solid}
+.insight-pos{background:#16c7840a;border-color:#16c78430}
+.insight-err{background:#f0606a0c;border-color:#f0606a33}
+.insight-imp{background:#f5b4000a;border-color:#f5b40030}
+.insight-head{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10px;letter-spacing:.13em;text-transform:uppercase;font-weight:600;margin-bottom:13px}
+.insight-pos .insight-head{color:#3ddc97}
+.insight-err .insight-head{color:#f5757f}
+.insight-imp .insight-head{color:#f5c542}
+.insight-ico{width:17px;height:17px;border-radius:4px;display:grid;place-items:center;font-size:11px}
+.insight-pos .insight-ico{background:#16c78433;color:#3ddc97}
+.insight-err .insight-ico{background:#f0606a33;color:#f5757f}
+.insight-imp .insight-ico{background:#f5b40033;color:#f5c542}
+.insight-count{margin-left:auto;background:rgba(255,255,255,.06);color:var(--muted);padding:1px 7px;border-radius:20px;font-size:10px;letter-spacing:0}
+.insight ul{list-style:none;display:flex;flex-direction:column;gap:9px}
+.insight li{font-size:12.5px;line-height:1.5;color:#c6cee0;padding-left:15px;position:relative;text-wrap:pretty}
+.insight li::before{content:'';position:absolute;left:0;top:7px;width:5px;height:5px;border-radius:50%}
+.insight-pos li::before{background:#3ddc97}
+.insight-err li::before{background:#f5757f}
+.insight-imp li::before{background:#f5c542}
+.insight-empty{color:var(--muted-2);font-style:italic}
+.insight-empty::before{display:none!important}
+.atend-toggle{margin-top:18px;font-family:var(--mono);font-size:12px;color:var(--accent);background:#16c78410;border:1px solid #16c78430;border-radius:8px;padding:9px 14px;cursor:pointer;transition:.12s}
+.atend-toggle:hover{background:#16c78420}
+.atend-wrap{margin-top:14px;border:1px solid var(--line);border-radius:11px;overflow:hidden}
+.atend-bar{display:flex;align-items:center;justify-content:space-between;padding:11px 16px;background:var(--panel-2);border-bottom:1px solid var(--line)}
+.atend-title{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.atend-meta{font-family:var(--mono);font-size:11px;color:var(--muted-2)}
+.atend-table{width:100%;border-collapse:collapse;font-size:12.5px}
+.atend-table th{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted-2);
+  text-align:left;padding:10px 16px;background:var(--panel-2);position:sticky;top:0;font-weight:500;
+}
+.atend-table th.th-nota,.atend-table .t-nota{text-align:center}
+.atend-table td{padding:11px 16px;border-top:1px solid var(--line);vertical-align:top;color:#c6cee0}
+.atend-table tbody tr:hover{background:var(--panel-2)}
+.t-cliente{font-weight:600;color:var(--text);white-space:nowrap}
+.t-motivo{width:24%}
+.t-link{color:#7cb0ff}
+.t-link:hover{text-decoration:underline}
+.t-resumo{color:var(--muted);width:40%;text-wrap:pretty}
+.t-data{font-family:var(--mono);font-size:11px;color:var(--muted-2);white-space:nowrap}
+.t-empty{color:var(--muted-2)}
+.nota-chip{font-family:var(--mono);font-weight:600;font-size:13px;border:1px solid;border-radius:6px;padding:2px 9px;display:inline-block;min-width:30px;text-align:center}
+.empty-state{padding:60px;text-align:center;color:var(--muted-2);font-family:var(--mono);font-size:13px}
+body[data-density="compact"] .ag-head{padding:11px 20px;gap:14px}
+body[data-density="compact"] .ag-avatar{width:34px;height:34px}
+body[data-density="compact"] .ag-score-num{font-size:25px}
+body[data-density="compact"] .agents{gap:8px}
+@media(max-width:1080px){
+  body{grid-template-columns:1fr}
+  .sidebar{display:none}
+  .panorama{grid-template-columns:1fr}
+  .ag-head{grid-template-columns:28px 40px 1fr auto 20px}
+  .ag-hist{display:none}
+  .insights{grid-template-columns:1fr}
+  .ag-glimpse{padding-left:20px}
+}
+
+.seg .segbtn{font-family:var(--mono);font-size:12px;color:var(--muted);padding:7px 14px;border-radius:6px;cursor:pointer;transition:.12s;text-decoration:none;display:inline-block}
+.seg .segbtn.on{background:var(--accent);color:#04130d;font-weight:600}
+</style>
+</head>
+<body data-density="comfortable">
+<aside class="sidebar">
+  <div class="brand">
+    <div class="brand-mark">A</div>
+    <div>
+      <div class="brand-name">ALTOVALOR</div>
+      <div class="brand-sub">GRAMPO</div>
+    </div>
+  </div>
+  <nav class="nav">__NAV_LINKS__</nav>
+  <div class="side-foot">
+    <div class="av">AV</div>
+    <div>
+      <div class="nm">Gestor</div>
+      <a class="lk" href="/dashboard/logout">Sair</a>
+    </div>
+  </div>
+</aside>
+<div class="main">
+  <header class="topbar">
+    <h1>Avaliação Agentes</h1>
+    <div class="spacer"></div>
+    <select class="ds-select" id="dsSel">__DS_OPTIONS__</select>
+    <div class="upd">Atualizado <b id="updTime">__UPD_TIME__</b></div>
+    <button class="refresh" title="Atualizar" onclick="location.reload()">&#8635;</button>
+  </header>
+  <div class="content">
+    <div class="page-head">
+      <div>
+        <div class="page-title"><span class="star">&#9733;</span>Avaliação de Agentes</div>
+        <div class="page-sub">Análise automática de qualidade do atendimento por agente, baseada nas conversas avaliadas no período.</div>
+      </div>
+      <div class="seg">__PERIOD_SEG__</div>
+    </div>
+    <div class="calc" id="calcBox">
+      <div class="calc-head">
+        <span class="ico">i</span>Como a nota é calculada
+        <span class="arr">&#9656;</span>
+      </div>
+      <div class="calc-body">
+        Cada conversa avaliada recebe uma nota de <code>0</code> a <code>10</code> combinando quatro dimensões: <b>responsividade</b> (tempo de resposta e follow-up), <b>resolução</b> (a necessidade do cliente foi atendida?), <b>clareza</b> (comunicação objetiva e sem ruído) e <b>cordialidade</b> (tom profissional e empático). A <b>média do agente</b> é ponderada pelo número de atendimentos no período. Disparos automáticos e mensagens puramente sociais são ignorados no cálculo.
+      </div>
+    </div>
+    <div id="panorama"></div>
+    <div class="toolbar">
+      <label class="search">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="searchInput" type="text" placeholder="Buscar agente..." />
+      </label>
+      <div class="filters">
+        <button data-tier="all" class="on">Todos</button>
+        <button data-tier="alta-renda">Alta Renda</button>
+        <button data-tier="on-demand">On Demand</button>
+        <button data-tier="externo">Externo</button>
+        <button data-tier="interno">Interno</button>
+      </div>
+      <select class="sort-sel" id="sortSel">
+        <option value="score-desc">Nota ↓</option>
+        <option value="score-asc">Nota ↑</option>
+        <option value="atend-desc">Mais atendimentos</option>
+        <option value="name-asc">Nome A–Z</option>
+      </select>
+      <button class="tool-btn" id="densityBtn"><span class="ti">&#8691;</span> <span>Confortável</span></button>
+      <button class="tool-btn" id="expandBtn"><span class="ti">&#10530;</span> <span>Expandir todos</span></button>
+      <span class="result-count" id="resultCount"></span>
+    </div>
+    <div class="agents" id="agents"></div>
+  </div>
+</div>
+<script>
+window.AGENTS = __AGENTS_JSON__;
+window.META = __META_JSON__;
+</script>
+<script>
+/* Avaliação de Agentes — render + interações */
+(function () {
+  'use strict';
+
+  var TIER = {
+    'alta-renda': { label: 'Alta Renda', cls: 'tier-alta' },
+    'on-demand':  { label: 'On Demand', cls: 'tier-ondemand' },
+    'externo':    { label: 'Externo', cls: 'tier-externo' },
+    'interno':    { label: 'Interno', cls: 'tier-interno' },
+  };
+
+  var state = {
+    period: '7',
+    tier: 'all',
+    sort: 'score-desc',
+    query: '',
+    density: 'comfortable',
+    expanded: {},
+    showTable: {},
+  };
+
+  function hue(n) { return Math.max(0, Math.min(130, n * 12.5)); }
+  function noteColor(n) { return 'hsl(' + hue(n) + ' 68% 54%)'; }
+  function scoreColor(s) { return 'hsl(' + hue(s) + ' 70% 56%)'; }
+  function faixa(s) {
+    if (s < 4) return { key: 'critico', label: 'Crítico', color: 'hsl(2 70% 56%)' };
+    if (s < 6) return { key: 'atencao', label: 'Atenção', color: 'hsl(32 78% 54%)' };
+    if (s < 8) return { key: 'bom', label: 'Bom', color: 'hsl(78 60% 52%)' };
+    return { key: 'excelente', label: 'Excelente', color: 'hsl(140 62% 50%)' };
+  }
+  function initials(name) {
+    var p = name.trim().split(/\s+/);
+    return (p[0][0] + (p.length > 1 ? p[p.length - 1][0] : '')).toUpperCase();
+  }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+  function histogram(dist, variant) {
+    var max = Math.max.apply(null, dist) || 1;
+    var bars = '';
+    var labels = '';
+    for (var n = 0; n <= 10; n++) {
+      var h = dist[n] ? (12 + (dist[n] / max) * 100) : 0;
+      bars += '<div class="hbar-col">' +
+        '<div class="hbar-track">' +
+          (dist[n] ? '<div class="hbar" style="height:' + h + '%;background:' + noteColor(n) + '" title="Nota ' + n + ': ' + dist[n] + '"></div>' : '') +
+        '</div></div>';
+      if (n % 2 === 0 || variant === 'full') labels += '<span style="left:' + (n / 10 * 100) + '%">' + n + '</span>';
+    }
+    return '<div class="histogram ' + (variant || '') + '">' +
+      '<div class="hbars">' + bars + '</div>' +
+      '<div class="haxis">' + labels + '</div>' +
+    '</div>';
+  }
+
+  function insightCol(kind, title, icon, items) {
+    var lis = items.length
+      ? items.map(function (t) { return '<li>' + esc(t) + '</li>'; }).join('')
+      : '<li class="insight-empty">Nenhum registrado</li>';
+    return '<div class="insight insight-' + kind + '">' +
+      '<div class="insight-head"><span class="insight-ico">' + icon + '</span>' + title +
+        '<span class="insight-count">' + items.length + '</span></div>' +
+      '<ul>' + lis + '</ul>' +
+    '</div>';
+  }
+
+  function atendimentos(agent) {
+    var list = agent.atend || [];
+    var rows = '';
+    list.forEach(function (r) {
+      var nota = r.nota;
+      var motivo = (!r.motivo || r.motivo === '—')
+        ? '<span class="t-empty">—</span>' : esc(r.motivo);
+      var cli = r.url
+        ? '<a class="t-link" href="' + r.url + '" target="_blank" rel="noopener">' + esc(r.cliente) + ' ↗</a>'
+        : esc(r.cliente);
+      rows += '<tr>' +
+        '<td class="t-cliente">' + cli + '</td>' +
+        '<td class="t-motivo">' + motivo + '</td>' +
+        '<td class="t-resumo">' + (r.resumo ? esc(r.resumo) : '<span class="t-empty">—</span>') + '</td>' +
+        '<td class="t-data">' + esc(r.data) + '</td>' +
+        '<td class="t-nota"><span class="nota-chip" style="color:' + noteColor(nota) + ';border-color:' + noteColor(nota) + '33">' + nota + '</span></td>' +
+      '</tr>';
+    });
+    if (!rows) rows = '<tr><td colspan="5" class="t-empty" style="padding:18px 16px">Nenhum atendimento avaliado.</td></tr>';
+    return '<div class="atend-wrap">' +
+      '<div class="atend-bar">' +
+        '<span class="atend-title">Atendimentos avaliados</span>' +
+        '<span class="atend-meta">mostrando ' + list.length + ' de ' + agent.atendimentos + '</span>' +
+      '</div>' +
+      '<div style="overflow:auto;max-height:480px">' +
+      '<table class="atend-table"><thead><tr>' +
+        '<th>Cliente</th><th>Motivo do contato</th><th>Resumo</th><th>Data</th><th class="th-nota">Nota</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '</div>';
+  }
+
+  function agentCard(agent, rank) {
+    var t = TIER[agent.tier];
+    var sc = scoreColor(agent.score);
+    var open = !!state.expanded[agent.name];
+    var top = agent.positivos[0];
+    var issue = agent.erros[0];
+
+    var head =
+      '<button class="ag-head" data-name="' + esc(agent.name) + '">' +
+        '<span class="ag-rank">' + (rank < 10 ? '0' : '') + rank + '</span>' +
+        '<span class="ag-avatar" style="background:' + sc + '22;color:' + sc + ';border-color:' + sc + '55">' + initials(agent.name) + '</span>' +
+        '<span class="ag-ident">' +
+          '<span class="ag-nameline"><span class="ag-name">' + esc(agent.name) + '</span>' +
+            '<span class="badge ' + t.cls + '">' + t.label + '</span></span>' +
+          '<span class="ag-meta">' + agent.atendimentos + ' atendimentos · últimos ' + state.period + ' dias' +
+            (agent.ignorados ? ' · ' + agent.ignorados + ' ignorados' : '') + '</span>' +
+        '</span>' +
+        '<span class="ag-hist">' + histogram(agent.dist, 'mini') + '</span>' +
+        '<span class="ag-score">' +
+          '<span class="ag-score-num" style="color:' + sc + '">' + agent.score.toFixed(1) + '<small>/10</small></span>' +
+          '<span class="ag-score-lbl">média</span>' +
+        '</span>' +
+        '<span class="ag-chevron">' + (open ? '▾' : '▸') + '</span>' +
+      '</button>';
+
+    var glimpse = !open ?
+      '<div class="ag-glimpse">' +
+        (top ? '<span class="gl gl-pos"><i>✓</i>' + esc(top) + '</span>' : '') +
+        (issue ? '<span class="gl gl-neg"><i>✕</i>' + esc(issue) + '</span>' : '') +
+      '</div>' : '';
+
+    var body = open ?
+      '<div class="ag-body">' +
+        '<div class="ag-dist-full">' +
+          '<div class="ag-section-label">Distribuição de notas</div>' +
+          histogram(agent.dist, 'full') +
+        '</div>' +
+        '<div class="insights">' +
+          insightCol('pos', 'Pontos positivos', '✓', agent.positivos) +
+          insightCol('err', 'Erros identificados', '!', agent.erros) +
+          insightCol('imp', 'Pontos de melhoria', '→', agent.melhorias) +
+        '</div>' +
+        '<button class="atend-toggle" data-table="' + esc(agent.name) + '">' +
+          (state.showTable[agent.name] ? '▾ Ocultar atendimentos' : '▸ Ver todos os ' + agent.atendimentos + ' atendimentos') +
+        '</button>' +
+        (state.showTable[agent.name] ? atendimentos(agent) : '') +
+      '</div>' : '';
+
+    return '<div class="agent-card faixa-' + faixa(agent.score).key + (open ? ' is-open' : '') + '" style="--sc:' + sc + '">' +
+      head + glimpse + body +
+    '</div>';
+  }
+
+  function panorama(list) {
+    var agg = new Array(11).fill(0);
+    list.forEach(function (a) { a.dist.forEach(function (v, i) { agg[i] += v; }); });
+    var buckets = { critico: 0, atencao: 0, bom: 0, excelente: 0 };
+    list.forEach(function (a) { buckets[faixa(a.score).key]++; });
+    var totalConv = list.reduce(function (s, a) { return s + a.atendimentos; }, 0);
+    var media = list.length ? (list.reduce(function (s, a) { return s + a.score * a.atendimentos; }, 0) / totalConv) : 0;
+
+    function stat(num, label, color) {
+      return '<div class="pstat"><span class="pstat-num"' + (color ? ' style="color:' + color + '"' : '') + '>' + num + '</span><span class="pstat-lbl">' + label + '</span></div>';
+    }
+    function bucket(key, label, n) {
+      var f = { critico: 'hsl(2 70% 56%)', atencao: 'hsl(32 78% 54%)', bom: 'hsl(78 60% 52%)', excelente: 'hsl(140 62% 50%)' };
+      var pct = list.length ? Math.round(n / list.length * 100) : 0;
+      return '<div class="bk"><span class="bk-dot" style="background:' + f[key] + '"></span>' +
+        '<span class="bk-n">' + n + '</span><span class="bk-lbl">' + label + '</span>' +
+        '<span class="bk-bar"><i style="width:' + pct + '%;background:' + f[key] + '"></i></span></div>';
+    }
+
+    return '<section class="panorama">' +
+      '<div class="pano-left">' +
+        '<div class="pano-gauge" style="--mc:' + scoreColor(media) + '">' +
+          '<div class="gauge-num" style="color:' + scoreColor(media) + '">' + media.toFixed(1) + '<small>/10</small></div>' +
+          '<div class="gauge-lbl">média geral ponderada</div>' +
+        '</div>' +
+        '<div class="pano-stats">' +
+          stat(list.length, 'agentes') +
+          stat(totalConv, 'conversas') +
+        '</div>' +
+      '</div>' +
+      '<div class="pano-buckets">' +
+        '<div class="ag-section-label">Agentes por faixa</div>' +
+        bucket('excelente', 'Excelente · 8+', buckets.excelente) +
+        bucket('bom', 'Bom · 6–7.9', buckets.bom) +
+        bucket('atencao', 'Atenção · 4–5.9', buckets.atencao) +
+        bucket('critico', 'Crítico · < 4', buckets.critico) +
+      '</div>' +
+      '<div class="pano-dist">' +
+        '<div class="ag-section-label">Distribuição geral de notas</div>' +
+        histogram(agg, 'full') +
+      '</div>' +
+    '</section>';
+  }
+
+  function getList() {
+    var list = window.AGENTS.slice();
+    if (state.tier !== 'all') list = list.filter(function (a) { return a.tier === state.tier; });
+    if (state.query) {
+      var q = state.query.toLowerCase();
+      list = list.filter(function (a) { return a.name.toLowerCase().indexOf(q) >= 0; });
+    }
+    list.sort(function (a, b) {
+      switch (state.sort) {
+        case 'score-asc': return a.score - b.score;
+        case 'atend-desc': return b.atendimentos - a.atendimentos;
+        case 'name-asc': return a.name.localeCompare(b.name);
+        default: return b.score - a.score;
+      }
+    });
+    return list;
+  }
+
+  function render() {
+    var list = getList();
+    document.getElementById('panorama').innerHTML = panorama(window.AGENTS);
+    var cards = list.map(function (a) {
+      var rank = window.AGENTS.slice().sort(function (x, y) { return y.score - x.score; }).indexOf(a) + 1;
+      return agentCard(a, rank);
+    }).join('');
+    document.getElementById('agents').innerHTML = list.length
+      ? cards
+      : '<div class="empty-state">Nenhum agente encontrado para os filtros atuais.</div>';
+    document.getElementById('resultCount').textContent = list.length + ' agente' + (list.length === 1 ? '' : 's');
+    document.body.setAttribute('data-density', state.density);
+  }
+
+  function wire() {
+    var root = document.getElementById('agents');
+    root.addEventListener('click', function (e) {
+      var head = e.target.closest('.ag-head');
+      if (head) {
+        var n = head.getAttribute('data-name');
+        state.expanded[n] = !state.expanded[n];
+        render();
+        return;
+      }
+      var tog = e.target.closest('.atend-toggle');
+      if (tog) {
+        var tn = tog.getAttribute('data-table');
+        state.showTable[tn] = !state.showTable[tn];
+        render();
+      }
+    });
+
+    document.querySelectorAll('[data-tier]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        state.tier = b.getAttribute('data-tier');
+        document.querySelectorAll('[data-tier]').forEach(function (x) { x.classList.toggle('on', x === b); });
+        render();
+      });
+    });
+    document.getElementById('sortSel').addEventListener('change', function (e) {
+      state.sort = e.target.value; render();
+    });
+    document.getElementById('searchInput').addEventListener('input', function (e) {
+      state.query = e.target.value; render();
+    });
+    document.getElementById('densityBtn').addEventListener('click', function () {
+      state.density = state.density === 'comfortable' ? 'compact' : 'comfortable';
+      this.querySelector('span').textContent = state.density === 'compact' ? 'Compacto' : 'Confortável';
+      render();
+    });
+    document.getElementById('expandBtn').addEventListener('click', function () {
+      var anyOpen = Object.keys(state.expanded).some(function (k) { return state.expanded[k]; });
+      window.AGENTS.forEach(function (a) { state.expanded[a.name] = !anyOpen; });
+      this.querySelector('span').textContent = anyOpen ? 'Expandir todos' : 'Recolher todos';
+      render();
+    });
+    var calc = document.getElementById('calcBox');
+    calc.querySelector('.calc-head').addEventListener('click', function () {
+      calc.classList.toggle('open');
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    state.period = String(window.META.days || '7');
+    var ds = document.getElementById('dsSel');
+    if (ds) ds.addEventListener('change', function () {
+      window.location.href = '?canal=' + encodeURIComponent(ds.value) + '&days=' + (window.META.days || 7);
+    });
+    render();
+    wire();
+  });
+})();
+
+</script>
+</body>
+</html>'''
+
+
 @router.get("/dashboard/avaliacao-agentes", response_class=HTMLResponse, include_in_schema=False)
 def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db)):
-    """Resumo de qualidade de atendimento por agente, baseado nos scores da IA."""
+    """Avaliação de qualidade por agente — redesign (Claude Design handoff).
+
+    Computa, por agente, a média das conversas avaliáveis, a distribuição de
+    notas (histograma 0-10), pontos positivos/erros/melhorias agregados e a
+    lista de atendimentos. Renderiza o design 'Avaliação de Agentes' (tema
+    navy, panorama, cards compactos expansíveis, toolbar) alimentado por
+    dados reais via window.AGENTS.
+    """
     access = _get_access(request, db)
     if access is None:
         return _auth_redirect()
 
-    canal  = request.query_params.get("canal", "5519997733651")
-    days   = max(1, min(30, int(request.query_params.get("days", "7"))))
+    canal = request.query_params.get("canal", "5519997733651")
+    days  = max(1, min(30, int(request.query_params.get("days", "7"))))
 
     from app.models import ConversationScore as _CS
+    from app.models import WebhookEvent as _WE
     from app.crud import get_agent_mappings, get_client_names
+    from collections import defaultdict, Counter
+    from urllib.parse import quote as _uq_av
 
     cutoff_utc = (datetime.now(BRASILIA) - timedelta(days=days)).replace(
         hour=0, minute=0, second=0, microsecond=0
     ).astimezone(timezone.utc)
 
-    # Load scores for the period
     scores = (
         db.query(_CS)
         .filter(_CS.canal == canal, _CS.scored_at >= cutoff_utc)
         .all()
     )
 
-    # Resolve the real conversation date for each score by looking up the
-    # last_event_id in webhook_events (bulk query → {event_id: received_at}).
-    from app.models import WebhookEvent as _WE
     _event_ids = [s.last_event_id for s in scores if s.last_event_id]
     event_dates: dict[str, object] = {}
     if _event_ids:
         for ev_id, recv in (
-            db.query(_WE.id, _WE.received_at)
-            .filter(_WE.id.in_(_event_ids))
-            .all()
+            db.query(_WE.id, _WE.received_at).filter(_WE.id.in_(_event_ids)).all()
         ):
             event_dates[str(ev_id)] = recv
 
@@ -6092,399 +6703,149 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
     cnm = get_client_names(db)
     db.close()
 
-    # Group by agent. Only "avaliável" conversations count toward the score
-    # average (broadcasts / social-only convs are excluded — they would
-    # otherwise drag the average down unfairly).
-    from collections import defaultdict
-    agent_scores: dict[str, list] = defaultdict(list)   # evaluable only
-    agent_skipped: dict[str, int] = defaultdict(int)    # non-evaluable count
+    # Group by agent — evaluable only counts toward the average
+    agent_scores: dict[str, list] = defaultdict(list)
+    agent_skipped: dict[str, int] = defaultdict(int)
     for s in scores:
-        phone  = s.phone
-        agent  = cam.get(phone) or "Sem atendente"
-        if agent == "Sem atendente":
+        agent = cam.get(s.phone) or "Sem atendente"
+        if agent == "Sem atendente" or not _user_sees(access, agent):
             continue
-        if not _user_sees(access, agent):
-            continue
-        # avaliavel may be None on legacy v1 rows → treat as evaluable if nota>=0
         _is_eval = (getattr(s, "avaliavel", 1) in (1, None)) and (s.nota is not None and s.nota >= 0)
         if _is_eval:
             agent_scores[agent].append(s)
         else:
             agent_skipped[agent] += 1
 
-    is_admin = (access or {}).get("role") == "admin"
-    nav = _nav_html("avaliacao", canal=canal, is_admin=is_admin, title="Avaliação Agentes")
+    _TIER_MAP = {"Alta Renda": "alta-renda", "On Demand": "on-demand", "Externo": "externo"}
 
-    # Period selector chips
-    _period_chip = lambda d, label: (
-        f'<a href="?canal={canal}&days={d}" style="text-decoration:none">'
-        f'<span style="padding:4px 12px;border-radius:20px;font-size:10.5px;font-weight:700;cursor:pointer;'
-        f'border:1px solid {"#0fa968" if days==d else "#1a2540"};color:{"#0fa968" if days==d else "#8a96aa"};'
-        f'background:{"rgba(15,169,104,.15)" if days==d else "transparent"}">{label}</span></a>'
-    )
+    def _norm(s: str) -> str:
+        return _re.sub(r"\s+", " ", (s or "").strip().lower())
 
-    period_chips = (
-        _period_chip(7, "7 dias")
-        + _period_chip(14, "14 dias")
-        + _period_chip(30, "30 dias")
-    )
+    def _aggregate(slist, field, top_n):
+        norm_count: Counter = Counter()
+        display: dict[str, str] = {}
+        for sc in slist:
+            for item in (getattr(sc, field, None) or []):
+                item = (item or "").strip()
+                if not item:
+                    continue
+                k = _norm(item)
+                norm_count[k] += 1
+                display.setdefault(k, item)
+        out = []
+        for k, c in norm_count.most_common(top_n):
+            out.append(display[k] + (" (" + str(c) + "x)" if c > 1 else ""))
+        return out
 
-    def _score_color(nota):
-        if nota >= 8: return "#0fa968"
-        if nota >= 6: return "#eab308"
-        if nota >= 4: return "#f97316"
-        return "#ef4444"
+    def _conv_dt(sc):
+        return event_dates.get(sc.last_event_id) or sc.scored_at
 
-    def _score_badge(nota):
-        c = _score_color(nota)
-        bg = {"#0fa968":"#0a1a0f","#eab308":"#1a1a08","#f97316":"#1a0f00","#ef4444":"#1a0808"}.get(c,"#0a0f1a")
-        return (
-            f'<span style="font-size:22px;font-weight:800;color:{c};font-family:monospace">{nota:.1f}'
-            f'<span style="font-size:11px;color:#5a6a8a">/10</span></span>'
-        )
+    agents_data = []
+    for agent, slist in agent_scores.items():
+        notas = [s.nota for s in slist]
+        avg = sum(notas) / len(notas) if notas else 0.0
+        dist = [0] * 11
+        for n in notas:
+            dist[max(0, min(10, int(n)))] += 1
 
-    # ── Agent selector + "avaliar todas as conversas deste agente" ───────────
-    _selectable_agents = sorted(
-        a for a in AGENT_SEGMENT.keys() if _user_sees(access, a)
-    )
-    _agent_options = "".join(
-        f'<option value="{html_mod.escape(a)}">{html_mod.escape(a)}</option>'
-        for a in _selectable_agents
-    )
-    agent_eval_box = f"""
-  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#0d1630;
-       border:1px solid #1a2540;border-radius:10px;padding:14px 18px;margin-bottom:24px">
-    <span style="font-size:12px;color:#8a96aa;font-weight:600">🔍 Avaliar todas as conversas de um agente:</span>
-    <select id="agent-eval-select" style="background:#0b1120;border:1px solid #1a2540;border-radius:8px;
-        color:#e8ecf1;font-size:12px;padding:7px 10px;outline:none;font-family:'Montserrat',sans-serif;
-        cursor:pointer;min-width:220px">
-      <option value="">— escolha um agente —</option>
-      {_agent_options}
-    </select>
-    <button onclick="startAgentBatch('{html_mod.escape(canal)}')"
-      style="background:#2563eb;border:none;color:#fff;padding:8px 16px;border-radius:8px;
-      font-size:12px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif">
-      ⭐ Avaliar tudo
-    </button>
-    <span style="font-size:10.5px;color:#5a6a8a">Varre o banco inteiro · pula o que já foi avaliado</span>
-  </div>"""
-
-    # ── Methodology box: what is evaluated + rubric (collapsible) ────────────
-    criteria_box = """
-  <details style="background:#0d1630;border:1px solid #1a2540;border-radius:10px;padding:0;margin-bottom:24px">
-    <summary style="padding:14px 18px;cursor:pointer;font-size:13px;font-weight:700;color:#e8ecf1;list-style:none;display:flex;align-items:center;gap:8px">
-      <span style="color:#2563eb">ℹ️</span> Como a nota é calculada
-      <span style="margin-left:auto;font-size:11px;color:#5a6a8a;font-weight:500">clique para expandir</span>
-    </summary>
-    <div style="padding:0 18px 18px;border-top:1px solid #1a2540">
-
-      <div style="font-size:11px;color:#8a96aa;margin:14px 0 8px;font-weight:700;letter-spacing:.5px">CRITÉRIOS AVALIADOS (apenas o que está sob controle do assessor)</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px">
-        <div style="font-size:12px;color:#c8d4e8">⏱ <strong>Tempo de resposta</strong> do assessor (silêncio causado pelo cliente não conta)</div>
-        <div style="font-size:12px;color:#c8d4e8">💬 <strong>Clareza e completude</strong> das respostas</div>
-        <div style="font-size:12px;color:#c8d4e8">✅ <strong>Correção técnica</strong> das informações</div>
-        <div style="font-size:12px;color:#c8d4e8">🤝 <strong>Cordialidade</strong> e tom profissional</div>
-        <div style="font-size:12px;color:#c8d4e8">🎯 <strong>Necessidade atendida</strong> — o cliente teve a demanda resolvida</div>
-        <div style="font-size:12px;color:#c8d4e8">🚀 <strong>Proatividade</strong> — antecipar e sugerir próximos passos</div>
-      </div>
-
-      <div style="font-size:11px;color:#8a96aa;margin:18px 0 8px;font-weight:700;letter-spacing:.5px">ESCALA DE NOTAS</div>
-      <div style="display:flex;flex-direction:column;gap:5px">
-        <div style="font-size:12px;color:#c8d4e8"><span style="display:inline-block;width:46px;color:#0fa968;font-weight:700;font-family:monospace">9-10</span> Excelente — rápido, claro, proativo, cliente plenamente atendido</div>
-        <div style="font-size:12px;color:#c8d4e8"><span style="display:inline-block;width:46px;color:#0fa968;font-weight:700;font-family:monospace">7-8</span> Bom — atendeu com qualidade, pequenas oportunidades de melhoria</div>
-        <div style="font-size:12px;color:#c8d4e8"><span style="display:inline-block;width:46px;color:#eab308;font-weight:700;font-family:monospace">5-6</span> Regular — resolveu o essencial, mas com lacunas</div>
-        <div style="font-size:12px;color:#c8d4e8"><span style="display:inline-block;width:46px;color:#f97316;font-weight:700;font-family:monospace">3-4</span> Ruim — falhas claras (dúvida sem resposta, vago, demora própria)</div>
-        <div style="font-size:12px;color:#c8d4e8"><span style="display:inline-block;width:46px;color:#ef4444;font-weight:700;font-family:monospace">0-2</span> Crítico — ignorou o cliente, info errada, rude ou erro de conduta</div>
-      </div>
-
-      <div style="font-size:11px;color:#8a96aa;margin:18px 0 8px;font-weight:700;letter-spacing:.5px">O QUE NÃO ENTRA NA MÉDIA</div>
-      <div style="font-size:12px;color:#8a96aa;line-height:1.6">
-        Conversas que não são atendimento real são marcadas como <strong style="color:#c8d4e8">não avaliáveis</strong> e ficam de fora da nota:<br>
-        • <strong style="color:#c8d4e8">Disparos / templates</strong> sem interação do cliente &nbsp;
-        • <strong style="color:#c8d4e8">Mensagens sociais</strong> (só "oi", "obrigado") &nbsp;
-        • Quando o <strong style="color:#c8d4e8">cliente sumiu</strong>, avaliamos só o que o assessor fez — o silêncio do cliente não penaliza.
-      </div>
-
-    </div>
-  </details>"""
-
-    # Progress modal + batch JS (shared by both render paths)
-    agent_batch_modal = """
-<div id="ab-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center">
-  <div style="background:#0d1630;border:1px solid #1a2540;border-radius:12px;padding:28px 32px;min-width:360px;max-width:480px;width:90%">
-    <div id="ab-title" style="font-size:15px;font-weight:700;color:#e8ecf1;margin-bottom:6px">⭐ Avaliando agente</div>
-    <div id="ab-sub" style="font-size:12px;color:#5a6a8a;margin-bottom:18px">Iniciando…</div>
-    <div style="background:#0b1120;border-radius:8px;height:8px;overflow:hidden;margin-bottom:14px">
-      <div id="ab-bar" style="background:#2563eb;height:100%;width:0%;transition:width .3s ease"></div>
-    </div>
-    <div style="display:flex;justify-content:space-between;align-items:center">
-      <span id="ab-label" style="font-size:12px;color:#8a96aa">0 / 0</span>
-      <button id="ab-btn" onclick="cancelAgentBatch()"
-        style="background:transparent;border:1px solid #1a2540;color:#5a6a8a;padding:4px 14px;border-radius:6px;font-size:11px;cursor:pointer;font-family:Montserrat,sans-serif">Cancelar</button>
-    </div>
-    <div id="ab-done" style="display:none;margin-top:14px;text-align:center;color:#0fa968;font-size:13px;font-weight:700"></div>
-  </div>
-</div>
-<script>
-var _abCancel = false;
-function cancelAgentBatch(){ _abCancel = true; document.getElementById('ab-modal').style.display='none'; }
-async function startAgentBatch(canal){
-  var sel = document.getElementById('agent-eval-select');
-  var agent = sel ? sel.value : '';
-  if(!agent){ alert('Escolha um agente primeiro.'); return; }
-  _abCancel = false;
-  var modal=document.getElementById('ab-modal'), bar=document.getElementById('ab-bar');
-  var label=document.getElementById('ab-label'), sub=document.getElementById('ab-sub');
-  var title=document.getElementById('ab-title'), done=document.getElementById('ab-done'), btn=document.getElementById('ab-btn');
-  title.textContent='⭐ Avaliando: '+agent;
-  sub.textContent='Varrendo todas as conversas no banco…';
-  bar.style.width='0%'; label.textContent='0 / ?'; done.style.display='none';
-  btn.textContent='Cancelar'; btn.onclick=cancelAgentBatch;
-  modal.style.display='flex';
-  var offset=0, total=0;
-  while(true){
-    if(_abCancel) break;
-    try{
-      var r=await fetch('/dashboard/score-agent-batch',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({canal:canal, agent:agent, offset:offset, batch_size:10})});
-      if(!r.ok){ sub.textContent='Erro HTTP '+r.status; break; }
-      var d=await r.json();
-      if(d.error){ sub.textContent='⚠ '+d.error; break; }
-      total=d.total; offset=d.next_offset;
-      var pct = total>0 ? Math.round(d.done/total*100) : 0;
-      bar.style.width=pct+'%'; label.textContent=d.done+' / '+total;
-      sub.textContent='Avaliando conversas de '+agent+'… (+'+d.scored_this_call+' nesta rodada)';
-      if(d.finished){
-        done.textContent='✅ Concluído! '+total+' conversa(s) avaliada(s).';
-        done.style.display='block';
-        btn.textContent='Ver resultado'; btn.onclick=function(){ window.location.reload(); };
-        break;
-      }
-    }catch(e){ sub.textContent='Erro de rede: '+e.message; break; }
-  }
-}
-</script>"""
-
-    if not agent_scores:
-        no_data = (
-            '<div style="background:#0d1630;border:1px solid #1a2540;border-radius:10px;'
-            f'padding:40px;text-align:center;color:#5a6a8a;margin-top:24px">'
-            f'Nenhuma avaliação encontrada nos últimos {days} dias.<br>'
-            f'<span style="font-size:12px;margin-top:8px;display:block">Clique em '
-            f'<strong style="color:#eab308">⭐ Avaliar semana</strong> na aba Conversas para gerar avaliações.</span>'
-            f'</div>'
-        )
-        return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>Grampo — Avaliação Agentes</title>{COMMON_CSS}</head><body>
-{nav}
-<div class="container">
-  <div style="display:flex;align-items:center;gap:16px;margin-bottom:24px;flex-wrap:wrap">
-    <div style="font-size:20px;font-weight:700;color:#e8ecf1">⭐ Avaliação de Agentes</div>
-    <div style="display:flex;gap:8px">{period_chips}</div>
-  </div>
-  {agent_eval_box}
-  {criteria_box}
-  {no_data}
-</div>
-{agent_batch_modal}
-</body></html>""")
-
-    # Build agent cards (sorted by avg score desc)
-    agent_cards_html = ""
-    sorted_agents = sorted(
-        agent_scores.items(),
-        key=lambda x: sum(s.nota for s in x[1]) / len(x[1]),
-        reverse=True
-    )
-
-    for agent, slist in sorted_agents:
-        avg   = sum(s.nota for s in slist) / len(slist)
-        total = len(slist)
-        badge_html = _segment_badge(agent)
-
-        # Aggregate points. Use case-insensitive normalized keys so slight
-        # phrasing differences ("Resposta rápida" / "respondeu rápido") still
-        # cluster together; keep the most common original spelling for display.
-        from collections import Counter
-
-        def _norm(s: str) -> str:
-            return _re.sub(r"\s+", " ", s.strip().lower())
-
-        def _aggregate(field: str, top_n: int) -> list[str]:
-            norm_count: Counter = Counter()
-            display: dict[str, str] = {}
-            for sc in slist:
-                for item in (getattr(sc, field, None) or []):
-                    item = (item or "").strip()
-                    if not item:
-                        continue
-                    k = _norm(item)
-                    norm_count[k] += 1
-                    display.setdefault(k, item)
-            return [
-                (f"{display[k]} ({c}×)" if c > 1 else display[k])
-                for k, c in norm_count.most_common(top_n)
-            ]
-
-        top_pos = _aggregate("pontos_positivos", 5)
-        top_mel = _aggregate("pontos_melhoria", 5)
-        # Errors come from the structured `erros` field (v2). Fall back to
-        # low-score resumos for legacy v1 rows that have no `erros`.
-        top_err = _aggregate("erros", 5)
-        if not top_err:
-            _legacy = [s.resumo.strip() for s in slist
-                       if s.nota is not None and 0 <= s.nota <= 4 and s.resumo]
-            top_err = list(dict.fromkeys(_legacy))[:4]
-
-        # Score distribution bar
-        dist = [0]*11
-        for s in slist:
-            dist[max(0, min(10, s.nota))] += 1
-        dist_html = ""
-        max_dist = max(dist) or 1
-        for i in range(11):
-            pct = round(dist[i] / max_dist * 100)
-            c   = _score_color(i)
-            dist_html += (
-                f'<div style="display:flex;flex-direction:column;align-items:center;gap:3px;flex:1">'
-                f'  <div style="background:{c};width:100%;height:{max(2,pct//3)}px;border-radius:2px 2px 0 0;'
-                f'      min-height:2px;opacity:{0.4 + (pct/100)*0.6:.2f}"></div>'
-                f'  <span style="font-size:9px;color:#5a6a8a">{i}</span>'
-                f'</div>'
-            )
-
-        def _list_items(items, color, icon):
-            if not items:
-                return f'<div style="font-size:11px;color:#3a4a6a;font-style:italic">Nenhum registrado</div>'
-            return "".join(
-                f'<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:5px">'
-                f'  <span style="color:{color};flex-shrink:0;font-size:12px">{icon}</span>'
-                f'  <span style="font-size:11.5px;color:#c8d4e8;line-height:1.4">{html_mod.escape(item)}</span>'
-                f'</div>'
-                for item in items
-            )
-
-        # ── Per-client detail list (cliente · nota · data · link) ────────────
-        from urllib.parse import quote as _uq_av
-        _detail_rows = []
-        # Sort conversations by real date desc (fallback to scored_at)
-        def _conv_dt(sc):
-            return event_dates.get(sc.last_event_id) or sc.scored_at
+        # Atendimentos detail (sorted by real date desc)
+        atend = []
         for sc in sorted(slist, key=lambda s: (_conv_dt(s) or datetime.min.replace(tzinfo=timezone.utc)), reverse=True):
-            _cli = cnm.get(sc.phone, "") or sc.phone
-            _dt  = _conv_dt(sc)
-            _dt_str = _dt.astimezone(BRASILIA).strftime("%d/%m/%Y") if _dt else "—"
-            _nc = _score_color(sc.nota)
-            _conv_url = f"/dashboard/conversa?phone={_uq_av(sc.phone, safe='')}&canal={_uq_av(canal, safe='')}"
-            _resumo = html_mod.escape((sc.resumo or "")[:90])
-            _motivo = html_mod.escape((getattr(sc, "motivo", "") or "—")[:60])
-            _detail_rows.append(
-                f'<tr onclick="window.open(\'{_conv_url}\',\'_blank\')" '
-                f'style="cursor:pointer;border-bottom:1px solid #111a2e;transition:background .12s" '
-                f'onmouseover="this.style.background=\'#11203a\'" onmouseout="this.style.background=\'\'">'
-                f'<td style="padding:7px 10px;font-size:12px;color:#e8ecf1;font-weight:600">{html_mod.escape(_cli)} '
-                f'<span style="font-size:9px;color:#5a6a8a">↗</span></td>'
-                f'<td style="padding:7px 10px;font-size:11px;color:#93c5fd;white-space:nowrap">{_motivo}</td>'
-                f'<td style="padding:7px 10px;font-size:11px;color:#8a96aa;font-style:italic">{_resumo}</td>'
-                f'<td style="padding:7px 10px;font-family:monospace;font-size:11px;color:#5a6a8a;white-space:nowrap">{_dt_str}</td>'
-                f'<td style="padding:7px 10px;text-align:center;white-space:nowrap">'
-                f'<span style="font-size:14px;font-weight:800;color:{_nc};font-family:monospace">{sc.nota}</span>'
-                f'<span style="font-size:9px;color:#5a6a8a">/10</span></td>'
-                f'</tr>'
-            )
-        detail_table = (
-            '<table style="width:100%;border-collapse:collapse;background:#0b1120;border-radius:8px;overflow:hidden">'
-            '<thead><tr>'
-            '<th style="padding:7px 10px;text-align:left;font-size:9px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">CLIENTE</th>'
-            '<th style="padding:7px 10px;text-align:left;font-size:9px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">MOTIVO DO CONTATO</th>'
-            '<th style="padding:7px 10px;text-align:left;font-size:9px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">RESUMO</th>'
-            '<th style="padding:7px 10px;text-align:left;font-size:9px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">DATA</th>'
-            '<th style="padding:7px 10px;text-align:center;font-size:9px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">NOTA</th>'
-            '</tr></thead><tbody>' + "".join(_detail_rows) + '</tbody></table>'
+            _dt = _conv_dt(sc)
+            atend.append({
+                "cliente": cnm.get(sc.phone, "") or sc.phone,
+                "motivo":  (getattr(sc, "motivo", "") or "").strip() or "—",
+                "resumo":  (sc.resumo or "").strip(),
+                "data":    _dt.astimezone(BRASILIA).strftime("%d/%m/%Y") if _dt else "—",
+                "nota":    int(sc.nota),
+                "url":     "/dashboard/conversa?phone=" + _uq_av(sc.phone, safe="") + "&canal=" + _uq_av(canal, safe=""),
+            })
+
+        # legacy fallback for erros (v1 rows without structured erros)
+        erros = _aggregate(slist, "erros", 6)
+        if not erros:
+            _legacy = [s.resumo.strip() for s in slist if s.nota is not None and 0 <= s.nota <= 4 and s.resumo]
+            erros = list(dict.fromkeys(_legacy))[:4]
+
+        agents_data.append({
+            "name":        agent,
+            "tier":        _TIER_MAP.get(AGENT_SEGMENT.get(agent, ""), "interno"),
+            "score":       round(avg, 2),
+            "dist":        dist,
+            "atendimentos": len(slist),
+            "ignorados":   agent_skipped.get(agent, 0),
+            "positivos":   _aggregate(slist, "pontos_positivos", 6),
+            "erros":       erros,
+            "melhorias":   _aggregate(slist, "pontos_melhoria", 6),
+            "atend":       atend,
+        })
+
+    # Canal options + meta
+    _canais = []
+    for ch_num, ch_label in sorted(COMPANY_CHANNELS_MAP.items(), key=lambda x: x[1]):
+        _canais.append({"num": ch_num, "label": ch_label + " (" + ch_num[-4:] + ")"})
+    meta = {
+        "datasets":   [c["label"] for c in _canais],
+        "canais":     _canais,
+        "canal":      canal,
+        "days":       days,
+        "atualizado": datetime.now(BRASILIA).strftime("%d/%m %H:%M"),
+    }
+
+    import json as _json
+    # Harden inline <script> injection: a literal "</script>" inside any text
+    # field would otherwise close the script tag early.
+    agents_json = _json.dumps(agents_data, ensure_ascii=False).replace("</", "<\\/")
+    meta_json   = _json.dumps(meta, ensure_ascii=False).replace("</", "<\\/")
+
+    is_admin = (access or {}).get("role") == "admin"
+    canal_qs = "?canal=" + canal
+
+    # Sidebar nav (design look, real routes)
+    def _av_nav(label, href, active=False):
+        cls = "nav-item active" if active else "nav-item"
+        return '<a class="' + cls + '" href="' + href + '"><span class="dot"></span>' + label + '</a>'
+
+    nav_links = (
+        '<div class="nav-group">Monitoramento</div>'
+        + _av_nav("Visão geral", "/dashboard/overview" + canal_qs)
+        + _av_nav("Conversas", "/dashboard" + canal_qs)
+        + _av_nav("Alertas", "/dashboard/alertas" + canal_qs)
+        + _av_nav("Sem resposta", "/dashboard/sem-resposta" + canal_qs)
+        + _av_nav("Agentes", "/dashboard/agentes" + canal_qs)
+        + '<div class="nav-group">Análise</div>'
+        + _av_nav("Temas", "/dashboard/temas" + canal_qs)
+        + _av_nav("Avaliação agentes", "/dashboard/avaliacao-agentes" + canal_qs, active=True)
+    )
+    if is_admin:
+        nav_links += (
+            '<div class="nav-group">Admin</div>'
+            + _av_nav("Acessos", "/dashboard/acessos")
+            + _av_nav("Diagnóstico", "/dashboard/diagnostico" + canal_qs)
         )
-        detail_block = (
-            f'<details style="margin-top:16px">'
-            f'<summary style="cursor:pointer;font-size:11px;color:#8a96aa;font-weight:700;letter-spacing:.5px;list-style:none">'
-            f'📋 Ver todos os {total} atendimento{"s" if total != 1 else ""} avaliado{"s" if total != 1 else ""} (cliente · nota · data)</summary>'
-            f'<div style="margin-top:10px">{detail_table}</div>'
-            f'</details>'
-        )
 
-        agent_cards_html += f"""
-<div style="background:#0d1630;border:1px solid #1a2540;border-radius:12px;padding:22px 24px;margin-bottom:20px">
-  <!-- Header -->
-  <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;flex-wrap:wrap">
-    <div>
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
-        <span style="font-size:16px;font-weight:700;color:#e8ecf1">{html_mod.escape(agent)}</span>{badge_html}
-      </div>
-      <div style="font-size:11px;color:#5a6a8a">{total} atendimento{"s" if total != 1 else ""} avaliado{"s" if total != 1 else ""} · últimos {days} dias{f' · {agent_skipped.get(agent,0)} disparo(s)/social ignorado(s)' if agent_skipped.get(agent,0) else ''}</div>
-    </div>
-    <div style="margin-left:auto;text-align:center">
-      {_score_badge(avg)}
-      <div style="font-size:10px;color:#5a6a8a;margin-top:2px">MÉDIA</div>
-    </div>
-  </div>
+    # Period segmented (server reload)
+    def _period_btn(d, label):
+        on = " on" if days == d else ""
+        return '<a href="?canal=' + canal + '&days=' + str(d) + '" class="segbtn' + on + '">' + label + '</a>'
+    period_seg = _period_btn(7, "7 dias") + _period_btn(14, "14 dias") + _period_btn(30, "30 dias")
 
-  <!-- Score distribution -->
-  <div style="margin-bottom:18px">
-    <div style="font-size:10px;color:#5a6a8a;letter-spacing:1px;font-weight:700;margin-bottom:8px">DISTRIBUIÇÃO DE NOTAS</div>
-    <div style="display:flex;gap:3px;align-items:flex-end;height:40px">{dist_html}</div>
-  </div>
+    # Dataset (canal) options
+    ds_options = ""
+    for c in _canais:
+        sel = " selected" if c["num"] == canal else ""
+        ds_options += '<option value="' + html_mod.escape(c["num"]) + '"' + sel + '>' + html_mod.escape(c["label"]) + '</option>'
 
-  <!-- 3-column breakdown -->
-  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
-    <div style="background:#0a1a0f;border:1px solid #1d4d36;border-radius:8px;padding:14px">
-      <div style="font-size:10px;color:#0fa968;letter-spacing:1px;font-weight:700;margin-bottom:10px">✓ PONTOS POSITIVOS</div>
-      {_list_items(top_pos, "#0fa968", "✓")}
-    </div>
-    <div style="background:#1a0808;border:1px solid #5a2424;border-radius:8px;padding:14px">
-      <div style="font-size:10px;color:#ef4444;letter-spacing:1px;font-weight:700;margin-bottom:10px">⚠ ERROS IDENTIFICADOS</div>
-      {_list_items(top_err, "#ef4444", "✗")}
-    </div>
-    <div style="background:#1a1a08;border:1px solid #4a4010;border-radius:8px;padding:14px">
-      <div style="font-size:10px;color:#eab308;letter-spacing:1px;font-weight:700;margin-bottom:10px">↑ PONTOS DE MELHORIA</div>
-      {_list_items(top_mel, "#eab308", "→")}
-    </div>
-  </div>
+    html = (_AVAL_HTML
+            .replace("__NAV_LINKS__", nav_links)
+            .replace("__PERIOD_SEG__", period_seg)
+            .replace("__DS_OPTIONS__", ds_options)
+            .replace("__UPD_TIME__", html_mod.escape(meta["atualizado"]))
+            .replace("__DAYS__", str(days))
+            .replace("__AGENTS_JSON__", agents_json)
+            .replace("__META_JSON__", meta_json))
+    return HTMLResponse(html)
 
-  {detail_block}
-</div>"""
-
-    total_scored = sum(len(v) for v in agent_scores.values())
-    avg_global   = sum(s.nota for sl in agent_scores.values() for s in sl) / total_scored if total_scored else 0
-
-    return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>Grampo — Avaliação Agentes</title>{COMMON_CSS}
-<style>
-@media(max-width:700px){{
-  .av-grid{{grid-template-columns:1fr !important}}
-}}
-</style>
-</head><body>
-{nav}
-<div style="max-width:1100px;margin:28px auto;padding:0 24px">
-
-  <div style="display:flex;align-items:center;gap:16px;margin-bottom:24px;flex-wrap:wrap">
-    <div>
-      <div style="font-size:20px;font-weight:700;color:#e8ecf1;margin-bottom:4px">⭐ Avaliação de Agentes</div>
-      <div style="font-size:12px;color:#5a6a8a">
-        {len(agent_scores)} agente{"s" if len(agent_scores)!=1 else ""} ·
-        {total_scored} conversa{"s" if total_scored!=1 else ""} avaliada{"s" if total_scored!=1 else ""} ·
-        média geral <strong style="color:{_score_color(round(avg_global))}">{avg_global:.1f}</strong>
-      </div>
-    </div>
-    <div style="display:flex;gap:8px;margin-left:auto">{period_chips}</div>
-  </div>
-
-  {agent_eval_box}
-  {criteria_box}
-
-  {agent_cards_html}
-
-</div>
-{agent_batch_modal}
-</body></html>""")
 
 
 @router.get("/dashboard/diagnostico", response_class=HTMLResponse, include_in_schema=False)
