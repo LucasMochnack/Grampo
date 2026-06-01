@@ -4067,6 +4067,114 @@ async def score_batch_endpoint(request: Request, db: Session = Depends(get_db)):
     })
 
 
+@router.post("/dashboard/score-agent-batch", include_in_schema=False)
+async def score_agent_batch_endpoint(request: Request, db: Session = Depends(get_db)):
+    """Score ALL conversations of a single agent across the whole DB history.
+
+    Body: { canal, agent, offset, batch_size }
+    Returns: { done, total, next_offset, finished, scored_this_call, errors, agent }
+
+    Same polling contract as /score-batch but filtered to one agent and with
+    no day window (covers the entire database).
+    """
+    if not _check_auth(request):
+        return JSONResponse({"error": "unauth"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+
+    canal      = (body.get("canal") or "5519997733651").strip()
+    agent_sel  = (body.get("agent") or "").strip()
+    offset     = max(0, int(body.get("offset") or 0))
+    batch_size = max(1, min(20, int(body.get("batch_size") or 10)))
+
+    if not agent_sel:
+        db.close()
+        return JSONResponse({"error": "missing agent"}, status_code=400)
+    if not settings.ANTHROPIC_API_KEY:
+        db.close()
+        return JSONResponse({"error": "ANTHROPIC_API_KEY não configurada"}, status_code=503)
+
+    # Permission: viewers can only score agents they're allowed to see
+    access = _get_access(request, db)
+    if not _user_sees(access, agent_sel):
+        db.close()
+        return JSONResponse({"error": "sem permissão para este agente"}, status_code=403)
+
+    from app.crud import get_events_since, get_agent_mappings, get_client_names
+    from app.models import ConversationScore as _CS
+
+    # Whole DB history
+    epoch = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    raw_evs = get_events_since(db, since=epoch, limit=200000)
+    raw_evs = _filter_events_by_channel(raw_evs, canal)
+    cam = get_agent_mappings(db)
+    cnm = get_client_names(db)
+
+    groups_orm, phone_learned = _group_events(raw_evs, cam)
+    cp = _real_phone(canal)
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
+
+    candidates = []
+    for key, evs in groups_orm.items():
+        if _real_phone(key) == cp:
+            continue
+        phone = _real_phone(key)
+        agent = (phone_learned.get(key) or cam.get(phone)
+                 or phone_learned.get(phone) or "Sem atendente")
+        if agent != agent_sel:   # filter to the selected agent only
+            continue
+        sorted_evs = sorted(
+            [e for e in evs if (e.raw_payload or {}).get("type", "").upper()
+             not in ("MESSAGE_STATUS", "CONVERSATION_STATUS")],
+            key=lambda e: e.received_at or _epoch
+        )
+        if not sorted_evs:
+            continue
+        last_event_id = str(sorted_evs[-1].id)
+        msg_tuples = []
+        for ev in sorted_evs:
+            _p   = ev.raw_payload or {}
+            _txt = _extract_content_preview(_p, max_len=1000) or ""
+            _ts  = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
+            if _txt:
+                msg_tuples.append((_extract_direction(_p), _txt, _ts))
+        if not msg_tuples:
+            continue
+        candidates.append((phone, last_event_id, msg_tuples))
+
+    total = len(candidates)
+    slice_ = candidates[offset: offset + batch_size]
+
+    scored_this = 0
+    errors = 0
+    for phone, last_event_id, msg_tuples in slice_:
+        cached = db.get(_CS, (phone, last_event_id))
+        if cached and cached.score_version == _SCORE_VERSION:
+            scored_this += 1
+            continue
+        try:
+            scored = _call_score_llm(_build_transcript(msg_tuples))
+            _upsert_score(db, phone, last_event_id, canal, scored)
+            scored_this += 1
+        except Exception:
+            errors += 1
+
+    next_offset = offset + batch_size
+    finished = next_offset >= total
+    db.close()
+    return JSONResponse({
+        "done":             min(next_offset, total),
+        "total":            total,
+        "next_offset":      next_offset if not finished else total,
+        "finished":         finished,
+        "scored_this_call": scored_this,
+        "errors":           errors,
+        "agent":            agent_sel,
+    })
+
+
 @router.post("/dashboard/cron/score-daily", include_in_schema=False)
 async def cron_score_daily(request: Request, db: Session = Depends(get_db)):
     """Cron endpoint: score all conversations from the last 30 days in batches.
@@ -6020,6 +6128,89 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
             f'<span style="font-size:11px;color:#5a6a8a">/10</span></span>'
         )
 
+    # ── Agent selector + "avaliar todas as conversas deste agente" ───────────
+    _selectable_agents = sorted(
+        a for a in AGENT_SEGMENT.keys() if _user_sees(access, a)
+    )
+    _agent_options = "".join(
+        f'<option value="{html_mod.escape(a)}">{html_mod.escape(a)}</option>'
+        for a in _selectable_agents
+    )
+    agent_eval_box = f"""
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#0d1630;
+       border:1px solid #1a2540;border-radius:10px;padding:14px 18px;margin-bottom:24px">
+    <span style="font-size:12px;color:#8a96aa;font-weight:600">🔍 Avaliar todas as conversas de um agente:</span>
+    <select id="agent-eval-select" style="background:#0b1120;border:1px solid #1a2540;border-radius:8px;
+        color:#e8ecf1;font-size:12px;padding:7px 10px;outline:none;font-family:'Montserrat',sans-serif;
+        cursor:pointer;min-width:220px">
+      <option value="">— escolha um agente —</option>
+      {_agent_options}
+    </select>
+    <button onclick="startAgentBatch('{html_mod.escape(canal)}')"
+      style="background:#2563eb;border:none;color:#fff;padding:8px 16px;border-radius:8px;
+      font-size:12px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif">
+      ⭐ Avaliar tudo
+    </button>
+    <span style="font-size:10.5px;color:#5a6a8a">Varre o banco inteiro · pula o que já foi avaliado</span>
+  </div>"""
+
+    # Progress modal + batch JS (shared by both render paths)
+    agent_batch_modal = """
+<div id="ab-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center">
+  <div style="background:#0d1630;border:1px solid #1a2540;border-radius:12px;padding:28px 32px;min-width:360px;max-width:480px;width:90%">
+    <div id="ab-title" style="font-size:15px;font-weight:700;color:#e8ecf1;margin-bottom:6px">⭐ Avaliando agente</div>
+    <div id="ab-sub" style="font-size:12px;color:#5a6a8a;margin-bottom:18px">Iniciando…</div>
+    <div style="background:#0b1120;border-radius:8px;height:8px;overflow:hidden;margin-bottom:14px">
+      <div id="ab-bar" style="background:#2563eb;height:100%;width:0%;transition:width .3s ease"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <span id="ab-label" style="font-size:12px;color:#8a96aa">0 / 0</span>
+      <button id="ab-btn" onclick="cancelAgentBatch()"
+        style="background:transparent;border:1px solid #1a2540;color:#5a6a8a;padding:4px 14px;border-radius:6px;font-size:11px;cursor:pointer;font-family:Montserrat,sans-serif">Cancelar</button>
+    </div>
+    <div id="ab-done" style="display:none;margin-top:14px;text-align:center;color:#0fa968;font-size:13px;font-weight:700"></div>
+  </div>
+</div>
+<script>
+var _abCancel = false;
+function cancelAgentBatch(){ _abCancel = true; document.getElementById('ab-modal').style.display='none'; }
+async function startAgentBatch(canal){
+  var sel = document.getElementById('agent-eval-select');
+  var agent = sel ? sel.value : '';
+  if(!agent){ alert('Escolha um agente primeiro.'); return; }
+  _abCancel = false;
+  var modal=document.getElementById('ab-modal'), bar=document.getElementById('ab-bar');
+  var label=document.getElementById('ab-label'), sub=document.getElementById('ab-sub');
+  var title=document.getElementById('ab-title'), done=document.getElementById('ab-done'), btn=document.getElementById('ab-btn');
+  title.textContent='⭐ Avaliando: '+agent;
+  sub.textContent='Varrendo todas as conversas no banco…';
+  bar.style.width='0%'; label.textContent='0 / ?'; done.style.display='none';
+  btn.textContent='Cancelar'; btn.onclick=cancelAgentBatch;
+  modal.style.display='flex';
+  var offset=0, total=0;
+  while(true){
+    if(_abCancel) break;
+    try{
+      var r=await fetch('/dashboard/score-agent-batch',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({canal:canal, agent:agent, offset:offset, batch_size:10})});
+      if(!r.ok){ sub.textContent='Erro HTTP '+r.status; break; }
+      var d=await r.json();
+      if(d.error){ sub.textContent='⚠ '+d.error; break; }
+      total=d.total; offset=d.next_offset;
+      var pct = total>0 ? Math.round(d.done/total*100) : 0;
+      bar.style.width=pct+'%'; label.textContent=d.done+' / '+total;
+      sub.textContent='Avaliando conversas de '+agent+'… (+'+d.scored_this_call+' nesta rodada)';
+      if(d.finished){
+        done.textContent='✅ Concluído! '+total+' conversa(s) avaliada(s).';
+        done.style.display='block';
+        btn.textContent='Ver resultado'; btn.onclick=function(){ window.location.reload(); };
+        break;
+      }
+    }catch(e){ sub.textContent='Erro de rede: '+e.message; break; }
+  }
+}
+</script>"""
+
     if not agent_scores:
         no_data = (
             '<div style="background:#0d1630;border:1px solid #1a2540;border-radius:10px;'
@@ -6037,8 +6228,11 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
     <div style="font-size:20px;font-weight:700;color:#e8ecf1">⭐ Avaliação de Agentes</div>
     <div style="display:flex;gap:8px">{period_chips}</div>
   </div>
+  {agent_eval_box}
   {no_data}
-</div></body></html>""")
+</div>
+{agent_batch_modal}
+</body></html>""")
 
     # Build agent cards (sorted by avg score desc)
     agent_cards_html = ""
@@ -6180,9 +6374,12 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
     <div style="display:flex;gap:8px;margin-left:auto">{period_chips}</div>
   </div>
 
+  {agent_eval_box}
+
   {agent_cards_html}
 
 </div>
+{agent_batch_modal}
 </body></html>""")
 
 
