@@ -6073,6 +6073,19 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
         .all()
     )
 
+    # Resolve the real conversation date for each score by looking up the
+    # last_event_id in webhook_events (bulk query → {event_id: received_at}).
+    from app.models import WebhookEvent as _WE
+    _event_ids = [s.last_event_id for s in scores if s.last_event_id]
+    event_dates: dict[str, object] = {}
+    if _event_ids:
+        for ev_id, recv in (
+            db.query(_WE.id, _WE.received_at)
+            .filter(_WE.id.in_(_event_ids))
+            .all()
+        ):
+            event_dates[str(ev_id)] = recv
+
     cam = get_agent_mappings(db)
     cnm = get_client_names(db)
     db.close()
@@ -6349,6 +6362,49 @@ async function startAgentBatch(canal){
                 for item in items
             )
 
+        # ── Per-client detail list (cliente · nota · data · link) ────────────
+        from urllib.parse import quote as _uq_av
+        _detail_rows = []
+        # Sort conversations by real date desc (fallback to scored_at)
+        def _conv_dt(sc):
+            return event_dates.get(sc.last_event_id) or sc.scored_at
+        for sc in sorted(slist, key=lambda s: (_conv_dt(s) or datetime.min.replace(tzinfo=timezone.utc)), reverse=True):
+            _cli = cnm.get(sc.phone, "") or sc.phone
+            _dt  = _conv_dt(sc)
+            _dt_str = _dt.astimezone(BRASILIA).strftime("%d/%m/%Y") if _dt else "—"
+            _nc = _score_color(sc.nota)
+            _conv_url = f"/dashboard/conversa?phone={_uq_av(sc.phone, safe='')}&canal={_uq_av(canal, safe='')}"
+            _resumo = html_mod.escape((sc.resumo or "")[:90])
+            _detail_rows.append(
+                f'<tr onclick="window.open(\'{_conv_url}\',\'_blank\')" '
+                f'style="cursor:pointer;border-bottom:1px solid #111a2e;transition:background .12s" '
+                f'onmouseover="this.style.background=\'#11203a\'" onmouseout="this.style.background=\'\'">'
+                f'<td style="padding:7px 10px;font-size:12px;color:#e8ecf1;font-weight:600">{html_mod.escape(_cli)} '
+                f'<span style="font-size:9px;color:#5a6a8a">↗</span></td>'
+                f'<td style="padding:7px 10px;font-size:11px;color:#8a96aa;font-style:italic">{_resumo}</td>'
+                f'<td style="padding:7px 10px;font-family:monospace;font-size:11px;color:#5a6a8a;white-space:nowrap">{_dt_str}</td>'
+                f'<td style="padding:7px 10px;text-align:center;white-space:nowrap">'
+                f'<span style="font-size:14px;font-weight:800;color:{_nc};font-family:monospace">{sc.nota}</span>'
+                f'<span style="font-size:9px;color:#5a6a8a">/10</span></td>'
+                f'</tr>'
+            )
+        detail_table = (
+            '<table style="width:100%;border-collapse:collapse;background:#0b1120;border-radius:8px;overflow:hidden">'
+            '<thead><tr>'
+            '<th style="padding:7px 10px;text-align:left;font-size:9px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">CLIENTE</th>'
+            '<th style="padding:7px 10px;text-align:left;font-size:9px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">RESUMO</th>'
+            '<th style="padding:7px 10px;text-align:left;font-size:9px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">DATA</th>'
+            '<th style="padding:7px 10px;text-align:center;font-size:9px;color:#5a6a8a;letter-spacing:1px;border-bottom:2px solid #1a2540">NOTA</th>'
+            '</tr></thead><tbody>' + "".join(_detail_rows) + '</tbody></table>'
+        )
+        detail_block = (
+            f'<details style="margin-top:16px">'
+            f'<summary style="cursor:pointer;font-size:11px;color:#8a96aa;font-weight:700;letter-spacing:.5px;list-style:none">'
+            f'📋 Ver todos os {total} atendimento{"s" if total != 1 else ""} avaliado{"s" if total != 1 else ""} (cliente · nota · data)</summary>'
+            f'<div style="margin-top:10px">{detail_table}</div>'
+            f'</details>'
+        )
+
         agent_cards_html += f"""
 <div style="background:#0d1630;border:1px solid #1a2540;border-radius:12px;padding:22px 24px;margin-bottom:20px">
   <!-- Header -->
@@ -6386,6 +6442,8 @@ async function startAgentBatch(canal){
       {_list_items(top_mel, "#eab308", "→")}
     </div>
   </div>
+
+  {detail_block}
 </div>"""
 
     total_scored = sum(len(v) for v in agent_scores.values())
