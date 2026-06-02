@@ -5671,6 +5671,28 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
                         + esc[b:])
         return esc
 
+    def _friendly_media(t: str) -> str:
+        """Turn raw media previews ("[ARQUIVO] 2026-…​.aac", "[AUDIO]", etc.)
+        into a friendly label for the transcript. Plain text passes through."""
+        s = (t or "").strip()
+        low = s.lower()
+        if low.startswith("[arquivo]") or (s.startswith("[") and "]" in s[:14]):
+            if _re.search(r"\.(aac|ogg|oga|opus|mp3|m4a|wav|3gp|amr)\b", low) or "audio" in low or "voice" in low:
+                return "🎤 Mensagem de áudio"
+            if _re.search(r"\.(jpe?g|png|gif|webp|bmp)\b", low) or "image" in low or "imagem" in low:
+                return "🖼 Imagem"
+            if _re.search(r"\.(mp4|mov|webm|3gpp)\b", low) or "video" in low or "vídeo" in low:
+                return "🎬 Vídeo"
+            if _re.search(r"\.pdf\b", low):
+                return "📄 Documento (PDF)"
+            if _re.search(r"\.(docx?|xlsx?|pptx?|csv|txt)\b", low):
+                return "📄 Documento"
+            if "template" in low:
+                return "📋 Mensagem padrão (template)"
+            if low.startswith("[arquivo]"):
+                return "📎 Arquivo anexado"
+        return s
+
     # Build rows
     from urllib.parse import quote as _uqj
     rows = []
@@ -5714,11 +5736,15 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
             _is_cli = (_d or "").upper() == "IN"
             _who = "Cliente" if _is_cli else "Assessor"
             _cls = "cli" if _is_cli else "ass"
+            _disp = _friendly_media(_t)
+            _is_media = _disp != (_t or "").strip()
+            _tx = (f'<span class="media">{html_mod.escape(_disp)}</span>'
+                   if _is_media else _highlight_trigger(_t, _lvl_id))
             _thread += (
                 f'<div class="msg {_cls}">'
                 f'<div class="msg-meta"><span class="who">{_who}</span>'
                 f'<span class="t">{html_mod.escape(_ts)}</span></div>'
-                f'<div class="msg-tx">{_highlight_trigger(_t, _lvl_id)}</div>'
+                f'<div class="msg-tx">{_tx}</div>'
                 f'</div>'
             )
         if not _thread:
@@ -5870,6 +5896,7 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
   .msg.cli .msg-meta .who{{color:#5a6b73}}
   .msg-meta .t{{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted-2)}}
   .msg-tx{{color:var(--ink);white-space:pre-wrap;word-break:break-word}}
+  .msg-tx .media{{color:var(--muted);font-style:italic}}
   .no-thread{{color:var(--muted-2);font-size:12.5px;font-style:italic;padding:8px 0}}
   .zidwrap{{margin-top:12px;text-align:right}}
   .zid{{font-size:10.5px;color:var(--muted-2);font-family:'IBM Plex Mono',monospace}}
