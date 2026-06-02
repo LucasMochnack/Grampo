@@ -21,7 +21,7 @@ from app.models import ConversationAnalysis
 
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 MAX_MESSAGES_IN_PROMPT = 30  # last N messages of the conversation
 MAX_CHARS_PER_MESSAGE = 500
 
@@ -43,17 +43,32 @@ markdown, sem comentários. O JSON deve ter exatamente esses campos:
   "priority": "alta" | "media" | "baixa"
 }
 
+A última mensagem da conversa é SEMPRE do CLIENTE (o assessor não respondeu
+depois dela). Sua tarefa é decidir se essa última mensagem do cliente DEMANDA
+uma resposta do assessor ou não.
+
 Regras de classificação:
 
-- "encerrada": a conversa terminou naturalmente. Cliente fechou com agradecimento \
-("ok", "obrigado", "valeu", "perfeito"), confirmou um agendamento, recebeu a \
-resposta completa do assessor, ou enviou apenas um comentário social que não \
-demanda ação.
+- "encerrada": a última mensagem do cliente NÃO precisa de resposta. Casos típicos:
+  • Fechamento social / agradecimento: "ok", "obrigado", "valeu", "perfeito", \
+"tá bom", "blz", "show", "👍", "🙏", "combinado", "fechado", "entendi".
+  • Confirmação simples de algo que o assessor já resolveu ("pode ser", "isso mesmo").
+  • Despedida ("até mais", "abraço", "bom fim de semana").
+  • Comentário social sem pergunta nem pedido.
+  Nesses casos o assessor PODE até responder por cortesia, mas NÃO há atendimento \
+pendente — classifique como "encerrada".
 
-- "pendente": cliente fez uma PERGUNTA, PEDIDO, RECLAMAÇÃO ou COMENTÁRIO que \
-naturalmente esperaria resposta/ação do assessor e ela não veio. Inclui: \
-dúvidas sobre produtos, pedidos de cotação, solicitações de resgate/aporte, \
-pedidos de informação, reclamações, sinais de insatisfação.
+- "pendente": a última mensagem do cliente é uma PERGUNTA, PEDIDO, RECLAMAÇÃO ou \
+sinal claro de que ele espera ação/retorno do assessor. Inclui: dúvidas sobre \
+produtos, pedidos de cotação, solicitações de resgate/aporte/transferência, \
+pedidos de informação ou documento, reclamações, sinais de insatisfação, ou uma \
+pergunta direta que ficou no ar. Em caso de dúvida entre as duas, se houver \
+QUALQUER pergunta ou pedido não respondido, classifique como "pendente".
+
+IMPORTANTE: avalie apenas a ÚLTIMA mensagem do cliente no contexto da conversa. \
+Se o assessor já tinha respondido a dúvida ANTES e o cliente só agradeceu, é \
+"encerrada". Se o cliente trouxe um assunto novo ou repetiu um pedido não \
+atendido, é "pendente".
 
 Quando "status" = "pendente", classifique a prioridade:
 - "alta": envolve decisão financeira concreta, valor monetário específico, \

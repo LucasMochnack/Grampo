@@ -58,6 +58,36 @@ COMPANY_CHANNELS_MAP: dict[str, str] = {
 COMPANY_CHANNELS = set(COMPANY_CHANNELS_MAP.keys())
 HOUR_START, HOUR_END = 6, 19
 
+# ── Business-hours helpers (Sem Resposta detection) ──────────────────────────
+# Working window used to decide whether a client was really "left waiting":
+# nights and weekends don't count, so a Friday-evening message isn't flagged
+# as "60h sem resposta" on Monday — it's ~1 business hour.
+BIZ_DAY_START, BIZ_DAY_END = 9, 18   # Mon–Fri, Brasília
+
+
+def _biz_hours_between(start, end) -> float:
+    """Number of business hours (Mon–Fri, BIZ_DAY_START–BIZ_DAY_END, Brasília)
+    elapsed between two tz-aware datetimes. 0 if end<=start or invalid."""
+    if not start or not end:
+        return 0.0
+    s = start.astimezone(BRASILIA)
+    e = end.astimezone(BRASILIA)
+    if e <= s:
+        return 0.0
+    total = 0.0
+    day = s.date()
+    last = e.date()
+    while day <= last:
+        if day.weekday() < 5:  # Mon–Fri
+            ws = datetime(day.year, day.month, day.day, BIZ_DAY_START, 0, 0, tzinfo=BRASILIA)
+            we = datetime(day.year, day.month, day.day, BIZ_DAY_END, 0, 0, tzinfo=BRASILIA)
+            lo = s if s > ws else ws
+            hi = e if e < we else we
+            if hi > lo:
+                total += (hi - lo).total_seconds() / 3600.0
+        day += timedelta(days=1)
+    return round(total, 1)
+
 # ── Intent / Alert classification ────────────────────────────────────────────
 import re as _re
 
@@ -5921,8 +5951,9 @@ window.SR_META = __SR_META_JSON__;
   function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
   function first(name){ return (name||'').trim().split(/\s+/)[0] || ''; }
   function initials(name){ var p=(name||'?').trim().split(/\s+/); return (p[0][0]+(p.length>1?p[p.length-1][0]:'')).toUpperCase(); }
-  function waitLabel(h){ return h < 24 ? Math.round(h) + 'h' : Math.round(h/24) + 'd'; }
-  function urgColor(h){ if (h < 24) return '#f5b400'; if (h < 96) return '#f97316'; return '#ef5350'; }
+  /* h = horas ÚTEIS (seg–sex 9–18h). 1 dia útil = 9h. */
+  function waitLabel(h){ return h < 9 ? Math.round(h) + 'h' : Math.round(h/9) + 'd'; }
+  function urgColor(h){ if (h < 9) return '#f5b400'; if (h < 27) return '#f97316'; return '#ef5350'; }
 
   function byId(id){ return window.SR_CONV.find(function(x){ return x.id === id; }); }
 
@@ -6063,7 +6094,7 @@ window.SR_META = __SR_META_JSON__;
     var pend = window.SR_CONV.filter(function(x){ return !state.resolved[x.id]; }).length;
     var done = window.SR_META.encerradas + (window.SR_CONV.length - pend);
     document.getElementById('srSubhead').innerHTML =
-      '<b>' + pend + '</b> pendentes · ' + window.SR_META.candidatos + ' candidatos · ' + esc(window.SR_META.modelo);
+      '<b>' + pend + '</b> pendentes · tempo útil (seg–sex 9–18h) · ' + esc(window.SR_META.modelo);
     document.getElementById('srFoot').innerHTML =
       '<b>' + pend + '</b> pendentes · ' + done + ' encerradas verificadas';
     document.getElementById('srCount').textContent = l.length + ' na fila';
@@ -6136,16 +6167,19 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
         return _auth_redirect()
 
     canal = request.query_params.get("canal", "5519997733651")
-    MIN_SILENCE_HOURS = 4
-    LOOKBACK_DAYS = 7
+    # Identification thresholds (business-hours aware):
+    MIN_SILENCE_BIZ_H  = 1.0   # at least 1 business hour (Mon–Fri 9–18h) waiting
+    MIN_SILENCE_REAL_H = 0.5   # and at least 30 min real, so we never flag a
+                               # message answered seconds ago
+    LOOKBACK_DAYS = 14
     MAX_NEW_ANALYSES = 15
     MAX_CANDIDATES = 80
 
     now_br = datetime.now(BRASILIA)
+    now_utc = now_br.astimezone(timezone.utc)
     cutoff_utc = (now_br - timedelta(days=LOOKBACK_DAYS)).replace(
         hour=0, minute=0, second=0, microsecond=0
     ).astimezone(timezone.utc)
-    silence_cutoff_utc = (now_br - timedelta(hours=MIN_SILENCE_HOURS)).astimezone(timezone.utc)
 
     # ── Fresh query — do NOT use the pipeline cache ──────────────────────────
     # The pipeline cache stores SQLAlchemy ORM objects from a previous
@@ -6183,8 +6217,11 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
         last_direction = _extract_direction(last_ev.raw_payload or {})
         if last_direction != "IN":
             continue
-        if last_ev.received_at > silence_cutoff_utc:
-            continue  # too recent
+        # Business-hours-aware silence: don't flag nights/weekends.
+        biz_h  = _biz_hours_between(last_ev.received_at, now_utc)
+        real_h = (now_utc - last_ev.received_at).total_seconds() / 3600.0
+        if biz_h < MIN_SILENCE_BIZ_H or real_h < MIN_SILENCE_REAL_H:
+            continue  # not waiting long enough during working hours
 
         phone = _real_phone(key)
         agent = (phone_learned.get(key) or client_agent_map.get(phone)
@@ -6195,6 +6232,8 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
         # Extract ALL ORM data to plain Python — safe after session closes
         last_event_id = str(last_ev.id)
         last_event_at = last_ev.received_at
+        silence_biz_h = biz_h
+        silence_real_h = round(real_h, 1)
 
         msg_tuples: list[tuple] = []
         contact_name = ""
@@ -6214,15 +6253,18 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
             continue
 
         candidates.append({
-            "phone":         phone,
-            "agent":         agent,
-            "last_event_id": last_event_id,
-            "last_event_at": last_event_at,
-            "msg_tuples":    msg_tuples,
-            "client_name":   client_name_map.get(phone, "") or contact_name,
+            "phone":          phone,
+            "agent":          agent,
+            "last_event_id":  last_event_id,
+            "last_event_at":  last_event_at,
+            "silence_biz_h":  silence_biz_h,
+            "silence_real_h": silence_real_h,
+            "msg_tuples":     msg_tuples,
+            "client_name":    client_name_map.get(phone, "") or contact_name,
         })
 
-    candidates.sort(key=lambda c: c["last_event_at"], reverse=True)
+    # Most-waiting (business hours) first
+    candidates.sort(key=lambda c: c.get("silence_biz_h", 0), reverse=True)
     candidates = candidates[:MAX_CANDIDATES]
 
     # ── Load dismissed set and filter candidates ─────────────────────────────
@@ -6276,14 +6318,17 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
     for c in pendentes:
         v = c["verdict"]
         ev_at = c.get("last_event_at")
-        hours = (now_br - ev_at.astimezone(BRASILIA)).total_seconds() / 3600 if ev_at else 0
+        # Display the BUSINESS-hours silence (nights/weekends excluded) — that's
+        # the time the client was actually left waiting during working hours.
+        biz_h = c.get("silence_biz_h", 0)
         sr_conv.append({
             "id":          c["phone"],
             "cliente":     c.get("client_name") or c["phone"],
             "numero":      c["phone"],
             "tier":        _TIER_MAP.get(AGENT_SEGMENT.get(c["agent"], ""), "interno"),
             "assessor":    c["agent"],
-            "h":           round(hours, 1),
+            "h":           biz_h,
+            "realH":       c.get("silence_real_h", 0),
             "ts":          ev_at.astimezone(BRASILIA).strftime("%d/%m %H:%M") if ev_at else "—",
             "summary":     v.get("reason") or "Cliente aguardando retorno do assessor.",
             "priority":    v.get("priority") or "media",
