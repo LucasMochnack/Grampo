@@ -6256,8 +6256,10 @@ a{color:inherit;text-decoration:none}
 .conv-foot{display:flex;gap:10px;margin-top:auto;padding-top:8px;flex-wrap:wrap}
 .btn-primary{font-family:var(--mono);font-size:12px;font-weight:600;background:var(--accent);color:#04130d;border:none;border-radius:9px;padding:11px 18px;cursor:pointer;transition:.12s}
 .btn-primary:hover{filter:brightness(1.08)}
-.btn-secondary{font-family:var(--mono);font-size:12px;font-weight:500;background:var(--panel);color:var(--text);border:1px solid var(--line-2);border-radius:9px;padding:11px 16px;cursor:pointer;transition:.12s}
+.btn-secondary{font-family:var(--mono);font-size:12px;font-weight:500;background:var(--panel);color:var(--text);border:1px solid var(--line-2);border-radius:9px;padding:11px 16px;cursor:pointer;transition:.12s;text-decoration:none;display:inline-flex;align-items:center}
 .btn-secondary:hover{border-color:var(--accent);color:var(--accent)}
+.btn-zenvia{font-family:var(--mono);font-size:12px;font-weight:600;background:#16c78418;color:#3ddc97;border:1px solid #16c78455;border-radius:9px;padding:11px 16px;cursor:pointer;transition:.12s;text-decoration:none;display:inline-flex;align-items:center}
+.btn-zenvia:hover{background:#16c78428;border-color:var(--accent)}
 
 @media(max-width:1180px){
   body{grid-template-columns:1fr;overflow:auto;height:auto}
@@ -6440,7 +6442,8 @@ window.SR_META = __SR_META_JSON__;
       '<footer class="conv-foot">' +
         '<button class="btn-primary" data-ok="' + esc(c.id) + '">✓ Marcar como resolvido</button>' +
         '<button class="btn-secondary" data-howto="' + esc(c.id) + '">' + (sugOpen?'Ocultar sugestão':'✦ Gerar resposta') + '</button>' +
-        '<a class="btn-secondary" href="/dashboard/conversa?phone=' + encodeURIComponent(c.phone) + '&canal=' + encodeURIComponent(CANAL) + '" target="_blank" rel="noopener">↗ Abrir conversa</a>' +
+        (c.zenviaUrl ? '<a class="btn-zenvia" href="' + esc(c.zenviaUrl) + '" target="_blank" rel="noopener">💬 Responder na Zenvia</a>' : '') +
+        '<a class="btn-secondary" href="/dashboard/conversa?phone=' + encodeURIComponent(c.phone) + '&canal=' + encodeURIComponent(CANAL) + '" target="_blank" rel="noopener">↗ Abrir no Grampo</a>' +
       '</footer>' +
     '</div>';
   }
@@ -6651,8 +6654,12 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
 
         msg_tuples: list[tuple] = []
         contact_name = ""
+        conv_id = ""
         for ev in msg_evs:
             _p    = ev.raw_payload or {}
+            _cid  = (_p.get("conversation") or {}).get("id") or ""
+            if _cid:
+                conv_id = _cid
             _d    = _extract_direction(_p)
             _text = _extract_content_preview(_p, max_len=1500) or ""
             _ts   = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
@@ -6673,6 +6680,7 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
             "last_event_at":  last_event_at,
             "silence_biz_h":  silence_biz_h,
             "silence_real_h": silence_real_h,
+            "conv_id":        conv_id,
             "msg_tuples":     msg_tuples,
             "client_name":    client_name_map.get(phone, "") or contact_name,
         })
@@ -6735,6 +6743,8 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
         # Display the BUSINESS-hours silence (nights/weekends excluded) — that's
         # the time the client was actually left waiting during working hours.
         biz_h = c.get("silence_biz_h", 0)
+        _cid = c.get("conv_id") or ""
+        _zurl = ZENVIA_CONV_URL_TEMPLATE.replace("{id}", _cid) if (ZENVIA_CONV_URL_TEMPLATE and _cid) else ""
         sr_conv.append({
             "id":          c["phone"],
             "cliente":     c.get("client_name") or c["phone"],
@@ -6748,6 +6758,7 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
             "priority":    v.get("priority") or "media",
             "phone":       c["phone"],
             "lastEventId": c.get("last_event_id") or "",
+            "zenviaUrl":   _zurl,
         })
     sr_conv.sort(key=lambda x: x["h"], reverse=True)
 
