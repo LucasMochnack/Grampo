@@ -2316,19 +2316,30 @@ def _save_acked_alerts(db, acked: dict) -> None:
     set_setting(db, "acked_alerts", json.dumps(acked, ensure_ascii=False))
 
 
-def _get_dismissed_sr(db) -> set:
-    """Return the set of phone numbers manually dismissed from the Sem Resposta list."""
+def _get_dismissed_sr(db) -> dict:
+    """Return {phone: last_event_id} of conversations dismissed from the Sem
+    Resposta list. A dismissal only applies while the conversation's last
+    event is unchanged — if the client sends a NEW message, the id changes
+    and the conversation re-enters the queue automatically.
+
+    Legacy format was a flat list of phones → migrated to {phone: ""} where
+    "" means "dismissed regardless of id" (kept suppressed)."""
     raw = get_setting(db, "dismissed_sr")
     if not raw:
-        return set()
+        return {}
     try:
-        return set(json.loads(raw))
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return data
+        if isinstance(data, list):
+            return {str(p): "" for p in data}
+        return {}
     except Exception:
-        return set()
+        return {}
 
 
-def _save_dismissed_sr(db, dismissed: set) -> None:
-    set_setting(db, "dismissed_sr", json.dumps(list(dismissed), ensure_ascii=False))
+def _save_dismissed_sr(db, dismissed: dict) -> None:
+    set_setting(db, "dismissed_sr", json.dumps(dismissed, ensure_ascii=False))
 
 
 # ── Nav HTML ─────────────────────────────────────────────────────────────────
@@ -3797,9 +3808,9 @@ async def unack_alert_endpoint(request: Request, db: Session = Depends(get_db)):
 @router.post("/dashboard/dismiss-sr", include_in_schema=False)
 async def dismiss_sr_endpoint(request: Request, db: Session = Depends(get_db)):
     """Mark a Sem Resposta candidate as dismissed (green ✓).
-    The phone is added to the dismissed_sr set and will not reappear
-    in the list until a new message arrives (at which point the
-    conversation_analyses cache key changes and it may reappear).
+    Stores {phone: last_event_id}. The dismissal only holds while the
+    conversation is unchanged — if the client sends a NEW message
+    (different last_event_id), it re-enters the queue automatically.
     """
     if not _check_auth(request):
         return JSONResponse({"error": "unauth"}, status_code=401)
@@ -3810,8 +3821,9 @@ async def dismiss_sr_endpoint(request: Request, db: Session = Depends(get_db)):
     phone = (body.get("phone") or "").strip()
     if not phone:
         return JSONResponse({"error": "missing phone"}, status_code=400)
+    last_event_id = (body.get("last_event_id") or "").strip()
     dismissed = _get_dismissed_sr(db)
-    dismissed.add(phone)
+    dismissed[phone] = last_event_id
     _save_dismissed_sr(db, dismissed)
     return JSONResponse({"ok": True})
 
@@ -6523,7 +6535,7 @@ window.SR_META = __SR_META_JSON__;
     if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
     fetch('/dashboard/dismiss-sr', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ phone: c.phone })
+      body: JSON.stringify({ phone: c.phone, last_event_id: c.lastEventId || '' })
     }).then(function(r){
       if (r.ok){ state.resolved[id]=true; if(state.selected===id) state.selected=null; render(); }
       else if (btn){ btn.disabled=false; btn.textContent='✓ OK'; }
@@ -6565,6 +6577,16 @@ window.SR_META = __SR_META_JSON__;
 
   document.addEventListener('DOMContentLoaded', function(){
     render(); wire();
+    // Auto-resolve: the queue is rebuilt server-side each load (a conversation
+    // where the advisor already replied no longer qualifies). Refresh every
+    // 2.5 min so resolved items drop off on their own — but never interrupt
+    // while a conversation is open or a suggestion is being read.
+    setInterval(function(){
+      if (state.selected) return;                 // viewing a conversation
+      if (document.querySelector('.sugg.open')) return;
+      if (document.activeElement && document.activeElement.id === 'srSearch') return;
+      window.location.reload();
+    }, 150000);
   });
 })();
 
@@ -6691,7 +6713,15 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
 
     # ── Load dismissed set and filter candidates ─────────────────────────────
     dismissed_sr = _get_dismissed_sr(db)
-    candidates = [c for c in candidates if c["phone"] not in dismissed_sr]
+    def _is_dismissed(c):
+        if c["phone"] not in dismissed_sr:
+            return False
+        stored = dismissed_sr.get(c["phone"]) or ""
+        # legacy ("" id) → stays suppressed; otherwise only suppress while the
+        # conversation is unchanged. A new client message (new last_event_id)
+        # re-opens it automatically.
+        return stored == "" or stored == c["last_event_id"]
+    candidates = [c for c in candidates if not _is_dismissed(c)]
 
     # ── Run LLM analysis (cached) ────────────────────────────────────────────
     to_analyze = [(c["phone"], c["last_event_id"], c["msg_tuples"]) for c in candidates]
