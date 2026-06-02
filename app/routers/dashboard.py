@@ -5604,6 +5604,11 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
     groups_orm, phone_learned = _group_events(raw_evs, cam)
     db.close()
 
+    # Only build the full transcript for phones that are confirmed problems
+    # (few of them) — keeps memory/CPU low while letting us embed the whole
+    # conversation in the report.
+    problem_phones = {_real_phone(k) for k in problemas}
+
     _epoch = datetime.min.replace(tzinfo=timezone.utc)
     info_by_phone: dict[str, dict] = {}
     for key, evs in groups_orm.items():
@@ -5612,6 +5617,8 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
         conv_id = ""
         last_dt = None
         texts = []
+        msgs = []  # full transcript (only kept for problem phones)
+        want_msgs = phone in problem_phones
         for ev in sorted_evs:
             p = ev.raw_payload or {}
             cid = (p.get("conversation") or {}).get("id") or ""
@@ -5623,6 +5630,9 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
             t = _extract_content_preview(p, max_len=2000) or ""
             if t:
                 texts.append((d, t))
+                if want_msgs:
+                    _ts = ev.received_at.astimezone(BRASILIA).strftime("%d/%m/%Y %H:%M") if ev.received_at else ""
+                    msgs.append((d, t, _ts))
         agent = phone_learned.get(key) or cam.get(phone) or phone_learned.get(phone) or "—"
         intents = _classify_conversation(texts)
         top = _top_alert(intents)
@@ -5633,6 +5643,7 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
             info_by_phone[phone] = {
                 "conv_id": conv_id, "last_dt": last_dt, "agent": agent,
                 "client": cnm.get(phone, ""), "level": level_label, "level_id": level_id,
+                "msgs": msgs,
             }
 
     # Keywords by alert level, to bold-red the trigger inside the excerpt.
@@ -5693,12 +5704,32 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
         _lvl_clean = _lvl_clean.strip() or "Alerta"
         _sev = "crit" if ("Crítico" in level or "Alto" in level) else "warn"
         _snip_txt = snippet or "Conversa marcada como problema de conformidade."
+        _lvl_id = info.get("level_id", "")
+        # Full transcript HTML (trigger in bold red on each message)
+        _msgs = info.get("msgs", []) or []
+        if len(_msgs) > 120:
+            _msgs = _msgs[-120:]
+        _thread = ""
+        for _d, _t, _ts in _msgs:
+            _is_cli = (_d or "").upper() == "IN"
+            _who = "Cliente" if _is_cli else "Assessor"
+            _cls = "cli" if _is_cli else "ass"
+            _thread += (
+                f'<div class="msg {_cls}">'
+                f'<div class="msg-meta"><span class="who">{_who}</span>'
+                f'<span class="t">{html_mod.escape(_ts)}</span></div>'
+                f'<div class="msg-tx">{_highlight_trigger(_t, _lvl_id)}</div>'
+                f'</div>'
+            )
+        if not _thread:
+            _thread = '<div class="no-thread">Transcrição indisponível para esta conversa.</div>'
         rows.append({
             "data": data_str, "data_sort": data_sort, "cliente": cliente, "telefone": ph,
             "agente": agente, "oque": oque, "conv_id": conv_id,
             "grampo_link": grampo_link, "zenvia_link": zenvia_link,
             "snippet": _snip_txt,
-            "snippet_html": _highlight_trigger(_snip_txt, info.get("level_id", "")),
+            "snippet_html": _highlight_trigger(_snip_txt, _lvl_id),
+            "thread_html": _thread,
             "nivel_label": _lvl_clean, "sev": _sev,
         })
     rows.sort(key=lambda r: r["data_sort"], reverse=True)
@@ -5726,35 +5757,37 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
               'stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7">'
               '</line><polyline points="7 7 17 7 17 17"></polyline></svg>')
     if not rows:
-        body_rows = ('<tr><td colspan="4" style="padding:48px;text-align:center;color:#94a2a8;font-size:14px">'
+        body_rows = ('<div style="padding:48px;text-align:center;color:#94a2a8;font-size:14px">'
                      'Nenhuma conversa marcada como <b>⚠ PROBLEMA</b> ainda.<br>'
                      '<span style="font-size:12.5px">Marque conversas como PROBLEMA na aba Alertas para que entrem neste relatório.</span>'
-                     '</td></tr>')
+                     '</div>')
     else:
         body_rows = ""
-        for r in rows:
+        for idx, r in enumerate(rows, 1):
             zlink = (f'<a class="rlink" href="{html_mod.escape(r["zenvia_link"])}" target="_blank" rel="noopener">Abrir na Zenvia {_arrow}</a>'
                      if r["zenvia_link"] else "")
-            zid = (f'<div class="zid"><span>Zenvia ID</span>{html_mod.escape(r["conv_id"])}</div>'
+            zid = (f'<span class="zid"><span class="zid-l">Zenvia ID</span> {html_mod.escape(r["conv_id"])}</span>'
                    if r["conv_id"] else "")
             body_rows += (
-                f'<tr>'
-                f'<td class="col-date">{html_mod.escape(r["data"])}</td>'
-                f'<td>'
-                f'  <div class="client-name">{html_mod.escape(r["cliente"])}</div>'
-                f'  <div class="client-phone">{html_mod.escape(r["telefone"])}</div>'
-                f'  <div class="client-advisor">{html_mod.escape(r["agente"])}</div>'
-                f'</td>'
-                f'<td>'
-                f'  <span class="badge badge-{r["sev"]}"><span class="led"></span>{html_mod.escape(r["nivel_label"])}</span>'
-                f'  <div class="excerpt">{r["snippet_html"]}</div>'
-                f'</td>'
-                f'<td class="col-link">'
-                f'  <div class="links">{zlink}'
-                f'    <a class="rlink" href="{base}{html_mod.escape(r["grampo_link"])}" target="_blank" rel="noopener">Ver conversa (Grampo) {_arrow}</a>'
-                f'  </div>{zid}'
-                f'</td>'
-                f'</tr>'
+                f'<section class="case">'
+                f'  <div class="case-head">'
+                f'    <div class="case-id">'
+                f'      <span class="case-num">{idx}</span>'
+                f'      <div>'
+                f'        <div class="client-name">{html_mod.escape(r["cliente"])} '
+                f'          <span class="badge badge-{r["sev"]}"><span class="led"></span>{html_mod.escape(r["nivel_label"])}</span></div>'
+                f'        <div class="client-sub">{html_mod.escape(r["telefone"])} · {html_mod.escape(r["agente"])} · {html_mod.escape(r["data"])}</div>'
+                f'      </div>'
+                f'    </div>'
+                f'    <div class="links">{zlink}'
+                f'      <a class="rlink" href="{base}{html_mod.escape(r["grampo_link"])}" target="_blank" rel="noopener">Ver no Grampo {_arrow}</a>'
+                f'    </div>'
+                f'  </div>'
+                f'  <div class="case-trigger">⚠ Gatilho do alerta: <span class="excerpt">{r["snippet_html"]}</span></div>'
+                f'  <div class="thread-label">Transcrição completa da conversa</div>'
+                f'  <div class="thread">{r["thread_html"]}</div>'
+                f'  {("<div class=\"zidwrap\">" + zid + "</div>") if zid else ""}'
+                f'</section>'
             )
 
     _count = len(rows)
@@ -5818,7 +5851,30 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
   .badge-crit{{color:var(--crit);background:var(--crit-bg)}} .badge-crit .led{{background:var(--crit)}}
   .badge-warn{{color:var(--warn);background:var(--warn-bg)}} .badge-warn .led{{background:#e3b008}}
   .excerpt{{color:var(--ink-soft);font-size:13.5px;line-height:1.55}}
-  .links{{display:flex;flex-direction:column;gap:7px}}
+  /* ---- case cards (one per problem conversation, with full transcript) ---- */
+  .case{{border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin:20px 0;background:#fff;break-inside:avoid}}
+  .case + .case{{margin-top:24px}}
+  .case-head{{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;flex-wrap:wrap;padding-bottom:14px;border-bottom:1px solid var(--line-soft)}}
+  .case-id{{display:flex;gap:13px;align-items:flex-start}}
+  .case-num{{flex:none;width:26px;height:26px;border-radius:8px;background:var(--emerald-deep);color:#bff3e0;display:grid;place-items:center;font-size:13px;font-weight:700}}
+  .client-sub{{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--muted);margin-top:4px}}
+  .case-trigger{{margin:14px 0 4px;font-size:12.5px;color:var(--ink-soft);background:var(--crit-bg);border:1px solid #f6c9c4;border-radius:9px;padding:10px 13px}}
+  .case-trigger .excerpt{{display:inline}}
+  .thread-label{{font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted-2);margin:18px 0 10px}}
+  .thread{{display:flex;flex-direction:column;gap:8px}}
+  .msg{{max-width:82%;padding:9px 13px;border-radius:12px;font-size:13px;line-height:1.5}}
+  .msg.cli{{align-self:flex-start;background:#f1f4f6;border:1px solid #e6ebed;border-bottom-left-radius:4px}}
+  .msg.ass{{align-self:flex-end;background:#e7f7f1;border:1px solid #c7ebdd;border-bottom-right-radius:4px}}
+  .msg-meta{{display:flex;align-items:center;gap:8px;margin-bottom:3px}}
+  .msg-meta .who{{font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--emerald-deep)}}
+  .msg.cli .msg-meta .who{{color:#5a6b73}}
+  .msg-meta .t{{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted-2)}}
+  .msg-tx{{color:var(--ink);white-space:pre-wrap;word-break:break-word}}
+  .no-thread{{color:var(--muted-2);font-size:12.5px;font-style:italic;padding:8px 0}}
+  .zidwrap{{margin-top:12px;text-align:right}}
+  .zid{{font-size:10.5px;color:var(--muted-2);font-family:'IBM Plex Mono',monospace}}
+  .zid .zid-l{{letter-spacing:.06em;text-transform:uppercase;color:#b6c1c5;font-size:9px;font-weight:600}}
+  .links{{display:flex;flex-direction:row;gap:14px;flex-wrap:wrap;align-items:center}}
   .rlink{{display:inline-flex;align-items:center;gap:5px;color:var(--emerald);font-weight:600;font-size:13px;text-decoration:none;width:fit-content}}
   .rlink:hover{{color:var(--emerald-bright);text-decoration:underline}} .rlink svg{{width:12px;height:12px}}
   .zid{{margin-top:7px;font-size:10.5px;color:var(--muted-2);font-family:'IBM Plex Mono',monospace;line-height:1.4}}
@@ -5866,15 +5922,7 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
       </div>
     </header>
     <div class="body">
-      <table>
-        <thead><tr>
-          <th class="col-date">Data</th>
-          <th>Cliente</th>
-          <th>O que aconteceu</th>
-          <th class="col-link">Link da conversa</th>
-        </tr></thead>
-        <tbody>{body_rows}</tbody>
-      </table>
+      {body_rows}
     </div>
     <footer class="foot">
       <p>Cada linha corresponde a uma conversa revisada e classificada como <b>problema de conformidade</b> na ferramenta de monitoramento (Grampo/Zenvia). O trecho exibido em "O que aconteceu" é o gatilho que motivou o alerta. O link <b>"Ver conversa (Grampo)"</b> abre o histórico completo e fiel da conversa.</p>
