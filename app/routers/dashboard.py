@@ -60,10 +60,10 @@ HOUR_START, HOUR_END = 6, 19
 
 # Zenvia conversation deep-link template. "{id}" is replaced with the
 # conversation.id from the webhook payload (matches the id in the Zenvia URL
-# path). The "?g=" param is the account inbox/group id (constant per account,
-# taken from a real Zenvia conversation URL). Leave empty to omit the Zenvia
-# link in the legal report (the internal Grampo link is always shown).
-ZENVIA_CONV_URL_TEMPLATE = "https://app.zenvia.com/sales-chat/inbox/all/{id}?g=69a88feecfe7701db3cb102f"
+# path). We omit the "?g=" group param on purpose: it pins the view to one
+# inbox group and prevented older/closed conversations from opening. The path
+# id is the canonical target. Leave empty to omit the Zenvia link entirely.
+ZENVIA_CONV_URL_TEMPLATE = "https://app.zenvia.com/sales-chat/inbox/all/{id}"
 
 # ── Business-hours helpers (Sem Resposta detection) ──────────────────────────
 # Working window used to decide whether a client was really "left waiting":
