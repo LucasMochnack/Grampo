@@ -5754,7 +5754,11 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
       Cada linha corresponde a uma conversa revisada e classificada como <strong>problema de conformidade</strong>
       na ferramenta de monitoramento (Grampo/Zenvia). O trecho exibido em "O que aconteceu" é o gatilho que motivou
       o alerta. O link "Ver conversa (Grampo)" abre o histórico completo e fiel da conversa.
-      {"O link da Zenvia abre a conversa diretamente na plataforma Zenvia." if ZENVIA_CONV_URL_TEMPLATE else "O ID da Zenvia permite localizar a conversa na plataforma Zenvia."}
+    </p>
+    <p style="font-size:11px;color:#b45309;background:#fff7ed;border:1px solid #fed7aa;border-radius:7px;padding:10px 13px;margin-top:8px;line-height:1.6">
+      ⚠ <strong>Importante sobre o link "Abrir na Zenvia":</strong> é necessário estar <strong>logado na Zenvia</strong>
+      no mesmo navegador antes de clicar. Se cair na tela de login, faça login na Zenvia, abra o link novamente
+      (ou cole a URL) e a conversa abrirá normalmente. O link "Ver conversa (Grampo)" não exige login na Zenvia.
     </p>
   </div>
 </body></html>""")
