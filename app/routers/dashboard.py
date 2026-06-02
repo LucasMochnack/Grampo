@@ -1353,6 +1353,13 @@ COMMON_CSS = """
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  /* Dark scrollbars to match the theme (was showing as white bars) */
+  html { scrollbar-width: thin; scrollbar-color: #2a3a5a #0b1120; }
+  *::-webkit-scrollbar { width: 10px; height: 10px; }
+  *::-webkit-scrollbar-track { background: #0b1120; }
+  *::-webkit-scrollbar-thumb { background: #2a3a5a; border-radius: 6px; border: 2px solid #0b1120; }
+  *::-webkit-scrollbar-thumb:hover { background: #3a4a6a; }
+  *::-webkit-scrollbar-corner { background: #0b1120; }
   body { font-family: 'Montserrat', 'Segoe UI', sans-serif; background: #0b1120; color: #e8ecf1; padding-left: 220px; padding-top: 60px; min-height: 100vh; }
 
   /* ── Sidebar ──────────────────────────────────────────────────────────── */
@@ -6131,6 +6138,12 @@ _SR_HTML = r'''<!DOCTYPE html>
   --mono:'IBM Plex Mono',ui-monospace,monospace;--sans:'IBM Plex Sans',system-ui,sans-serif;
 }
 *{box-sizing:border-box;margin:0;padding:0}
+html{scrollbar-width:thin;scrollbar-color:rgba(150,170,210,.3) transparent}
+*::-webkit-scrollbar{width:10px;height:10px}
+*::-webkit-scrollbar-track{background:transparent}
+*::-webkit-scrollbar-thumb{background:rgba(150,170,210,.25);border-radius:6px}
+*::-webkit-scrollbar-thumb:hover{background:rgba(150,170,210,.45)}
+*::-webkit-scrollbar-corner{background:transparent}
 html,body{height:100%}
 body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;display:grid;grid-template-columns:236px 1fr;height:100vh;overflow:hidden}
 a{color:inherit;text-decoration:none}
@@ -6876,6 +6889,12 @@ _AVAL_HTML = r'''<!DOCTYPE html>
   --sans:'IBM Plex Sans',system-ui,sans-serif;
 }
 *{box-sizing:border-box;margin:0;padding:0}
+html{scrollbar-width:thin;scrollbar-color:rgba(150,170,210,.3) transparent}
+*::-webkit-scrollbar{width:10px;height:10px}
+*::-webkit-scrollbar-track{background:transparent}
+*::-webkit-scrollbar-thumb{background:rgba(150,170,210,.25);border-radius:6px}
+*::-webkit-scrollbar-thumb:hover{background:rgba(150,170,210,.45)}
+*::-webkit-scrollbar-corner{background:transparent}
 html,body{height:100%}
 body{
   background:var(--bg);color:var(--text);font-family:var(--sans);
