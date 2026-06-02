@@ -5632,7 +5632,11 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
                 texts.append((d, t))
                 if want_msgs:
                     _ts = ev.received_at.astimezone(BRASILIA).strftime("%d/%m/%Y %H:%M") if ev.received_at else ""
-                    msgs.append((d, t, _ts))
+                    # If the message carries media (image/file/audio/video),
+                    # render it richly (inline image / player / download link).
+                    _mu, _mime = _extract_media_url(p)
+                    _mhtml = _render_msg_content(p) if _mu else ""
+                    msgs.append((d, t, _ts, _mhtml))
         agent = phone_learned.get(key) or cam.get(phone) or phone_learned.get(phone) or "—"
         intents = _classify_conversation(texts)
         top = _top_alert(intents)
@@ -5732,14 +5736,20 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
         if len(_msgs) > 120:
             _msgs = _msgs[-120:]
         _thread = ""
-        for _d, _t, _ts in _msgs:
+        for _m in _msgs:
+            _d, _t, _ts = _m[0], _m[1], _m[2]
+            _mhtml = _m[3] if len(_m) > 3 else ""
             _is_cli = (_d or "").upper() == "IN"
             _who = "Cliente" if _is_cli else "Assessor"
             _cls = "cli" if _is_cli else "ass"
-            _disp = _friendly_media(_t)
-            _is_media = _disp != (_t or "").strip()
-            _tx = (f'<span class="media">{html_mod.escape(_disp)}</span>'
-                   if _is_media else _highlight_trigger(_t, _lvl_id))
+            if _mhtml:
+                # rich media: inline image / audio player / file download link
+                _tx = f'<div class="media-wrap">{_mhtml}</div>'
+            else:
+                _disp = _friendly_media(_t)
+                _tx = (f'<span class="media">{html_mod.escape(_disp)}</span>'
+                       if _disp != (_t or "").strip()
+                       else _highlight_trigger(_t, _lvl_id))
             _thread += (
                 f'<div class="msg {_cls}">'
                 f'<div class="msg-meta"><span class="who">{_who}</span>'
@@ -5897,6 +5907,13 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
   .msg-meta .t{{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--muted-2)}}
   .msg-tx{{color:var(--ink);white-space:pre-wrap;word-break:break-word}}
   .msg-tx .media{{color:var(--muted);font-style:italic}}
+  .media-wrap img{{max-width:240px;max-height:300px;border-radius:8px;display:block;margin:2px 0;border:1px solid var(--line)}}
+  .media-wrap audio{{max-width:260px;display:block;margin:2px 0}}
+  .media-wrap video{{max-width:260px;border-radius:8px;display:block;margin:2px 0}}
+  .media-wrap a{{color:var(--emerald);font-weight:600;text-decoration:none}}
+  .media-wrap a:hover{{text-decoration:underline}}
+  .media-wrap .transcription-box{{background:#f1f7f4;border-left:3px solid var(--emerald);border-radius:0 6px 6px 0;padding:7px 10px;font-size:12.5px;color:#274a40;margin-top:5px;white-space:pre-wrap}}
+  .media-wrap button{{display:none}}  /* hide the on-demand transcribe button in the printed report */
   .no-thread{{color:var(--muted-2);font-size:12.5px;font-style:italic;padding:8px 0}}
   .zidwrap{{margin-top:12px;text-align:right}}
   .zid{{font-size:10.5px;color:var(--muted-2);font-family:'IBM Plex Mono',monospace}}
