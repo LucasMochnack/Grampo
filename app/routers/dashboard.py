@@ -6327,6 +6327,613 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
     return HTMLResponse(html)
 
 
+_AVAL_HTML = r'''<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Avaliação de Agentes — Alto Valor</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+
+:root{
+  --bg:#080c16;
+  --sidebar:#0b1120;
+  --panel:#101a30;
+  --panel-2:#142038;
+  --panel-3:#18243f;
+  --line:rgba(150,170,210,.10);
+  --line-2:rgba(150,170,210,.18);
+  --text:#e9eefb;
+  --muted:#8995b3;
+  --muted-2:#5e6b8a;
+  --accent:#16c784;
+  --gold:#f5b400;
+  --mono:'IBM Plex Mono',ui-monospace,monospace;
+  --sans:'IBM Plex Sans',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg);color:var(--text);font-family:var(--sans);
+  font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;
+  display:grid;grid-template-columns:236px 1fr;
+}
+a{color:inherit;text-decoration:none}
+::selection{background:var(--accent);color:#04130d}
+.sidebar{
+  background:var(--sidebar);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;position:sticky;top:0;height:100vh;
+}
+.brand{padding:22px 22px 18px;display:flex;align-items:center;gap:11px;border-bottom:1px solid var(--line)}
+.brand-mark{width:30px;height:30px;border:1.5px solid var(--text);display:grid;place-items:center;font-family:var(--mono);font-weight:600;font-size:15px;flex:none}
+.brand-name{font-family:var(--mono);font-weight:600;letter-spacing:.14em;font-size:13px}
+.brand-sub{font-family:var(--mono);font-size:9px;letter-spacing:.34em;color:var(--muted-2);margin-top:2px}
+.nav{flex:1;overflow:auto;padding:16px 12px}
+.nav-group{font-family:var(--mono);font-size:10px;letter-spacing:.22em;color:var(--muted-2);padding:16px 12px 8px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:7px;color:var(--muted);font-size:13px;cursor:pointer;transition:.13s}
+.nav-item:hover{background:var(--panel);color:var(--text)}
+.nav-item.active{background:var(--accent);color:#04130d;font-weight:600}
+.nav-item .dot{width:5px;height:5px;border-radius:50%;background:currentColor;opacity:.5;flex:none}
+.nav-item.active .dot{opacity:1}
+.side-foot{border-top:1px solid var(--line);padding:14px 18px;display:flex;align-items:center;gap:11px}
+.side-foot .av{width:32px;height:32px;border-radius:50%;background:var(--accent);color:#04130d;display:grid;place-items:center;font-family:var(--mono);font-weight:600;font-size:12px}
+.side-foot .nm{font-size:13px;font-weight:600}
+.side-foot .lk{font-size:11px;color:var(--muted-2)}
+.main{min-width:0;display:flex;flex-direction:column}
+.topbar{
+  position:sticky;top:0;z-index:20;background:rgba(8,12,22,.86);backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line);padding:14px 32px;
+  display:flex;align-items:center;gap:18px;
+}
+.topbar h1{font-size:15px;font-weight:600;letter-spacing:.01em}
+.topbar .spacer{flex:1}
+.ds-select{
+  font-family:var(--mono);font-size:12px;background:var(--panel);color:var(--text);
+  border:1px solid var(--line-2);border-radius:8px;padding:7px 30px 7px 12px;cursor:pointer;
+  appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238995b3' stroke-width='1.4' fill='none'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 11px center;
+}
+.upd{font-family:var(--mono);font-size:11px;color:var(--muted-2);display:flex;align-items:center;gap:8px}
+.upd b{color:var(--muted);font-weight:500}
+.refresh{width:30px;height:30px;border:1px solid var(--line-2);background:var(--panel);border-radius:8px;color:var(--muted);cursor:pointer;font-size:14px}
+.refresh:hover{color:var(--accent);border-color:var(--accent)}
+.content{padding:28px 32px 80px;max-width:1280px;width:100%;margin:0 auto}
+.page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:22px}
+.page-title{display:flex;align-items:center;gap:12px;font-size:25px;font-weight:700;letter-spacing:-.01em}
+.page-title .star{color:var(--gold);font-size:21px}
+.page-sub{font-family:var(--mono);font-size:12px;color:var(--muted);margin-top:8px}
+.page-sub b{color:var(--text)}
+.seg{display:inline-flex;background:var(--panel);border:1px solid var(--line-2);border-radius:9px;padding:3px}
+.seg button{font-family:var(--mono);font-size:12px;color:var(--muted);background:none;border:none;padding:7px 14px;border-radius:6px;cursor:pointer;transition:.12s}
+.seg button.on{background:var(--accent);color:#04130d;font-weight:600}
+.calc{background:var(--panel);border:1px solid var(--line);border-radius:12px;margin-bottom:18px;overflow:hidden}
+.calc-head{display:flex;align-items:center;gap:11px;padding:14px 18px;cursor:pointer;font-size:13px;font-weight:600}
+.calc-head .ico{width:20px;height:20px;border-radius:5px;background:#1d6fff22;color:#5b9bff;display:grid;place-items:center;font-family:var(--mono);font-size:12px;flex:none}
+.calc-head .arr{margin-left:auto;color:var(--muted-2);font-family:var(--mono);font-size:12px;transition:.15s}
+.calc.open .calc-head .arr{transform:rotate(90deg)}
+.calc-body{display:none;padding:0 18px 18px 49px;color:var(--muted);font-size:13px;line-height:1.65}
+.calc.open .calc-body{display:block}
+.calc-body code{font-family:var(--mono);color:var(--accent);background:#16c78415;padding:1px 6px;border-radius:4px;font-size:12px}
+.panorama{
+  display:grid;grid-template-columns:1fr 1.15fr 1.5fr;gap:1px;background:var(--line);
+  border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-bottom:24px;
+}
+.panorama>div{background:var(--panel);padding:20px 22px}
+.pano-left{display:flex;flex-direction:column;gap:18px}
+.pano-gauge{display:flex;flex-direction:column;gap:2px}
+.gauge-num{font-family:var(--mono);font-size:46px;font-weight:600;line-height:1}
+.gauge-num small{font-size:18px;color:var(--muted-2);font-weight:400}
+.gauge-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+.pano-stats{display:flex;gap:26px;margin-top:auto}
+.pstat-num{font-family:var(--mono);font-size:24px;font-weight:600;display:block;line-height:1}
+.pstat-lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.07em}
+.ag-section-label{font-family:var(--mono);font-size:10px;letter-spacing:.2em;color:var(--muted-2);text-transform:uppercase;margin-bottom:14px}
+.pano-buckets .bk{display:grid;grid-template-columns:auto 26px 1fr;align-items:center;gap:9px;margin-bottom:11px}
+.bk-dot{width:8px;height:8px;border-radius:2px}
+.bk-n{font-family:var(--mono);font-weight:600;font-size:14px;text-align:right}
+.bk-lbl{font-size:12px;color:var(--muted);grid-column:3;grid-row:1}
+.bk-bar{grid-column:2 / 4;grid-row:2;height:4px;background:var(--panel-3);border-radius:3px;overflow:hidden;margin-top:-4px}
+.bk-bar i{display:block;height:100%;border-radius:3px}
+.toolbar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+.search{position:relative;flex:1;min-width:220px;max-width:340px}
+.search input{
+  width:100%;background:var(--panel);border:1px solid var(--line-2);border-radius:9px;
+  color:var(--text);font-family:var(--sans);font-size:13px;padding:9px 12px 9px 34px;
+}
+.search input::placeholder{color:var(--muted-2)}
+.search input:focus{outline:none;border-color:var(--accent)}
+.search svg{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--muted-2)}
+.filters{display:inline-flex;background:var(--panel);border:1px solid var(--line-2);border-radius:9px;padding:3px}
+.filters button{font-family:var(--mono);font-size:11px;color:var(--muted);background:none;border:none;padding:7px 12px;border-radius:6px;cursor:pointer;transition:.12s;white-space:nowrap}
+.filters button.on{background:var(--panel-3);color:var(--text);font-weight:600}
+.sort-sel{
+  font-family:var(--mono);font-size:12px;background:var(--panel);color:var(--text);
+  border:1px solid var(--line-2);border-radius:9px;padding:8px 30px 8px 12px;cursor:pointer;appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238995b3' stroke-width='1.4' fill='none'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 11px center;
+}
+.tool-btn{font-family:var(--mono);font-size:11px;color:var(--muted);background:var(--panel);border:1px solid var(--line-2);border-radius:9px;padding:8px 13px;cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:.12s}
+.tool-btn:hover{color:var(--text);border-color:var(--line-2)}
+.tool-btn .ti{color:var(--muted-2)}
+.result-count{font-family:var(--mono);font-size:11px;color:var(--muted-2);margin-left:auto}
+.agents{display:flex;flex-direction:column;gap:12px}
+.agent-card{
+  background:var(--panel);border:1px solid var(--line);border-radius:13px;overflow:hidden;
+  transition:border-color .15s;position:relative;
+}
+.agent-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--sc);opacity:.0;transition:.15s}
+.agent-card:hover{border-color:var(--line-2)}
+.agent-card.is-open{border-color:var(--line-2)}
+.agent-card.is-open::before{opacity:.9}
+.ag-head{
+  width:100%;background:none;border:none;cursor:pointer;color:inherit;text-align:left;
+  display:grid;grid-template-columns:34px 44px minmax(180px,1fr) 200px auto 22px;
+  align-items:center;gap:16px;padding:16px 20px;
+}
+.ag-rank{font-family:var(--mono);font-size:13px;color:var(--muted-2);font-weight:500}
+.ag-avatar{width:40px;height:40px;border-radius:50%;border:1px solid;display:grid;place-items:center;font-family:var(--mono);font-weight:600;font-size:14px}
+.ag-ident{min-width:0}
+.ag-nameline{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.ag-name{font-size:15px;font-weight:600;letter-spacing:-.005em}
+.ag-meta{font-family:var(--mono);font-size:11px;color:var(--muted-2);margin-top:3px;display:block}
+.ag-hist{width:200px}
+.ag-score{text-align:right;display:flex;flex-direction:column;align-items:flex-end}
+.ag-score-num{font-family:var(--mono);font-size:30px;font-weight:600;line-height:1}
+.ag-score-num small{font-size:13px;color:var(--muted-2);font-weight:400}
+.ag-score-lbl{font-size:9px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted-2);margin-top:3px}
+.ag-chevron{color:var(--muted-2);font-size:13px;justify-self:end}
+.badge{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;font-weight:600;padding:3px 8px;border-radius:5px;white-space:nowrap}
+.tier-alta{background:#f5b40020;color:#f5c542;border:1px solid #f5b40040}
+.tier-ondemand{background:#8b5cf622;color:#a78bfa;border:1px solid #8b5cf640}
+.tier-externo{background:#3b82f622;color:#7cb0ff;border:1px solid #3b82f640}
+.tier-interno{background:#64748b22;color:#9fb0c9;border:1px solid #64748b40}
+.ag-glimpse{display:flex;gap:10px;padding:0 20px 15px 94px;flex-wrap:wrap}
+.gl{font-size:12px;color:var(--muted);display:flex;align-items:flex-start;gap:7px;max-width:48%;line-height:1.4}
+.gl i{font-style:normal;font-family:var(--mono);font-weight:700;flex:none;margin-top:1px}
+.gl-pos i{color:var(--accent)}
+.gl-neg i{color:#f0606a}
+body[data-density="compact"] .ag-glimpse{display:none}
+.histogram{width:100%}
+.histogram.mini .hbars{height:34px}
+.histogram.mini .haxis{display:none}
+.hbars{display:flex;align-items:flex-end;gap:3px;height:34px}
+.hbar-col{flex:1;display:flex;align-items:flex-end;height:100%}
+.hbar-track{width:100%;height:100%;display:flex;align-items:flex-end;background:linear-gradient(var(--line),transparent);border-radius:2px}
+.hbar{width:100%;border-radius:2px 2px 0 0;min-height:3px}
+.histogram.full .hbars{height:80px;gap:5px}
+.haxis{position:relative;height:16px;margin-top:6px;border-top:1px solid var(--line)}
+.haxis span{position:absolute;top:5px;transform:translateX(-50%);font-family:var(--mono);font-size:9px;color:var(--muted-2)}
+.ag-body{padding:6px 20px 20px;border-top:1px solid var(--line);margin-top:2px}
+.ag-dist-full{max-width:520px;margin:18px 0 22px}
+.insights{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.insight{border-radius:11px;padding:15px 16px;border:1px solid}
+.insight-pos{background:#16c7840a;border-color:#16c78430}
+.insight-err{background:#f0606a0c;border-color:#f0606a33}
+.insight-imp{background:#f5b4000a;border-color:#f5b40030}
+.insight-head{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10px;letter-spacing:.13em;text-transform:uppercase;font-weight:600;margin-bottom:13px}
+.insight-pos .insight-head{color:#3ddc97}
+.insight-err .insight-head{color:#f5757f}
+.insight-imp .insight-head{color:#f5c542}
+.insight-ico{width:17px;height:17px;border-radius:4px;display:grid;place-items:center;font-size:11px}
+.insight-pos .insight-ico{background:#16c78433;color:#3ddc97}
+.insight-err .insight-ico{background:#f0606a33;color:#f5757f}
+.insight-imp .insight-ico{background:#f5b40033;color:#f5c542}
+.insight-count{margin-left:auto;background:rgba(255,255,255,.06);color:var(--muted);padding:1px 7px;border-radius:20px;font-size:10px;letter-spacing:0}
+.insight ul{list-style:none;display:flex;flex-direction:column;gap:9px}
+.insight li{font-size:12.5px;line-height:1.5;color:#c6cee0;padding-left:15px;position:relative;text-wrap:pretty}
+.insight li::before{content:'';position:absolute;left:0;top:7px;width:5px;height:5px;border-radius:50%}
+.insight-pos li::before{background:#3ddc97}
+.insight-err li::before{background:#f5757f}
+.insight-imp li::before{background:#f5c542}
+.insight-empty{color:var(--muted-2);font-style:italic}
+.insight-empty::before{display:none!important}
+.atend-toggle{margin-top:18px;font-family:var(--mono);font-size:12px;color:var(--accent);background:#16c78410;border:1px solid #16c78430;border-radius:8px;padding:9px 14px;cursor:pointer;transition:.12s}
+.atend-toggle:hover{background:#16c78420}
+.atend-wrap{margin-top:14px;border:1px solid var(--line);border-radius:11px;overflow:hidden}
+.atend-bar{display:flex;align-items:center;justify-content:space-between;padding:11px 16px;background:var(--panel-2);border-bottom:1px solid var(--line)}
+.atend-title{font-family:var(--mono);font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.atend-meta{font-family:var(--mono);font-size:11px;color:var(--muted-2)}
+.atend-table{width:100%;border-collapse:collapse;font-size:12.5px}
+.atend-table th{
+  font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted-2);
+  text-align:left;padding:10px 16px;background:var(--panel-2);position:sticky;top:0;font-weight:500;
+}
+.atend-table th.th-nota,.atend-table .t-nota{text-align:center}
+.atend-table td{padding:11px 16px;border-top:1px solid var(--line);vertical-align:top;color:#c6cee0}
+.atend-table tbody tr:hover{background:var(--panel-2)}
+.t-cliente{font-weight:600;color:var(--text);white-space:nowrap}
+.t-motivo{width:24%}
+.t-link{color:#7cb0ff}
+.t-link:hover{text-decoration:underline}
+.t-resumo{color:var(--muted);width:40%;text-wrap:pretty}
+.t-data{font-family:var(--mono);font-size:11px;color:var(--muted-2);white-space:nowrap}
+.t-empty{color:var(--muted-2)}
+.nota-chip{font-family:var(--mono);font-weight:600;font-size:13px;border:1px solid;border-radius:6px;padding:2px 9px;display:inline-block;min-width:30px;text-align:center}
+.empty-state{padding:60px;text-align:center;color:var(--muted-2);font-family:var(--mono);font-size:13px}
+body[data-density="compact"] .ag-head{padding:11px 20px;gap:14px}
+body[data-density="compact"] .ag-avatar{width:34px;height:34px}
+body[data-density="compact"] .ag-score-num{font-size:25px}
+body[data-density="compact"] .agents{gap:8px}
+@media(max-width:1080px){
+  body{grid-template-columns:1fr}
+  .sidebar{display:none}
+  .panorama{grid-template-columns:1fr}
+  .ag-head{grid-template-columns:28px 40px 1fr auto 20px}
+  .ag-hist{display:none}
+  .insights{grid-template-columns:1fr}
+  .ag-glimpse{padding-left:20px}
+}
+
+.seg .segbtn{font-family:var(--mono);font-size:12px;color:var(--muted);padding:7px 14px;border-radius:6px;cursor:pointer;transition:.12s;text-decoration:none;display:inline-block}
+.seg .segbtn.on{background:var(--accent);color:#04130d;font-weight:600}
+</style>
+</head>
+<body data-density="comfortable">
+<aside class="sidebar">
+  <div class="brand">
+    <div class="brand-mark">A</div>
+    <div>
+      <div class="brand-name">ALTOVALOR</div>
+      <div class="brand-sub">GRAMPO</div>
+    </div>
+  </div>
+  <nav class="nav">__NAV_LINKS__</nav>
+  <div class="side-foot">
+    <div class="av">AV</div>
+    <div>
+      <div class="nm">Gestor</div>
+      <a class="lk" href="/dashboard/logout">Sair</a>
+    </div>
+  </div>
+</aside>
+<div class="main">
+  <header class="topbar">
+    <h1>Avaliação Agentes</h1>
+    <div class="spacer"></div>
+    <select class="ds-select" id="dsSel">__DS_OPTIONS__</select>
+    <div class="upd">Atualizado <b id="updTime">__UPD_TIME__</b></div>
+    <button class="refresh" title="Atualizar" onclick="location.reload()">&#8635;</button>
+  </header>
+  <div class="content">
+    <div class="page-head">
+      <div>
+        <div class="page-title"><span class="star">&#9733;</span>Avaliação de Agentes</div>
+        <div class="page-sub">Análise automática de qualidade do atendimento por agente, baseada nas conversas avaliadas no período.</div>
+      </div>
+      <div class="seg">__PERIOD_SEG__</div>
+    </div>
+    <div class="calc" id="calcBox">
+      <div class="calc-head">
+        <span class="ico">i</span>Como a nota é calculada
+        <span class="arr">&#9656;</span>
+      </div>
+      <div class="calc-body">
+        Cada conversa avaliada recebe uma nota de <code>0</code> a <code>10</code> combinando quatro dimensões: <b>responsividade</b> (tempo de resposta e follow-up), <b>resolução</b> (a necessidade do cliente foi atendida?), <b>clareza</b> (comunicação objetiva e sem ruído) e <b>cordialidade</b> (tom profissional e empático). A <b>média do agente</b> é ponderada pelo número de atendimentos no período. Disparos automáticos e mensagens puramente sociais são ignorados no cálculo.
+      </div>
+    </div>
+    <div id="panorama"></div>
+    <div class="toolbar">
+      <label class="search">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input id="searchInput" type="text" placeholder="Buscar agente..." />
+      </label>
+      <div class="filters">
+        <button data-tier="all" class="on">Todos</button>
+        <button data-tier="alta-renda">Alta Renda</button>
+        <button data-tier="on-demand">On Demand</button>
+        <button data-tier="externo">Externo</button>
+        <button data-tier="interno">Interno</button>
+      </div>
+      <select class="sort-sel" id="sortSel">
+        <option value="score-desc">Nota ↓</option>
+        <option value="score-asc">Nota ↑</option>
+        <option value="atend-desc">Mais atendimentos</option>
+        <option value="name-asc">Nome A–Z</option>
+      </select>
+      <button class="tool-btn" id="densityBtn"><span class="ti">&#8691;</span> <span>Confortável</span></button>
+      <button class="tool-btn" id="expandBtn"><span class="ti">&#10530;</span> <span>Expandir todos</span></button>
+      <span class="result-count" id="resultCount"></span>
+    </div>
+    <div class="agents" id="agents"></div>
+  </div>
+</div>
+<script>
+window.AGENTS = __AGENTS_JSON__;
+window.META = __META_JSON__;
+</script>
+<script>
+/* Avaliação de Agentes — render + interações */
+(function () {
+  'use strict';
+
+  var TIER = {
+    'alta-renda': { label: 'Alta Renda', cls: 'tier-alta' },
+    'on-demand':  { label: 'On Demand', cls: 'tier-ondemand' },
+    'externo':    { label: 'Externo', cls: 'tier-externo' },
+    'interno':    { label: 'Interno', cls: 'tier-interno' },
+  };
+
+  var state = {
+    period: '7',
+    tier: 'all',
+    sort: 'score-desc',
+    query: '',
+    density: 'comfortable',
+    expanded: {},
+    showTable: {},
+  };
+
+  function hue(n) { return Math.max(0, Math.min(130, n * 12.5)); }
+  function noteColor(n) { return 'hsl(' + hue(n) + ' 68% 54%)'; }
+  function scoreColor(s) { return 'hsl(' + hue(s) + ' 70% 56%)'; }
+  function faixa(s) {
+    if (s < 4) return { key: 'critico', label: 'Crítico', color: 'hsl(2 70% 56%)' };
+    if (s < 6) return { key: 'atencao', label: 'Atenção', color: 'hsl(32 78% 54%)' };
+    if (s < 8) return { key: 'bom', label: 'Bom', color: 'hsl(78 60% 52%)' };
+    return { key: 'excelente', label: 'Excelente', color: 'hsl(140 62% 50%)' };
+  }
+  function initials(name) {
+    var p = name.trim().split(/\s+/);
+    return (p[0][0] + (p.length > 1 ? p[p.length - 1][0] : '')).toUpperCase();
+  }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+  function histogram(dist, variant) {
+    var max = Math.max.apply(null, dist) || 1;
+    var bars = '';
+    var labels = '';
+    for (var n = 0; n <= 10; n++) {
+      var h = dist[n] ? (12 + (dist[n] / max) * 100) : 0;
+      bars += '<div class="hbar-col">' +
+        '<div class="hbar-track">' +
+          (dist[n] ? '<div class="hbar" style="height:' + h + '%;background:' + noteColor(n) + '" title="Nota ' + n + ': ' + dist[n] + '"></div>' : '') +
+        '</div></div>';
+      if (n % 2 === 0 || variant === 'full') labels += '<span style="left:' + (n / 10 * 100) + '%">' + n + '</span>';
+    }
+    return '<div class="histogram ' + (variant || '') + '">' +
+      '<div class="hbars">' + bars + '</div>' +
+      '<div class="haxis">' + labels + '</div>' +
+    '</div>';
+  }
+
+  function insightCol(kind, title, icon, items) {
+    var lis = items.length
+      ? items.map(function (t) { return '<li>' + esc(t) + '</li>'; }).join('')
+      : '<li class="insight-empty">Nenhum registrado</li>';
+    return '<div class="insight insight-' + kind + '">' +
+      '<div class="insight-head"><span class="insight-ico">' + icon + '</span>' + title +
+        '<span class="insight-count">' + items.length + '</span></div>' +
+      '<ul>' + lis + '</ul>' +
+    '</div>';
+  }
+
+  function atendimentos(agent) {
+    var list = agent.atend || [];
+    var rows = '';
+    list.forEach(function (r) {
+      var nota = r.nota;
+      var motivo = (!r.motivo || r.motivo === '—')
+        ? '<span class="t-empty">—</span>' : esc(r.motivo);
+      var cli = r.url
+        ? '<a class="t-link" href="' + r.url + '" target="_blank" rel="noopener">' + esc(r.cliente) + ' ↗</a>'
+        : esc(r.cliente);
+      rows += '<tr>' +
+        '<td class="t-cliente">' + cli + '</td>' +
+        '<td class="t-motivo">' + motivo + '</td>' +
+        '<td class="t-resumo">' + (r.resumo ? esc(r.resumo) : '<span class="t-empty">—</span>') + '</td>' +
+        '<td class="t-data">' + esc(r.data) + '</td>' +
+        '<td class="t-nota"><span class="nota-chip" style="color:' + noteColor(nota) + ';border-color:' + noteColor(nota) + '33">' + nota + '</span></td>' +
+      '</tr>';
+    });
+    if (!rows) rows = '<tr><td colspan="5" class="t-empty" style="padding:18px 16px">Nenhum atendimento avaliado.</td></tr>';
+    return '<div class="atend-wrap">' +
+      '<div class="atend-bar">' +
+        '<span class="atend-title">Atendimentos avaliados</span>' +
+        '<span class="atend-meta">mostrando ' + list.length + ' de ' + agent.atendimentos + '</span>' +
+      '</div>' +
+      '<div style="overflow:auto;max-height:480px">' +
+      '<table class="atend-table"><thead><tr>' +
+        '<th>Cliente</th><th>Motivo do contato</th><th>Resumo</th><th>Data</th><th class="th-nota">Nota</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '</div>';
+  }
+
+  function agentCard(agent, rank) {
+    var t = TIER[agent.tier];
+    var sc = scoreColor(agent.score);
+    var open = !!state.expanded[agent.name];
+    var top = agent.positivos[0];
+    var issue = agent.erros[0];
+
+    var head =
+      '<button class="ag-head" data-name="' + esc(agent.name) + '">' +
+        '<span class="ag-rank">' + (rank < 10 ? '0' : '') + rank + '</span>' +
+        '<span class="ag-avatar" style="background:' + sc + '22;color:' + sc + ';border-color:' + sc + '55">' + initials(agent.name) + '</span>' +
+        '<span class="ag-ident">' +
+          '<span class="ag-nameline"><span class="ag-name">' + esc(agent.name) + '</span>' +
+            '<span class="badge ' + t.cls + '">' + t.label + '</span></span>' +
+          '<span class="ag-meta">' + agent.atendimentos + ' atendimentos · últimos ' + state.period + ' dias' +
+            (agent.ignorados ? ' · ' + agent.ignorados + ' ignorados' : '') + '</span>' +
+        '</span>' +
+        '<span class="ag-hist">' + histogram(agent.dist, 'mini') + '</span>' +
+        '<span class="ag-score">' +
+          '<span class="ag-score-num" style="color:' + sc + '">' + agent.score.toFixed(1) + '<small>/10</small></span>' +
+          '<span class="ag-score-lbl">média</span>' +
+        '</span>' +
+        '<span class="ag-chevron">' + (open ? '▾' : '▸') + '</span>' +
+      '</button>';
+
+    var glimpse = !open ?
+      '<div class="ag-glimpse">' +
+        (top ? '<span class="gl gl-pos"><i>✓</i>' + esc(top) + '</span>' : '') +
+        (issue ? '<span class="gl gl-neg"><i>✕</i>' + esc(issue) + '</span>' : '') +
+      '</div>' : '';
+
+    var body = open ?
+      '<div class="ag-body">' +
+        '<div class="ag-dist-full">' +
+          '<div class="ag-section-label">Distribuição de notas</div>' +
+          histogram(agent.dist, 'full') +
+        '</div>' +
+        '<div class="insights">' +
+          insightCol('pos', 'Pontos positivos', '✓', agent.positivos) +
+          insightCol('err', 'Erros identificados', '!', agent.erros) +
+          insightCol('imp', 'Pontos de melhoria', '→', agent.melhorias) +
+        '</div>' +
+        '<button class="atend-toggle" data-table="' + esc(agent.name) + '">' +
+          (state.showTable[agent.name] ? '▾ Ocultar atendimentos' : '▸ Ver todos os ' + agent.atendimentos + ' atendimentos') +
+        '</button>' +
+        (state.showTable[agent.name] ? atendimentos(agent) : '') +
+      '</div>' : '';
+
+    return '<div class="agent-card faixa-' + faixa(agent.score).key + (open ? ' is-open' : '') + '" style="--sc:' + sc + '">' +
+      head + glimpse + body +
+    '</div>';
+  }
+
+  function panorama(list) {
+    var agg = new Array(11).fill(0);
+    list.forEach(function (a) { a.dist.forEach(function (v, i) { agg[i] += v; }); });
+    var buckets = { critico: 0, atencao: 0, bom: 0, excelente: 0 };
+    list.forEach(function (a) { buckets[faixa(a.score).key]++; });
+    var totalConv = list.reduce(function (s, a) { return s + a.atendimentos; }, 0);
+    var media = list.length ? (list.reduce(function (s, a) { return s + a.score * a.atendimentos; }, 0) / totalConv) : 0;
+
+    function stat(num, label, color) {
+      return '<div class="pstat"><span class="pstat-num"' + (color ? ' style="color:' + color + '"' : '') + '>' + num + '</span><span class="pstat-lbl">' + label + '</span></div>';
+    }
+    function bucket(key, label, n) {
+      var f = { critico: 'hsl(2 70% 56%)', atencao: 'hsl(32 78% 54%)', bom: 'hsl(78 60% 52%)', excelente: 'hsl(140 62% 50%)' };
+      var pct = list.length ? Math.round(n / list.length * 100) : 0;
+      return '<div class="bk"><span class="bk-dot" style="background:' + f[key] + '"></span>' +
+        '<span class="bk-n">' + n + '</span><span class="bk-lbl">' + label + '</span>' +
+        '<span class="bk-bar"><i style="width:' + pct + '%;background:' + f[key] + '"></i></span></div>';
+    }
+
+    return '<section class="panorama">' +
+      '<div class="pano-left">' +
+        '<div class="pano-gauge" style="--mc:' + scoreColor(media) + '">' +
+          '<div class="gauge-num" style="color:' + scoreColor(media) + '">' + media.toFixed(1) + '<small>/10</small></div>' +
+          '<div class="gauge-lbl">média geral ponderada</div>' +
+        '</div>' +
+        '<div class="pano-stats">' +
+          stat(list.length, 'agentes') +
+          stat(totalConv, 'conversas') +
+        '</div>' +
+      '</div>' +
+      '<div class="pano-buckets">' +
+        '<div class="ag-section-label">Agentes por faixa</div>' +
+        bucket('excelente', 'Excelente · 8+', buckets.excelente) +
+        bucket('bom', 'Bom · 6–7.9', buckets.bom) +
+        bucket('atencao', 'Atenção · 4–5.9', buckets.atencao) +
+        bucket('critico', 'Crítico · < 4', buckets.critico) +
+      '</div>' +
+      '<div class="pano-dist">' +
+        '<div class="ag-section-label">Distribuição geral de notas</div>' +
+        histogram(agg, 'full') +
+      '</div>' +
+    '</section>';
+  }
+
+  function getList() {
+    var list = window.AGENTS.slice();
+    if (state.tier !== 'all') list = list.filter(function (a) { return a.tier === state.tier; });
+    if (state.query) {
+      var q = state.query.toLowerCase();
+      list = list.filter(function (a) { return a.name.toLowerCase().indexOf(q) >= 0; });
+    }
+    list.sort(function (a, b) {
+      switch (state.sort) {
+        case 'score-asc': return a.score - b.score;
+        case 'atend-desc': return b.atendimentos - a.atendimentos;
+        case 'name-asc': return a.name.localeCompare(b.name);
+        default: return b.score - a.score;
+      }
+    });
+    return list;
+  }
+
+  function render() {
+    var list = getList();
+    document.getElementById('panorama').innerHTML = panorama(window.AGENTS);
+    var cards = list.map(function (a) {
+      var rank = window.AGENTS.slice().sort(function (x, y) { return y.score - x.score; }).indexOf(a) + 1;
+      return agentCard(a, rank);
+    }).join('');
+    document.getElementById('agents').innerHTML = list.length
+      ? cards
+      : '<div class="empty-state">Nenhum agente encontrado para os filtros atuais.</div>';
+    document.getElementById('resultCount').textContent = list.length + ' agente' + (list.length === 1 ? '' : 's');
+    document.body.setAttribute('data-density', state.density);
+  }
+
+  function wire() {
+    var root = document.getElementById('agents');
+    root.addEventListener('click', function (e) {
+      var head = e.target.closest('.ag-head');
+      if (head) {
+        var n = head.getAttribute('data-name');
+        state.expanded[n] = !state.expanded[n];
+        render();
+        return;
+      }
+      var tog = e.target.closest('.atend-toggle');
+      if (tog) {
+        var tn = tog.getAttribute('data-table');
+        state.showTable[tn] = !state.showTable[tn];
+        render();
+      }
+    });
+
+    document.querySelectorAll('[data-tier]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        state.tier = b.getAttribute('data-tier');
+        document.querySelectorAll('[data-tier]').forEach(function (x) { x.classList.toggle('on', x === b); });
+        render();
+      });
+    });
+    document.getElementById('sortSel').addEventListener('change', function (e) {
+      state.sort = e.target.value; render();
+    });
+    document.getElementById('searchInput').addEventListener('input', function (e) {
+      state.query = e.target.value; render();
+    });
+    document.getElementById('densityBtn').addEventListener('click', function () {
+      state.density = state.density === 'comfortable' ? 'compact' : 'comfortable';
+      this.querySelector('span').textContent = state.density === 'compact' ? 'Compacto' : 'Confortável';
+      render();
+    });
+    document.getElementById('expandBtn').addEventListener('click', function () {
+      var anyOpen = Object.keys(state.expanded).some(function (k) { return state.expanded[k]; });
+      window.AGENTS.forEach(function (a) { state.expanded[a.name] = !anyOpen; });
+      this.querySelector('span').textContent = anyOpen ? 'Expandir todos' : 'Recolher todos';
+      render();
+    });
+    var calc = document.getElementById('calcBox');
+    calc.querySelector('.calc-head').addEventListener('click', function () {
+      calc.classList.toggle('open');
+    });
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    state.period = String(window.META.days || '7');
+    var ds = document.getElementById('dsSel');
+    if (ds) ds.addEventListener('change', function () {
+      window.location.href = '?canal=' + encodeURIComponent(ds.value) + '&days=' + (window.META.days || 7);
+    });
+    render();
+    wire();
+  });
+})();
+
+</script>
+</body>
+</html>'''
+
+
 @router.get("/dashboard/avaliacao-agentes", response_class=HTMLResponse, include_in_schema=False)
 def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db)):
     """Avaliação de qualidade por agente — redesign (Claude Design handoff).
