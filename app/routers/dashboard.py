@@ -5627,12 +5627,38 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
         intents = _classify_conversation(texts)
         top = _top_alert(intents)
         level_label = top[1] if top else ""
+        level_id = top[0] if top else ""
         prev = info_by_phone.get(phone)
         if not prev or (last_dt and (not prev["last_dt"] or last_dt > prev["last_dt"])):
             info_by_phone[phone] = {
                 "conv_id": conv_id, "last_dt": last_dt, "agent": agent,
-                "client": cnm.get(phone, ""), "level": level_label,
+                "client": cnm.get(phone, ""), "level": level_label, "level_id": level_id,
             }
+
+    # Keywords by alert level, to bold-red the trigger inside the excerpt.
+    _kws_by_level = {aid: list(kws) for aid, _, _, kws in _INTENT_RULES if aid in ALERT_IDS}
+    _all_alert_kws = [kw for aid in _kws_by_level for kw in _kws_by_level[aid]]
+
+    def _highlight_trigger(snippet: str, level_id: str) -> str:
+        """HTML-escape the snippet and wrap the alert trigger (matched keyword)
+        in bold red. Tries the matched level's keywords first, then any alert
+        keyword. Returns safe HTML."""
+        esc = html_mod.escape(snippet or "")
+        if not esc:
+            return esc
+        kws = _kws_by_level.get(level_id, []) + _all_alert_kws
+        for kw in kws:
+            if not kw:
+                continue
+            kw_esc = html_mod.escape(kw)
+            m = _re.search(_re.escape(kw_esc), esc, _re.IGNORECASE)
+            if m:
+                a, b = m.start(), m.end()
+                return (esc[:a]
+                        + '<strong style="color:#cf2e22;font-weight:700">'
+                        + esc[a:b] + '</strong>'
+                        + esc[b:])
+        return esc
 
     # Build rows
     from urllib.parse import quote as _uqj
@@ -5666,11 +5692,13 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
             _lvl_clean = _lvl_clean.replace(_e, "")
         _lvl_clean = _lvl_clean.strip() or "Alerta"
         _sev = "crit" if ("Crítico" in level or "Alto" in level) else "warn"
+        _snip_txt = snippet or "Conversa marcada como problema de conformidade."
         rows.append({
             "data": data_str, "data_sort": data_sort, "cliente": cliente, "telefone": ph,
             "agente": agente, "oque": oque, "conv_id": conv_id,
             "grampo_link": grampo_link, "zenvia_link": zenvia_link,
-            "snippet": snippet or "Conversa marcada como problema de conformidade.",
+            "snippet": _snip_txt,
+            "snippet_html": _highlight_trigger(_snip_txt, info.get("level_id", "")),
             "nivel_label": _lvl_clean, "sev": _sev,
         })
     rows.sort(key=lambda r: r["data_sort"], reverse=True)
@@ -5719,7 +5747,7 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
                 f'</td>'
                 f'<td>'
                 f'  <span class="badge badge-{r["sev"]}"><span class="led"></span>{html_mod.escape(r["nivel_label"])}</span>'
-                f'  <div class="excerpt">{html_mod.escape(r["snippet"])}</div>'
+                f'  <div class="excerpt">{r["snippet_html"]}</div>'
                 f'</td>'
                 f'<td class="col-link">'
                 f'  <div class="links">{zlink}'
