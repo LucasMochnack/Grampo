@@ -5660,10 +5660,18 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
         conv_id = info.get("conv_id") or ""
         grampo_link = f"/dashboard/conversa?phone={_uqj(ph, safe='')}&canal={_uqj(canal, safe='')}"
         zenvia_link = ZENVIA_CONV_URL_TEMPLATE.replace("{id}", conv_id) if (ZENVIA_CONV_URL_TEMPLATE and conv_id) else ""
+        # Level label without emoji + severity bucket for the badge
+        _lvl_clean = level
+        for _e in ("🔴", "🟠", "🟡", "🔵"):
+            _lvl_clean = _lvl_clean.replace(_e, "")
+        _lvl_clean = _lvl_clean.strip() or "Alerta"
+        _sev = "crit" if ("Crítico" in level or "Alto" in level) else "warn"
         rows.append({
             "data": data_str, "data_sort": data_sort, "cliente": cliente, "telefone": ph,
             "agente": agente, "oque": oque, "conv_id": conv_id,
             "grampo_link": grampo_link, "zenvia_link": zenvia_link,
+            "snippet": snippet or "Conversa marcada como problema de conformidade.",
+            "nivel_label": _lvl_clean, "sev": _sev,
         })
     rows.sort(key=lambda r: r["data_sort"], reverse=True)
 
@@ -5684,83 +5692,168 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
         return StreamingResponse(iter(["﻿" + out.getvalue()]), media_type="text/csv; charset=utf-8",
                                  headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
-    # ── HTML (printable, light theme) ────────────────────────────────────────
+    # ── HTML — design "Relatório de Conformidade" (Claude Design handoff) ────
     base = str(request.base_url).rstrip("/")
+    _arrow = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" '
+              'stroke-linecap="round" stroke-linejoin="round"><line x1="7" y1="17" x2="17" y2="7">'
+              '</line><polyline points="7 7 17 7 17 17"></polyline></svg>')
     if not rows:
-        body_rows = '<tr><td colspan="5" style="padding:30px;text-align:center;color:#888">Nenhuma conversa marcada como PROBLEMA. Marque conversas como ⚠ PROBLEMA na aba Alertas.</td></tr>'
+        body_rows = ('<tr><td colspan="4" style="padding:48px;text-align:center;color:#94a2a8;font-size:14px">'
+                     'Nenhuma conversa marcada como <b>⚠ PROBLEMA</b> ainda.<br>'
+                     '<span style="font-size:12.5px">Marque conversas como PROBLEMA na aba Alertas para que entrem neste relatório.</span>'
+                     '</td></tr>')
     else:
         body_rows = ""
-        for i, r in enumerate(rows, 1):
-            zlink = (f'<a href="{html_mod.escape(r["zenvia_link"])}" target="_blank">Abrir na Zenvia ↗</a><br>'
+        for r in rows:
+            zlink = (f'<a class="rlink" href="{html_mod.escape(r["zenvia_link"])}" target="_blank" rel="noopener">Abrir na Zenvia {_arrow}</a>'
                      if r["zenvia_link"] else "")
-            zid = f'<div style="color:#888;font-size:10px;font-family:monospace">Zenvia ID: {html_mod.escape(r["conv_id"])}</div>' if r["conv_id"] else ""
+            zid = (f'<div class="zid"><span>Zenvia ID</span>{html_mod.escape(r["conv_id"])}</div>'
+                   if r["conv_id"] else "")
             body_rows += (
                 f'<tr>'
-                f'<td style="white-space:nowrap">{html_mod.escape(r["data"])}</td>'
-                f'<td><strong>{html_mod.escape(r["cliente"])}</strong><br><span style="color:#888;font-family:monospace;font-size:11px">{html_mod.escape(r["telefone"])}</span><br><span style="color:#888;font-size:11px">{html_mod.escape(r["agente"])}</span></td>'
-                f'<td>{html_mod.escape(r["oque"])}</td>'
-                f'<td>{zlink}<a href="{base}{html_mod.escape(r["grampo_link"])}" target="_blank">Ver conversa (Grampo) ↗</a>{zid}</td>'
+                f'<td class="col-date">{html_mod.escape(r["data"])}</td>'
+                f'<td>'
+                f'  <div class="client-name">{html_mod.escape(r["cliente"])}</div>'
+                f'  <div class="client-phone">{html_mod.escape(r["telefone"])}</div>'
+                f'  <div class="client-advisor">{html_mod.escape(r["agente"])}</div>'
+                f'</td>'
+                f'<td>'
+                f'  <span class="badge badge-{r["sev"]}"><span class="led"></span>{html_mod.escape(r["nivel_label"])}</span>'
+                f'  <div class="excerpt">{html_mod.escape(r["snippet"])}</div>'
+                f'</td>'
+                f'<td class="col-link">'
+                f'  <div class="links">{zlink}'
+                f'    <a class="rlink" href="{base}{html_mod.escape(r["grampo_link"])}" target="_blank" rel="noopener">Ver conversa (Grampo) {_arrow}</a>'
+                f'  </div>{zid}'
+                f'</td>'
                 f'</tr>'
             )
 
-    return HTMLResponse(f"""<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">
-<title>Relatório Jurídico — Alto Valor</title>
+    _count = len(rows)
+    _printer = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+                'stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9">'
+                '</polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2">'
+                '</path><rect x="6" y="14" width="12" height="8"></rect></svg>')
+    _dl = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+           'stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4">'
+           '</path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>')
+
+    return HTMLResponse(f"""<!DOCTYPE html><html lang="pt-BR"><head><meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Relatório de Conformidade — Alto Valor Investimentos</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
 <style>
-  *{{box-sizing:border-box}}
-  body{{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#1a2332;background:#f4f5f8;margin:0;padding:32px}}
-  .sheet{{max-width:1000px;margin:0 auto;background:#fff;border:1px solid #e2e6ee;border-radius:10px;padding:36px 40px;box-shadow:0 1px 4px rgba(0,0,0,.05)}}
-  .rhead{{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;border-bottom:2px solid #1a2332;padding-bottom:18px;margin-bottom:8px}}
-  .rhead h1{{font-size:20px;margin:0 0 4px}}
-  .rhead .sub{{font-size:12px;color:#667}}
-  .actions{{display:flex;gap:8px}}
-  .btn{{font-size:12px;font-weight:600;border:1px solid #ccd;border-radius:7px;padding:8px 14px;background:#fff;color:#1a2332;cursor:pointer;text-decoration:none}}
-  .btn.primary{{background:#1a2332;color:#fff;border-color:#1a2332}}
-  table{{width:100%;border-collapse:collapse;margin-top:18px;font-size:13px}}
-  th{{text-align:left;background:#f0f2f7;color:#445;font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:9px 11px;border-bottom:2px solid #dde}}
-  td{{padding:11px;border-bottom:1px solid #eef;vertical-align:top;line-height:1.5}}
-  tr:nth-child(even) td{{background:#fafbfd}}
-  a{{color:#1f5fd0}}
-  .count{{font-size:12px;color:#667;margin-top:4px}}
+  :root{{
+    --emerald:#06a87a;--emerald-bright:#18c692;--emerald-deep:#063f31;
+    --ink:#0e1b24;--ink-soft:#3a4a52;--muted:#6a787f;--muted-2:#94a2a8;
+    --paper:#fff;--canvas:#eef2f3;--line:#e3e9ea;
+    --crit:#cf2e22;--crit-bg:#fdecea;--warn:#b07d05;--warn-bg:#fbf3da;
+  }}
+  *{{box-sizing:border-box}} html,body{{margin:0;padding:0}}
+  body{{font-family:'IBM Plex Sans',system-ui,sans-serif;background:var(--canvas);color:var(--ink);-webkit-font-smoothing:antialiased;line-height:1.5}}
+  .sheet{{max-width:1040px;margin:40px auto;background:var(--paper);border-radius:18px;overflow:hidden;box-shadow:0 24px 60px -28px rgba(6,30,28,.35),0 2px 8px rgba(10,40,38,.06)}}
+  .hero{{position:relative;background:radial-gradient(120% 140% at 88% -20%, rgba(24,198,146,.32) 0%, rgba(6,168,122,0) 55%),radial-gradient(90% 130% at -8% 120%, rgba(20,170,124,.28) 0%, rgba(6,63,49,0) 52%),linear-gradient(135deg,#0a2826 0%,#07181d 48%,#06121a 100%);color:#fff;padding:34px 44px 30px;overflow:hidden}}
+  .hero::before{{content:"";position:absolute;top:-90px;left:-70px;width:280px;height:280px;background:radial-gradient(closest-side,rgba(26,210,154,.55),rgba(6,168,122,0) 70%);filter:blur(8px);transform:rotate(20deg);border-radius:46% 54% 60% 40%;opacity:.6;pointer-events:none}}
+  .hero::after{{content:"";position:absolute;right:-110px;bottom:-130px;width:360px;height:360px;background:radial-gradient(closest-side,rgba(18,170,124,.5),rgba(6,63,49,0) 72%);border-radius:50% 50% 42% 58%;pointer-events:none}}
+  .hero-top{{position:relative;z-index:2;display:flex;align-items:center;justify-content:space-between;gap:24px;padding-bottom:24px}}
+  .hero-logo{{height:42px;width:auto;display:block}}
+  .hero-tag{{font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--emerald-bright);display:flex;align-items:center;gap:9px;white-space:nowrap}}
+  .hero-tag .dot{{width:7px;height:7px;border-radius:50%;background:var(--emerald-bright);box-shadow:0 0 0 4px rgba(24,198,146,.18)}}
+  .hero-body{{position:relative;z-index:2;display:flex;align-items:flex-end;justify-content:space-between;gap:28px 32px;flex-wrap:wrap}}
+  .hero-left{{flex:1 1 380px;min-width:280px}}
+  .hero-title{{font-family:'Source Serif 4',Georgia,serif;font-weight:600;font-size:31px;line-height:1.2;letter-spacing:-.01em;margin:0 0 14px;max-width:620px}}
+  .hero-meta{{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;font-size:13px;color:rgba(225,238,235,.78)}}
+  .hero-meta b{{color:#fff;font-weight:600}} .hero-meta .sep{{color:rgba(124,176,164,.55)}}
+  .count-badge{{display:inline-flex;align-items:center;gap:10px;margin-top:18px;padding:9px 16px 9px 12px;border-radius:999px;background:rgba(255,255,255,.06);border:1px solid rgba(36,200,150,.34);font-size:13px;font-weight:500;color:#e9f5f1}}
+  .count-badge .num{{font-weight:700;font-size:14px;color:#fff;background:var(--crit);border-radius:7px;padding:3px 9px;line-height:1}}
+  .actions{{display:flex;gap:10px;flex-shrink:0}}
+  .btn{{display:inline-flex;align-items:center;gap:8px;font-family:inherit;font-size:13.5px;font-weight:600;padding:11px 18px;border-radius:10px;cursor:pointer;border:1px solid transparent;transition:.16s ease;text-decoration:none;white-space:nowrap}}
+  .btn svg{{width:16px;height:16px}}
+  .btn-primary{{background:var(--emerald);color:#04221a;border-color:var(--emerald)}}
+  .btn-primary:hover{{background:var(--emerald-bright);box-shadow:0 6px 18px -8px rgba(24,198,146,.7)}}
+  .btn-ghost{{background:rgba(255,255,255,.05);color:#eaf4f1;border-color:rgba(170,210,200,.32)}}
+  .btn-ghost:hover{{background:rgba(255,255,255,.12);border-color:rgba(170,210,200,.55)}}
+  .body{{padding:8px 44px 14px}}
+  table{{width:100%;border-collapse:collapse}}
+  thead th{{text-align:left;font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--emerald-deep);padding:18px 18px 12px;border-bottom:2px solid var(--emerald);vertical-align:bottom}}
+  tbody td{{padding:20px 18px;border-bottom:1px solid var(--line);vertical-align:top;font-size:14px}}
+  tbody tr:last-child td{{border-bottom:none}} tbody tr:hover{{background:#f6faf9}}
+  .col-date{{width:128px;white-space:nowrap;color:var(--ink-soft);font-variant-numeric:tabular-nums;font-weight:500}}
+  .col-link{{width:220px}}
+  .client-name{{font-weight:700;color:var(--ink);font-size:14.5px}}
+  .client-phone{{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--muted);margin-top:4px}}
+  .client-advisor{{font-size:12.5px;color:var(--muted);margin-top:3px}}
+  .badge{{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:3px 9px;border-radius:6px;margin-bottom:8px}}
+  .badge .led{{width:8px;height:8px;border-radius:50%}}
+  .badge-crit{{color:var(--crit);background:var(--crit-bg)}} .badge-crit .led{{background:var(--crit)}}
+  .badge-warn{{color:var(--warn);background:var(--warn-bg)}} .badge-warn .led{{background:#e3b008}}
+  .excerpt{{color:var(--ink-soft);font-size:13.5px;line-height:1.55}}
+  .links{{display:flex;flex-direction:column;gap:7px}}
+  .rlink{{display:inline-flex;align-items:center;gap:5px;color:var(--emerald);font-weight:600;font-size:13px;text-decoration:none;width:fit-content}}
+  .rlink:hover{{color:var(--emerald-bright);text-decoration:underline}} .rlink svg{{width:12px;height:12px}}
+  .zid{{margin-top:7px;font-size:10.5px;color:var(--muted-2);font-family:'IBM Plex Mono',monospace;line-height:1.4}}
+  .zid span{{display:block;letter-spacing:.06em;text-transform:uppercase;color:#b6c1c5;font-size:9px;font-weight:600;margin-bottom:1px}}
+  .foot{{padding:22px 44px 34px;border-top:1px solid var(--line);margin-top:4px;background:#fbfcfc}}
+  .foot p{{margin:0;font-size:12px;line-height:1.6;color:var(--muted);max-width:880px}} .foot b{{color:var(--ink-soft);font-weight:600}}
+  .foot .note{{margin-top:10px;font-size:11.5px;color:#b07d05;background:#fff7ed;border:1px solid #fde7c2;border-radius:8px;padding:10px 13px;line-height:1.6}}
+  .foot .brand-line{{margin-top:14px;display:flex;align-items:center;gap:10px;font-size:11px;color:var(--muted-2);letter-spacing:.04em}}
+  .foot .brand-line .pip{{width:14px;height:2px;background:var(--emerald);border-radius:2px}}
   @media print{{
-    body{{background:#fff;padding:0}}
-    .sheet{{border:none;box-shadow:none;max-width:none;padding:0}}
-    .actions{{display:none}}
-    a{{color:#1a2332;text-decoration:underline}}
+    @page{{margin:14mm}} body{{background:#fff}}
+    .sheet{{margin:0;box-shadow:none;border-radius:0;max-width:none}}
+    .actions{{display:none !important}}
+    .hero,.foot,.badge,.count-badge .num{{-webkit-print-color-adjust:exact;print-color-adjust:exact}}
+    tbody tr{{break-inside:avoid}} .body{{padding:8px 0 14px}} .hero{{padding:24px 28px}} .foot{{padding:18px 0 0}}
+  }}
+  @media(max-width:680px){{
+    .sheet{{margin:0;border-radius:0}} .hero{{padding:24px 22px}} .body,.foot{{padding-left:22px;padding-right:22px}}
+    .hero-body{{flex-direction:column;align-items:flex-start}} .col-link,.col-date{{width:auto}}
+    table,thead,tbody,tr,td{{display:block}} thead{{display:none}}
+    tbody td{{border-bottom:none;padding:6px 0}} tbody tr{{border-bottom:1px solid var(--line);padding:14px 0}}
   }}
 </style></head>
 <body>
-  <div class="sheet">
-    <div class="rhead">
-      <div>
-        <h1>Relatório de Conformidade — Conversas com Problema</h1>
-        <div class="sub">Alto Valor Investimentos · canal {html_mod.escape(canal)} · gerado em {gerado}</div>
-        <div class="count">{len(rows)} conversa(s) confirmada(s) como problema</div>
+  <main class="sheet">
+    <header class="hero">
+      <div class="hero-top">
+        <img class="hero-logo" src="{ALTO_VALOR_LOGO}" alt="Alto Valor Investimentos — XP" />
+        <div class="hero-tag"><span class="dot"></span>Relatório de Conformidade</div>
       </div>
-      <div class="actions">
-        <button class="btn primary" onclick="window.print()">🖨 Imprimir / PDF</button>
-        <a class="btn" href="/dashboard/relatorio-juridico?canal={canal}&format=csv">⬇ Baixar CSV</a>
+      <div class="hero-body">
+        <div class="hero-left">
+          <h1 class="hero-title">Conversas com Problema</h1>
+          <div class="hero-meta">
+            <span>Canal <b>{html_mod.escape(canal)}</b></span>
+            <span class="sep">·</span>
+            <span>Gerado em <b>{gerado}</b></span>
+          </div>
+          <div class="count-badge"><span class="num">{_count}</span> conversa(s) confirmada(s) como problema</div>
+        </div>
+        <div class="actions">
+          <button class="btn btn-primary" onclick="window.print()">{_printer} Imprimir / PDF</button>
+          <a class="btn btn-ghost" href="/dashboard/relatorio-juridico?canal={canal}&format=csv">{_dl} Baixar CSV</a>
+        </div>
       </div>
+    </header>
+    <div class="body">
+      <table>
+        <thead><tr>
+          <th class="col-date">Data</th>
+          <th>Cliente</th>
+          <th>O que aconteceu</th>
+          <th class="col-link">Link da conversa</th>
+        </tr></thead>
+        <tbody>{body_rows}</tbody>
+      </table>
     </div>
-    <table>
-      <thead><tr>
-        <th style="width:130px">Data</th>
-        <th style="width:200px">Cliente</th>
-        <th>O que aconteceu</th>
-        <th style="width:210px">Link da conversa</th>
-      </tr></thead>
-      <tbody>{body_rows}</tbody>
-    </table>
-    <p style="font-size:11px;color:#889;margin-top:20px;line-height:1.6">
-      Cada linha corresponde a uma conversa revisada e classificada como <strong>problema de conformidade</strong>
-      na ferramenta de monitoramento (Grampo/Zenvia). O trecho exibido em "O que aconteceu" é o gatilho que motivou
-      o alerta. O link "Ver conversa (Grampo)" abre o histórico completo e fiel da conversa.
-    </p>
-    <p style="font-size:11px;color:#b45309;background:#fff7ed;border:1px solid #fed7aa;border-radius:7px;padding:10px 13px;margin-top:8px;line-height:1.6">
-      ⚠ <strong>Importante sobre o link "Abrir na Zenvia":</strong> é necessário estar <strong>logado na Zenvia</strong>
-      no mesmo navegador antes de clicar. Se cair na tela de login, faça login na Zenvia, abra o link novamente
-      (ou cole a URL) e a conversa abrirá normalmente. O link "Ver conversa (Grampo)" não exige login na Zenvia.
-    </p>
-  </div>
+    <footer class="foot">
+      <p>Cada linha corresponde a uma conversa revisada e classificada como <b>problema de conformidade</b> na ferramenta de monitoramento (Grampo/Zenvia). O trecho exibido em "O que aconteceu" é o gatilho que motivou o alerta. O link <b>"Ver conversa (Grampo)"</b> abre o histórico completo e fiel da conversa.</p>
+      <p class="note">⚠ <b>Link "Abrir na Zenvia":</b> é necessário estar logado na Zenvia no mesmo navegador antes de clicar. Se cair na tela de login, faça login na Zenvia e abra o link novamente. O link "Ver conversa (Grampo)" não exige login na Zenvia.</p>
+      <div class="brand-line"><span class="pip"></span>Alto Valor Investimentos · Documento interno de conformidade</div>
+    </footer>
+  </main>
 </body></html>""")
 
 
