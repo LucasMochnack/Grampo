@@ -58,6 +58,11 @@ COMPANY_CHANNELS_MAP: dict[str, str] = {
 COMPANY_CHANNELS = set(COMPANY_CHANNELS_MAP.keys())
 HOUR_START, HOUR_END = 6, 19
 
+# Zenvia conversation deep-link template. Put "{id}" where the conversation id
+# goes (e.g. "https://app.zenvia.com/conversations/{id}"). Leave empty to omit
+# the Zenvia link in the legal report (the internal Grampo link is always shown).
+ZENVIA_CONV_URL_TEMPLATE = ""
+
 # ── Business-hours helpers (Sem Resposta detection) ──────────────────────────
 # Working window used to decide whether a client was really "left waiting":
 # nights and weekends don't count, so a Friday-evening message isn't flagged
@@ -5420,6 +5425,7 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                 <span style="width:8px;height:8px;border-radius:50%;background:#dc2626;box-shadow:0 0 10px #dc2626;display:inline-block"></span>
                 <h2 style="margin:0;font-size:15px;color:#fca5a5">⚠ PROBLEMA · Confirmado</h2>
                 <span style="background:#3a1414;color:#dc2626;padding:2px 9px;border-radius:10px;font-size:10px;font-weight:700;border:1px solid #5a2424;letter-spacing:.5px">{len(_acked_problem)} CONFIRMADO{"S" if len(_acked_problem) != 1 else ""}</span>
+                <a href="/dashboard/relatorio-juridico?canal={canal}" target="_blank" rel="noopener" style="margin-left:auto;background:#1a2540;border:1px solid #2a3a5a;color:#c8d4e8;padding:6px 14px;border-radius:7px;font-size:11px;font-weight:700;text-decoration:none;font-family:'Montserrat',sans-serif">📄 Relatório Jurídico</a>
             </div>
             <p style="font-size:11px;color:#4a5a7a;margin-bottom:16px;font-weight:500">
                 Conversas confirmadas como problema real de conformidade — requerem ação do compliance/jurídico.
@@ -5561,6 +5567,195 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
     }}
     </script>
     </body></html>""")
+
+
+@router.get("/dashboard/relatorio-juridico", include_in_schema=False)
+def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)):
+    """Legal report of conversations confirmed as PROBLEMA in the Alertas tab.
+
+    Columns requested by the legal team: Data · Cliente · O que aconteceu ·
+    Link da conversa. Renders a clean printable (light) report; ?format=csv
+    downloads the same data as CSV. Admin-only.
+    """
+    access = _get_access(request, db)
+    if access is None:
+        return _auth_redirect()
+    if (access or {}).get("role") != "admin":
+        return HTMLResponse("<h3 style='font-family:sans-serif;padding:40px'>Acesso restrito a administradores.</h3>", status_code=403)
+
+    canal = request.query_params.get("canal", "5519997733651")
+    fmt   = request.query_params.get("format", "html")
+
+    acked = _get_acked_alerts(db)
+    problemas = {k: v for k, v in acked.items() if (v.get("status") or "ok") == "problema"}
+
+    # Map each problem phone → conversation.id, last date, agent, client name,
+    # and the alert level, from a wide window of events.
+    from app.crud import get_events_since, get_agent_mappings, get_client_names
+    cutoff = (datetime.now(BRASILIA) - timedelta(days=365)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(timezone.utc)
+    raw_evs = get_events_since(db, since=cutoff, limit=120000)
+    raw_evs = _filter_events_by_channel(raw_evs, canal)
+    cam = get_agent_mappings(db)
+    cnm = get_client_names(db)
+    groups_orm, phone_learned = _group_events(raw_evs, cam)
+    db.close()
+
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
+    info_by_phone: dict[str, dict] = {}
+    for key, evs in groups_orm.items():
+        phone = _real_phone(key)
+        sorted_evs = sorted(evs, key=lambda e: e.received_at or _epoch)
+        conv_id = ""
+        last_dt = None
+        texts = []
+        for ev in sorted_evs:
+            p = ev.raw_payload or {}
+            cid = (p.get("conversation") or {}).get("id") or ""
+            if cid:
+                conv_id = cid
+            if ev.received_at:
+                last_dt = ev.received_at
+            d = _extract_direction(p)
+            t = _extract_content_preview(p, max_len=2000) or ""
+            if t:
+                texts.append((d, t))
+        agent = phone_learned.get(key) or cam.get(phone) or phone_learned.get(phone) or "—"
+        intents = _classify_conversation(texts)
+        top = _top_alert(intents)
+        level_label = top[1] if top else ""
+        prev = info_by_phone.get(phone)
+        if not prev or (last_dt and (not prev["last_dt"] or last_dt > prev["last_dt"])):
+            info_by_phone[phone] = {
+                "conv_id": conv_id, "last_dt": last_dt, "agent": agent,
+                "client": cnm.get(phone, ""), "level": level_label,
+            }
+
+    # Build rows
+    from urllib.parse import quote as _uqj
+    rows = []
+    for phone_key, v in problemas.items():
+        ph = _real_phone(phone_key)
+        info = info_by_phone.get(ph, {})
+        # Date: prefer the conversation's last message date; fall back to acked_at
+        dt = info.get("last_dt")
+        if dt:
+            data_str = dt.astimezone(BRASILIA).strftime("%d/%m/%Y %H:%M")
+            data_sort = dt
+        else:
+            try:
+                _ad = datetime.fromisoformat(v.get("acked_at", ""))
+                data_str = _ad.strftime("%d/%m/%Y %H:%M")
+                data_sort = _ad
+            except Exception:
+                data_str = "—"; data_sort = _epoch
+        cliente = v.get("display_name") or info.get("client") or ph
+        agente = v.get("agent") or info.get("agent") or "—"
+        level = info.get("level") or ""
+        snippet = (v.get("snippet") or "").strip()
+        oque = (f"[{level}] " if level else "") + (snippet or "Conversa marcada como problema de conformidade.")
+        conv_id = info.get("conv_id") or ""
+        grampo_link = f"/dashboard/conversa?phone={_uqj(ph, safe='')}&canal={_uqj(canal, safe='')}"
+        zenvia_link = ZENVIA_CONV_URL_TEMPLATE.replace("{id}", conv_id) if (ZENVIA_CONV_URL_TEMPLATE and conv_id) else ""
+        rows.append({
+            "data": data_str, "data_sort": data_sort, "cliente": cliente, "telefone": ph,
+            "agente": agente, "oque": oque, "conv_id": conv_id,
+            "grampo_link": grampo_link, "zenvia_link": zenvia_link,
+        })
+    rows.sort(key=lambda r: r["data_sort"], reverse=True)
+
+    gerado = datetime.now(BRASILIA).strftime("%d/%m/%Y %H:%M")
+
+    # ── CSV ──────────────────────────────────────────────────────────────────
+    if fmt == "csv":
+        import csv as _csv, io as _io
+        out = _io.StringIO()
+        w = _csv.writer(out, delimiter=";")
+        w.writerow(["Data", "Cliente", "Telefone", "Agente", "O que aconteceu", "Conversa (Grampo)", "Zenvia ID", "Zenvia link"])
+        base = str(request.base_url).rstrip("/")
+        for r in rows:
+            w.writerow([r["data"], r["cliente"], f'\t{r["telefone"]}', r["agente"], r["oque"],
+                        base + r["grampo_link"], r["conv_id"], r["zenvia_link"]])
+        from fastapi.responses import StreamingResponse
+        fname = f"relatorio-juridico-{datetime.now(BRASILIA).strftime('%Y%m%d-%H%M')}.csv"
+        return StreamingResponse(iter(["﻿" + out.getvalue()]), media_type="text/csv; charset=utf-8",
+                                 headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+    # ── HTML (printable, light theme) ────────────────────────────────────────
+    base = str(request.base_url).rstrip("/")
+    if not rows:
+        body_rows = '<tr><td colspan="5" style="padding:30px;text-align:center;color:#888">Nenhuma conversa marcada como PROBLEMA. Marque conversas como ⚠ PROBLEMA na aba Alertas.</td></tr>'
+    else:
+        body_rows = ""
+        for i, r in enumerate(rows, 1):
+            zlink = (f'<a href="{html_mod.escape(r["zenvia_link"])}" target="_blank">Abrir na Zenvia ↗</a><br>'
+                     if r["zenvia_link"] else "")
+            zid = f'<div style="color:#888;font-size:10px;font-family:monospace">Zenvia ID: {html_mod.escape(r["conv_id"])}</div>' if r["conv_id"] else ""
+            body_rows += (
+                f'<tr>'
+                f'<td style="white-space:nowrap">{html_mod.escape(r["data"])}</td>'
+                f'<td><strong>{html_mod.escape(r["cliente"])}</strong><br><span style="color:#888;font-family:monospace;font-size:11px">{html_mod.escape(r["telefone"])}</span><br><span style="color:#888;font-size:11px">{html_mod.escape(r["agente"])}</span></td>'
+                f'<td>{html_mod.escape(r["oque"])}</td>'
+                f'<td>{zlink}<a href="{base}{html_mod.escape(r["grampo_link"])}" target="_blank">Ver conversa (Grampo) ↗</a>{zid}</td>'
+                f'</tr>'
+            )
+
+    return HTMLResponse(f"""<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">
+<title>Relatório Jurídico — Alto Valor</title>
+<style>
+  *{{box-sizing:border-box}}
+  body{{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#1a2332;background:#f4f5f8;margin:0;padding:32px}}
+  .sheet{{max-width:1000px;margin:0 auto;background:#fff;border:1px solid #e2e6ee;border-radius:10px;padding:36px 40px;box-shadow:0 1px 4px rgba(0,0,0,.05)}}
+  .rhead{{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;border-bottom:2px solid #1a2332;padding-bottom:18px;margin-bottom:8px}}
+  .rhead h1{{font-size:20px;margin:0 0 4px}}
+  .rhead .sub{{font-size:12px;color:#667}}
+  .actions{{display:flex;gap:8px}}
+  .btn{{font-size:12px;font-weight:600;border:1px solid #ccd;border-radius:7px;padding:8px 14px;background:#fff;color:#1a2332;cursor:pointer;text-decoration:none}}
+  .btn.primary{{background:#1a2332;color:#fff;border-color:#1a2332}}
+  table{{width:100%;border-collapse:collapse;margin-top:18px;font-size:13px}}
+  th{{text-align:left;background:#f0f2f7;color:#445;font-size:11px;letter-spacing:.04em;text-transform:uppercase;padding:9px 11px;border-bottom:2px solid #dde}}
+  td{{padding:11px;border-bottom:1px solid #eef;vertical-align:top;line-height:1.5}}
+  tr:nth-child(even) td{{background:#fafbfd}}
+  a{{color:#1f5fd0}}
+  .count{{font-size:12px;color:#667;margin-top:4px}}
+  @media print{{
+    body{{background:#fff;padding:0}}
+    .sheet{{border:none;box-shadow:none;max-width:none;padding:0}}
+    .actions{{display:none}}
+    a{{color:#1a2332;text-decoration:underline}}
+  }}
+</style></head>
+<body>
+  <div class="sheet">
+    <div class="rhead">
+      <div>
+        <h1>Relatório de Conformidade — Conversas com Problema</h1>
+        <div class="sub">Alto Valor Investimentos · canal {html_mod.escape(canal)} · gerado em {gerado}</div>
+        <div class="count">{len(rows)} conversa(s) confirmada(s) como problema</div>
+      </div>
+      <div class="actions">
+        <button class="btn primary" onclick="window.print()">🖨 Imprimir / PDF</button>
+        <a class="btn" href="/dashboard/relatorio-juridico?canal={canal}&format=csv">⬇ Baixar CSV</a>
+      </div>
+    </div>
+    <table>
+      <thead><tr>
+        <th style="width:130px">Data</th>
+        <th style="width:200px">Cliente</th>
+        <th>O que aconteceu</th>
+        <th style="width:210px">Link da conversa</th>
+      </tr></thead>
+      <tbody>{body_rows}</tbody>
+    </table>
+    <p style="font-size:11px;color:#889;margin-top:20px;line-height:1.6">
+      Cada linha corresponde a uma conversa revisada e classificada como <strong>problema de conformidade</strong>
+      na ferramenta de monitoramento (Grampo/Zenvia). O trecho exibido em "O que aconteceu" é o gatilho que motivou
+      o alerta. O link "Ver conversa (Grampo)" abre o histórico completo e fiel da conversa.
+      {"O link da Zenvia abre a conversa diretamente na plataforma Zenvia." if ZENVIA_CONV_URL_TEMPLATE else "O ID da Zenvia permite localizar a conversa na plataforma Zenvia."}
+    </p>
+  </div>
+</body></html>""")
 
 
 # ── Agents Dashboard ─────────────────────────────────────────────────────────
