@@ -60,10 +60,11 @@ HOUR_START, HOUR_END = 6, 19
 
 # Zenvia conversation deep-link template. "{id}" is replaced with the
 # conversation.id from the webhook payload (matches the id in the Zenvia URL
-# path). We omit the "?g=" group param on purpose: it pins the view to one
-# inbox group and prevented older/closed conversations from opening. The path
-# id is the canonical target. Leave empty to omit the Zenvia link entirely.
-ZENVIA_CONV_URL_TEMPLATE = "https://app.zenvia.com/sales-chat/inbox/all/{id}"
+# path). The "?g=" group param is REQUIRED — without it Zenvia opens the inbox
+# with no group selected ("Selecione um grupo") and shows nothing. With it,
+# the Alto Valor group loads and the conversation list appears. Leave empty to
+# omit the Zenvia link entirely.
+ZENVIA_CONV_URL_TEMPLATE = "https://app.zenvia.com/sales-chat/inbox/all/{id}?g=69a88feecfe7701db3cb102f"
 
 # ── Business-hours helpers (Sem Resposta detection) ──────────────────────────
 # Working window used to decide whether a client was really "left waiting":
