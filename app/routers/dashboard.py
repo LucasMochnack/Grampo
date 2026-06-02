@@ -6286,6 +6286,8 @@ a{color:inherit;text-decoration:none}
 .btn-secondary:hover{border-color:var(--accent);color:var(--accent)}
 .btn-zenvia{font-family:var(--mono);font-size:12px;font-weight:600;background:#16c78418;color:#3ddc97;border:1px solid #16c78455;border-radius:9px;padding:11px 16px;cursor:pointer;transition:.12s;text-decoration:none;display:inline-flex;align-items:center}
 .btn-zenvia:hover{background:#16c78428;border-color:var(--accent)}
+.sr-toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(12px);background:#10242b;color:#d8f7ec;border:1px solid #16c78455;border-radius:11px;padding:12px 18px;font-size:13px;font-weight:600;box-shadow:0 10px 30px #0008;opacity:0;pointer-events:none;transition:.18s;z-index:9999;font-family:var(--mono);max-width:90vw;text-align:center}
+.sr-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 
 @media(max-width:1180px){
   body{grid-template-columns:1fr;overflow:auto;height:auto}
@@ -6468,8 +6470,9 @@ window.SR_META = __SR_META_JSON__;
       '<footer class="conv-foot">' +
         '<button class="btn-primary" data-ok="' + esc(c.id) + '">✓ Marcar como resolvido</button>' +
         '<button class="btn-secondary" data-howto="' + esc(c.id) + '">' + (sugOpen?'Ocultar sugestão':'✦ Gerar resposta') + '</button>' +
-        (c.zenviaUrl ? '<a class="btn-zenvia" href="' + esc(c.zenviaUrl) + '" target="_blank" rel="noopener">💬 Responder na Zenvia</a>' : '') +
-        '<a class="btn-secondary" href="/dashboard/conversa?phone=' + encodeURIComponent(c.phone) + '&canal=' + encodeURIComponent(CANAL) + '" target="_blank" rel="noopener">↗ Abrir no Grampo</a>' +
+        (c.zenviaUrl
+          ? '<a class="btn-zenvia" href="' + esc(c.zenviaUrl) + '" target="_blank" rel="noopener" data-zcopy="' + esc(c.phone) + '">💬 Responder na Zenvia</a>'
+          : '<button class="btn-zenvia" data-zcopy="' + esc(c.phone) + '">⧉ Copiar telefone</button>') +
       '</footer>' +
     '</div>';
   }
@@ -6515,6 +6518,25 @@ window.SR_META = __SR_META_JSON__;
       var b = document.getElementById('suggBody');
       if (b) b.textContent = 'Erro ao gerar sugestão.';
     });
+  }
+
+  /* phone formatted for Zenvia's contact search: digits only, country code
+     "55" stripped so it matches the national number shown in Zenvia. */
+  function zSearchPhone(p){
+    var d = String(p||'').replace(/\D/g,'');
+    if (d.length > 11 && d.indexOf('55') === 0) d = d.slice(2);
+    return d;
+  }
+  function copyPhone(raw){
+    var ph = zSearchPhone(raw);
+    if (navigator.clipboard){ navigator.clipboard.writeText(ph).catch(function(){}); }
+    srToast('📋 Telefone ' + ph + ' copiado — cole na busca 🔍 da Zenvia');
+  }
+  function srToast(msg){
+    var t = document.getElementById('srToast');
+    if (!t){ t = document.createElement('div'); t.id='srToast'; t.className='sr-toast'; document.body.appendChild(t); }
+    t.textContent = msg; t.classList.add('show');
+    clearTimeout(t._h); t._h = setTimeout(function(){ t.classList.remove('show'); }, 2800);
   }
 
   /* ---------- RENDER ---------- */
@@ -6575,6 +6597,14 @@ window.SR_META = __SR_META_JSON__;
       if (cp){ var b=document.getElementById('suggBody'); if(b&&navigator.clipboard){ navigator.clipboard.writeText(b.textContent||'').catch(function(){}); } cp.textContent='✓ Copiado'; setTimeout(function(){ cp.textContent='⧉ Copiar'; },1400); return; }
       var rg = e.target.closest('[data-regen]');
       if (rg){ var c=byId(rg.getAttribute('data-regen')); if(c) loadSuggestion(c); return; }
+      var zc = e.target.closest('[data-zcopy]');
+      if (zc){
+        copyPhone(zc.getAttribute('data-zcopy'));
+        // <a> opens the Zenvia tab on its own (no preventDefault); the <button>
+        // fallback just copies. Flash the button label either way.
+        if (zc.tagName === 'BUTTON'){ var o=zc.textContent; zc.textContent='✓ Copiado'; setTimeout(function(){ zc.textContent=o; },1500); }
+        return;
+      }
     });
 
     document.querySelectorAll('[data-urg]').forEach(function(b){
