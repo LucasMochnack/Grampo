@@ -6291,7 +6291,7 @@ a{color:inherit;text-decoration:none}
 .sr-trat:hover{background:#f59e0b28}
 .sr-trat.on{background:#f59e0b;color:#1a1206;border-color:#f59e0b}
 .is-res .sr-ok{background:#16c78428}
-.sr-card.is-trat{background:#f59e0b0c}
+.sr-card.is-trat{background:#16c7840c;border-color:var(--accent);border-left-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
 .badge-trat{background:#f59e0b22;color:#fbbf24;border:1px solid #f59e0b55}
 .sr-list-empty{padding:50px 20px;text-align:center;color:var(--muted-2);font-size:13px}
 
