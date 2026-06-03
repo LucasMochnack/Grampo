@@ -2350,6 +2350,28 @@ def _save_dismissed_sr(db, dismissed: dict) -> None:
     set_setting(db, "dismissed_sr", json.dumps(dismissed, ensure_ascii=False))
 
 
+def _get_tratativa_sr(db) -> dict:
+    """Return {phone: last_event_id} of Sem Resposta conversations marked as
+    'Em tratativa' (acknowledged / being handled, but not yet answered).
+
+    Unlike a dismissal, an 'em tratativa' conversation STAYS in the queue —
+    it is only flagged and de-prioritized. The mark holds only while the
+    conversation is unchanged: a NEW client message (different last_event_id)
+    clears it so the conversation re-surfaces as freshly pending."""
+    raw = get_setting(db, "tratativa_sr")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_tratativa_sr(db, trat: dict) -> None:
+    set_setting(db, "tratativa_sr", json.dumps(trat, ensure_ascii=False))
+
+
 # ── Nav HTML ─────────────────────────────────────────────────────────────────
 
 _PAGE_TITLES: dict[str, str] = {
@@ -3833,6 +3855,38 @@ async def dismiss_sr_endpoint(request: Request, db: Session = Depends(get_db)):
     dismissed = _get_dismissed_sr(db)
     dismissed[phone] = last_event_id
     _save_dismissed_sr(db, dismissed)
+    # Marking resolved clears any 'em tratativa' flag (it's now done).
+    trat = _get_tratativa_sr(db)
+    if trat.pop(phone, None) is not None:
+        _save_tratativa_sr(db, trat)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/dashboard/tratativa-sr", include_in_schema=False)
+async def tratativa_sr_endpoint(request: Request, db: Session = Depends(get_db)):
+    """Toggle the 'Em tratativa' flag on a Sem Resposta conversation.
+
+    Body: {phone, last_event_id, on}. Stores {phone: last_event_id} so a new
+    client message (different id) clears the flag automatically. The
+    conversation is NOT removed from the queue — only marked/de-prioritized.
+    """
+    if not _check_auth(request):
+        return JSONResponse({"error": "unauth"}, status_code=401)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    phone = (body.get("phone") or "").strip()
+    if not phone:
+        return JSONResponse({"error": "missing phone"}, status_code=400)
+    on = bool(body.get("on", True))
+    last_event_id = (body.get("last_event_id") or "").strip()
+    trat = _get_tratativa_sr(db)
+    if on:
+        trat[phone] = last_event_id
+    else:
+        trat.pop(phone, None)
+    _save_tratativa_sr(db, trat)
     return JSONResponse({"ok": True})
 
 
@@ -6227,13 +6281,18 @@ a{color:inherit;text-decoration:none}
 .sr-assessor{font-family:var(--mono);font-size:10.5px;color:var(--muted-2);margin-top:5px}
 .sr-summary{font-size:12.5px;color:#c6cee0;line-height:1.5;margin-top:10px;text-wrap:pretty;display:flex;gap:7px}
 .sr-summary .sr-ai{flex:none;margin-top:1px}
-.sr-actions{display:flex;gap:8px;margin-top:12px}
-.sr-ok,.sr-howto{flex:1;font-family:var(--mono);font-size:11px;font-weight:600;border-radius:8px;padding:8px;cursor:pointer;border:1px solid;transition:.12s}
+.sr-actions{display:flex;gap:6px;margin-top:12px}
+.sr-ok,.sr-howto,.sr-trat{flex:1;min-width:0;font-family:var(--mono);font-size:10.5px;font-weight:600;border-radius:8px;padding:8px 5px;cursor:pointer;border:1px solid;transition:.12s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .sr-ok{background:#16c78415;color:#3ddc97;border-color:#16c78440}
 .sr-ok:hover{background:#16c78428}
 .sr-howto{background:#3b82f615;color:#7cb0ff;border-color:#3b82f640}
 .sr-howto:hover{background:#3b82f628}
+.sr-trat{background:#f59e0b15;color:#fbbf24;border-color:#f59e0b40}
+.sr-trat:hover{background:#f59e0b28}
+.sr-trat.on{background:#f59e0b;color:#1a1206;border-color:#f59e0b}
 .is-res .sr-ok{background:#16c78428}
+.sr-card.is-trat{background:#f59e0b0c}
+.badge-trat{background:#f59e0b22;color:#fbbf24;border:1px solid #f59e0b55}
 .sr-list-empty{padding:50px 20px;text-align:center;color:var(--muted-2);font-size:13px}
 
 /* VIEWER */
@@ -6287,6 +6346,9 @@ a{color:inherit;text-decoration:none}
 .btn-zenvia{font-family:var(--mono);font-size:12px;font-weight:600;background:#16c78418;color:#3ddc97;border:1px solid #16c78455;border-radius:9px;padding:11px 16px;cursor:pointer;transition:.12s;text-decoration:none;display:inline-flex;align-items:center}
 .btn-zenvia:hover{background:#16c78428;border-color:var(--accent)}
 .btn-zenvia.copied{background:#16c784;color:#03130c;border-color:#16c784;font-weight:700}
+.btn-trat{font-family:var(--mono);font-size:12px;font-weight:600;background:#f59e0b15;color:#fbbf24;border:1px solid #f59e0b55;border-radius:9px;padding:11px 16px;cursor:pointer;transition:.12s}
+.btn-trat:hover{background:#f59e0b28}
+.btn-trat.on{background:#f59e0b;color:#1a1206;border-color:#f59e0b;font-weight:700}
 .sr-toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(12px);background:#10242b;color:#d8f7ec;border:1px solid #16c78455;border-radius:11px;padding:12px 18px;font-size:13px;font-weight:600;box-shadow:0 10px 30px #0008;opacity:0;pointer-events:none;transition:.18s;z-index:9999;font-family:var(--mono);max-width:90vw;text-align:center}
 .sr-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 
@@ -6389,9 +6451,11 @@ window.SR_META = __SR_META_JSON__;
 
   var state = {
     query: '', urgency: 'all', tier: 'all', sort: 'old',
-    selected: null, resolved: {}, showSugg: {},
+    selected: null, resolved: {}, showSugg: {}, tratativa: {},
   };
   var CANAL = window.SR_META.canal;
+  // Seed 'em tratativa' flags from the server (persisted; survive reloads).
+  window.SR_CONV.forEach(function(c){ if (c.emTratativa) state.tratativa[c.id] = true; });
 
   function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
   function first(name){ return (name||'').trim().split(/\s+/)[0] || ''; }
@@ -6408,11 +6472,13 @@ window.SR_META = __SR_META_JSON__;
     var col = urgColor(c.h);
     var sel = state.selected === c.id;
     var res = state.resolved[c.id];
-    return '<article class="sr-card' + (sel?' is-sel':'') + (res?' is-res':'') + '" data-id="' + esc(c.id) + '" style="--uc:' + col + '">' +
+    var trat = !!state.tratativa[c.id] && !res;
+    return '<article class="sr-card' + (sel?' is-sel':'') + (res?' is-res':'') + (trat?' is-trat':'') + '" data-id="' + esc(c.id) + '" style="--uc:' + col + '">' +
       '<header class="sr-card-top">' +
         '<div class="sr-who">' +
           '<span class="sr-name">' + esc(c.cliente) + (c.numero ? ' <small>· ' + esc(c.numero) + '</small>' : '') + '</span>' +
           '<span class="badge ' + t.cls + '">' + t.label + '</span>' +
+          (trat ? '<span class="badge badge-trat">🛠 Em tratativa</span>' : '') +
         '</div>' +
         '<span class="sr-wait" style="color:' + col + '"><span class="sr-wait-dot" style="background:' + col + '"></span>' + waitLabel(c.h) + '</span>' +
       '</header>' +
@@ -6420,7 +6486,8 @@ window.SR_META = __SR_META_JSON__;
       '<div class="sr-summary"><span class="sr-ai">✦</span>' + esc(c.summary) + '</div>' +
       '<div class="sr-actions">' +
         '<button class="sr-ok" data-ok="' + esc(c.id) + '">' + (res ? '✓ Resolvido' : '✓ OK') + '</button>' +
-        '<button class="sr-howto" data-howto="' + esc(c.id) + '">✦ Como atender</button>' +
+        '<button class="sr-trat' + (trat?' on':'') + '" data-trat="' + esc(c.id) + '">🛠 Tratativa</button>' +
+        '<button class="sr-howto" data-howto="' + esc(c.id) + '">✦ Atender</button>' +
       '</div>' +
     '</article>';
   }
@@ -6434,7 +6501,12 @@ window.SR_META = __SR_META_JSON__;
       var q = state.query.toLowerCase();
       l = l.filter(function(c){ return (c.cliente+' '+c.assessor+' '+c.numero).toLowerCase().indexOf(q)>=0; });
     }
-    l.sort(function(a,b){ return state.sort==='new' ? a.h-b.h : b.h-a.h; });
+    l.sort(function(a,b){
+      // 'Em tratativa' (being handled) sinks below conversations still untouched.
+      var ta = state.tratativa[a.id]?1:0, tb = state.tratativa[b.id]?1:0;
+      if (ta !== tb) return ta - tb;
+      return state.sort==='new' ? a.h-b.h : b.h-a.h;
+    });
     return l;
   }
 
@@ -6470,6 +6542,7 @@ window.SR_META = __SR_META_JSON__;
       sug +
       '<footer class="conv-foot">' +
         '<button class="btn-primary" data-ok="' + esc(c.id) + '">✓ Marcar como resolvido</button>' +
+        '<button class="btn-trat' + (state.tratativa[c.id]?' on':'') + '" data-trat="' + esc(c.id) + '">🛠 ' + (state.tratativa[c.id]?'Em tratativa ✓':'Em tratativa') + '</button>' +
         '<button class="btn-secondary" data-howto="' + esc(c.id) + '">' + (sugOpen?'Ocultar sugestão':'✦ Gerar resposta') + '</button>' +
         (c.zenviaUrl
           ? '<a class="btn-zenvia" href="' + esc(c.zenviaUrl) + '" target="_blank" rel="noopener" data-zcopy="' + esc(c.phone) + '">💬 Responder na Zenvia</a>'
@@ -6558,12 +6631,15 @@ window.SR_META = __SR_META_JSON__;
       if (state.showSugg[c.id]) loadSuggestion(c);
     }
 
-    var pend = window.SR_CONV.filter(function(x){ return !state.resolved[x.id]; }).length;
-    var done = window.SR_META.encerradas + (window.SR_CONV.length - pend);
+    var active = window.SR_CONV.filter(function(x){ return !state.resolved[x.id]; });
+    var inTrat = active.filter(function(x){ return state.tratativa[x.id]; }).length;
+    var pend = active.length - inTrat;
+    var done = window.SR_META.encerradas + (window.SR_CONV.length - active.length);
+    var tratTxt = inTrat ? ' · <b>' + inTrat + '</b> em tratativa' : '';
     document.getElementById('srSubhead').innerHTML =
-      '<b>' + pend + '</b> pendentes · tempo útil (seg–sex 9–18h) · ' + esc(window.SR_META.modelo);
+      '<b>' + pend + '</b> pendentes' + tratTxt + ' · tempo útil (seg–sex 9–18h) · ' + esc(window.SR_META.modelo);
     document.getElementById('srFoot').innerHTML =
-      '<b>' + pend + '</b> pendentes · ' + done + ' encerradas verificadas';
+      '<b>' + pend + '</b> pendentes' + tratTxt + ' · ' + done + ' encerradas verificadas';
     document.getElementById('srCount').textContent = l.length + ' na fila';
   }
 
@@ -6575,15 +6651,30 @@ window.SR_META = __SR_META_JSON__;
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({ phone: c.phone, last_event_id: c.lastEventId || '' })
     }).then(function(r){
-      if (r.ok){ state.resolved[id]=true; if(state.selected===id) state.selected=null; render(); }
+      if (r.ok){ state.resolved[id]=true; delete state.tratativa[id]; if(state.selected===id) state.selected=null; render(); }
       else if (btn){ btn.disabled=false; btn.textContent='✓ OK'; }
     }).catch(function(){ if (btn){ btn.disabled=false; btn.textContent='✓ OK'; } });
+  }
+
+  /* Toggle 'Em tratativa' — conversation stays in the queue, just flagged and
+     pushed down. Optimistic; persisted server-side (survives auto-reload). */
+  function doTratativa(id){
+    var c = byId(id); if (!c) return;
+    var on = !state.tratativa[id];
+    if (on) state.tratativa[id] = true; else delete state.tratativa[id];
+    render();
+    fetch('/dashboard/tratativa-sr', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ phone: c.phone, last_event_id: c.lastEventId || '', on: on })
+    }).catch(function(){ /* keep optimistic state; next reload reconciles */ });
   }
 
   function wire(){
     document.getElementById('srList').addEventListener('click', function(e){
       var ok = e.target.closest('[data-ok]');
       if (ok){ e.stopPropagation(); doResolve(ok.getAttribute('data-ok'), ok); return; }
+      var tr = e.target.closest('[data-trat]');
+      if (tr){ e.stopPropagation(); doTratativa(tr.getAttribute('data-trat')); return; }
       var ht = e.target.closest('[data-howto]');
       if (ht){ e.stopPropagation(); var hid=ht.getAttribute('data-howto'); state.selected=hid; state.showSugg[hid]=true; render(); return; }
       var cd = e.target.closest('.sr-card');
@@ -6593,6 +6684,8 @@ window.SR_META = __SR_META_JSON__;
     document.getElementById('srViewer').addEventListener('click', function(e){
       var ok = e.target.closest('[data-ok]');
       if (ok){ doResolve(ok.getAttribute('data-ok'), ok); return; }
+      var tr = e.target.closest('[data-trat]');
+      if (tr){ doTratativa(tr.getAttribute('data-trat')); return; }
       var ht = e.target.closest('[data-howto]');
       if (ht){ var hid=ht.getAttribute('data-howto'); state.showSugg[hid]=!state.showSugg[hid]; render(); return; }
       var cp = e.target.closest('[data-copy]');
@@ -6774,6 +6867,12 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
         return stored == "" or stored == c["last_event_id"]
     candidates = [c for c in candidates if not _is_dismissed(c)]
 
+    # 'Em tratativa' flags: conversation stays in the queue but is marked as
+    # being handled. The flag holds only while the last event is unchanged.
+    tratativa_sr = _get_tratativa_sr(db)
+    def _is_tratativa(c):
+        return c["phone"] in tratativa_sr and tratativa_sr.get(c["phone"], None) == c["last_event_id"]
+
     # ── Run LLM analysis (cached) ────────────────────────────────────────────
     to_analyze = [(c["phone"], c["last_event_id"], c["msg_tuples"]) for c in candidates]
     results = analyze_many(db, to_analyze, max_new=MAX_NEW_ANALYSES)
@@ -6840,6 +6939,7 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
             "phone":       c["phone"],
             "lastEventId": c.get("last_event_id") or "",
             "zenviaUrl":   _zurl,
+            "emTratativa": _is_tratativa(c),
         })
     sr_conv.sort(key=lambda x: x["h"], reverse=True)
 
