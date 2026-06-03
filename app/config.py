@@ -13,7 +13,10 @@ class Settings(BaseSettings):
     SESSION_SECRET: str = ""
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
-    OPENAI_API_KEY: str = ""        # Required for audio transcription via Whisper
+    # Audio transcription (Whisper). Either key works — Groq is free and is
+    # tried first; OpenAI is the paid fallback. Both speak the same API.
+    GROQ_API_KEY: str = ""          # Free Whisper via Groq (console.groq.com)
+    OPENAI_API_KEY: str = ""        # Paid Whisper via OpenAI
     ANTHROPIC_API_KEY: str = ""     # Required for Claude-based "Sem Resposta" analysis
     # Model id to use for conversation analysis (Claude Sonnet 4.6 default).
     ANTHROPIC_MODEL: str = "claude-sonnet-4-6"

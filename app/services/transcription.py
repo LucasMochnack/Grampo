@@ -54,6 +54,26 @@ def _guess_filename(url: str, mime: str) -> str:
     return f"audio{ext}"
 
 
+def _transcriber():
+    """Return (client, model, provider) for whichever Whisper key is set.
+
+    Groq (free tier, no card) is preferred; OpenAI (paid) is the fallback.
+    Both expose the identical OpenAI-style ``audio.transcriptions.create``
+    API — only the base_url and model id differ, so the call site is the same.
+    Returns (None, None, None) when no key is configured.
+    """
+    import openai as _openai
+    if settings.GROQ_API_KEY:
+        client = _openai.OpenAI(
+            api_key=settings.GROQ_API_KEY,
+            base_url="https://api.groq.com/openai/v1",
+        )
+        return client, "whisper-large-v3", "groq"
+    if settings.OPENAI_API_KEY:
+        return _openai.OpenAI(api_key=settings.OPENAI_API_KEY), "whisper-1", "openai"
+    return None, None, None
+
+
 def get_cached(db: Session, url: str) -> str | None:
     """Return cached transcription text, or None if not yet transcribed."""
     row = db.get(AudioTranscription, _url_hash(url))
@@ -66,8 +86,12 @@ def transcribe_url(db: Session, url: str, mime: str = "") -> str:
     Returns the transcription text.  Raises ValueError/RuntimeError on failure.
     Idempotent: if already transcribed, returns cached result immediately.
     """
-    if not settings.OPENAI_API_KEY:
-        raise RuntimeError("OPENAI_API_KEY não configurada — transcrição indisponível")
+    client, model, provider = _transcriber()
+    if client is None:
+        raise RuntimeError(
+            "Transcrição indisponível — configure GROQ_API_KEY (grátis) ou "
+            "OPENAI_API_KEY nas variáveis do Railway"
+        )
 
     # Check cache first
     cached = get_cached(db, url)
@@ -87,13 +111,11 @@ def transcribe_url(db: Session, url: str, mime: str = "") -> str:
     if len(audio_bytes) < 512:
         raise ValueError("Arquivo de áudio vazio ou corrompido")
 
-    # Transcribe
+    # Transcribe (Groq or OpenAI — same API)
     try:
-        import openai as _openai
-        client = _openai.OpenAI(api_key=settings.OPENAI_API_KEY)
         filename = _guess_filename(url, mime)
         result = client.audio.transcriptions.create(
-            model="whisper-1",
+            model=model,
             file=(filename, io.BytesIO(audio_bytes)),
             language="pt",
             response_format="verbose_json",
@@ -101,7 +123,7 @@ def transcribe_url(db: Session, url: str, mime: str = "") -> str:
         text = (result.text or "").strip()
         duration_s = int(result.duration) if hasattr(result, "duration") and result.duration else None
     except Exception as exc:
-        logger.error("Whisper API error: %s", exc)
+        logger.error("Whisper API error (%s): %s", provider, exc)
         raise RuntimeError(f"Erro na API de transcrição: {exc}") from exc
 
     if not text:
