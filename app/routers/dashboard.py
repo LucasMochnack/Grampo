@@ -6286,6 +6286,7 @@ a{color:inherit;text-decoration:none}
 .btn-secondary:hover{border-color:var(--accent);color:var(--accent)}
 .btn-zenvia{font-family:var(--mono);font-size:12px;font-weight:600;background:#16c78418;color:#3ddc97;border:1px solid #16c78455;border-radius:9px;padding:11px 16px;cursor:pointer;transition:.12s;text-decoration:none;display:inline-flex;align-items:center}
 .btn-zenvia:hover{background:#16c78428;border-color:var(--accent)}
+.btn-zenvia.copied{background:#16c784;color:#03130c;border-color:#16c784;font-weight:700}
 .sr-toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(12px);background:#10242b;color:#d8f7ec;border:1px solid #16c78455;border-radius:11px;padding:12px 18px;font-size:13px;font-weight:600;box-shadow:0 10px 30px #0008;opacity:0;pointer-events:none;transition:.18s;z-index:9999;font-family:var(--mono);max-width:90vw;text-align:center}
 .sr-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 
@@ -6530,7 +6531,8 @@ window.SR_META = __SR_META_JSON__;
   function copyPhone(raw){
     var ph = zSearchPhone(raw);
     if (navigator.clipboard){ navigator.clipboard.writeText(ph).catch(function(){}); }
-    srToast('📋 Telefone ' + ph + ' copiado — cole na busca 🔍 da Zenvia');
+    srToast('📋 Telefone ' + ph + ' copiado — cole na busca 🔍 da Zenvia (Ctrl+V)');
+    return ph;
   }
   function srToast(msg){
     var t = document.getElementById('srToast');
@@ -6599,11 +6601,16 @@ window.SR_META = __SR_META_JSON__;
       if (rg){ var c=byId(rg.getAttribute('data-regen')); if(c) loadSuggestion(c); return; }
       var zc = e.target.closest('[data-zcopy]');
       if (zc){
-        copyPhone(zc.getAttribute('data-zcopy'));
-        // <a> opens the Zenvia tab on its own (no preventDefault); the <button>
-        // fallback just copies. Flash the button label either way.
-        if (zc.tagName === 'BUTTON'){ var o=zc.textContent; zc.textContent='✓ Copiado'; setTimeout(function(){ zc.textContent=o; },1500); }
-        return;
+        var num = copyPhone(zc.getAttribute('data-zcopy'));
+        // The <a> opens Zenvia in a new tab (steals focus → the toast on THIS
+        // tab isn't seen). So show a persistent "copied" state on the button
+        // itself, with the exact number — visible when you switch back here.
+        if (!zc._orig) zc._orig = zc.textContent;
+        zc.classList.add('copied');
+        zc.textContent = '✓ ' + num + ' copiado';
+        clearTimeout(zc._t);
+        zc._t = setTimeout(function(){ zc.classList.remove('copied'); zc.textContent = zc._orig; }, 9000);
+        return;   // no preventDefault: <a> still opens Zenvia
       }
     });
 
