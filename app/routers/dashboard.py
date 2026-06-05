@@ -4398,7 +4398,7 @@ def cron_score_daily(request: Request, db: Session = Depends(get_db)):
 
 
 # ══════════════ OPORTUNIDADES — sinais comerciais nas conversas ══════════════
-_OPP_VERSION = "v3"
+_OPP_VERSION = "v4"
 # Resgates abaixo deste valor são rotineiros (uso normal da conta) e NÃO viram
 # alerta de risco de saída — evita ruído de saques pequenos.
 _OPP_RISCO_MIN_VALOR = 3000
@@ -4459,6 +4459,7 @@ CATEGORIAS (campo "tipo"):
 
 REGRAS:
 - Só registre o que foi dito/sinalizado pelo CLIENTE (não promessas ou ofertas do assessor).
+- DESINTERESSE NÃO É OPORTUNIDADE: se o CLIENTE rejeita, critica, ou diz que não tem / não gosta / não quer / não tem interesse no tema, NÃO registre — mesmo que ele CITE o produto. Ex.: "não tenho previdência e nunca gostei", "não gosto de ações", "não quero CDB", "renda variável não é pra mim" → IGNORE. Citar um produto de forma NEGATIVA é o oposto de oportunidade. Só registre se houver abertura/intenção REAL e positiva do cliente.
 - Ignore conversa social, disparo sem resposta e questão puramente operacional sem sinal comercial.
 - Se NÃO houver nenhuma oportunidade real, retorne lista vazia.
 - "valor": número em reais (só dígitos, sem pontos) SE o cliente citar um valor; senão null.
@@ -5044,6 +5045,7 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
     canal    = (request.query_params.get("canal") or "").strip()
     tipo_f   = (request.query_params.get("tipo") or "").strip()
     agente_f = (request.query_params.get("agente") or "").strip()
+    time_f   = (request.query_params.get("time") or "").strip()
 
     from app.models import ConversationOpportunity as _CO
     q = db.query(_CO).filter(_CO.has_opp == 1, _CO.opp_version == _OPP_VERSION)
@@ -5069,6 +5071,7 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         if not _user_sees(access, r.agent or ""):
             continue
         zurl = ZENVIA_CONV_URL_TEMPLATE.replace("{id}", r.conv_id) if (ZENVIA_CONV_URL_TEMPLATE and r.conv_id) else ""
+        seg = _get_segment(r.agent or "") or "Outros"
         for idx, o in enumerate(r.opportunities or []):
             key = f"{r.phone}|{r.last_event_id}|{idx}"
             if key in dismissed:
@@ -5089,16 +5092,19 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
                 "valor": o.get("valor"), "valor_texto": o.get("valor_texto", ""),
                 "data": o.get("data", ""), "confianca": o.get("confianca", 0),
                 "last_msg_at": r.last_msg_at, "stage": stage,
-                "ai_status": ai_status, "pinned": pinned,
+                "ai_status": ai_status, "pinned": pinned, "time": seg,
             })
     db.close()
 
     agents = sorted({i["agente"] for i in all_items if i["agente"]})
+    times = sorted({i["time"] for i in all_items if i["time"]})
     tipo_counts_all = {}
     for i in all_items:
         tipo_counts_all[i["tipo"]] = tipo_counts_all.get(i["tipo"], 0) + 1
 
     items = all_items
+    if time_f:
+        items = [i for i in items if i["time"] == time_f]
     if tipo_f:
         items = [i for i in items if i["tipo"] == tipo_f]
     if agente_f:
@@ -5125,9 +5131,10 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
     from urllib.parse import urlencode
 
     def _qs(**over):
-        c = over.get("canal", canal); t = over.get("tipo", tipo_f); a = over.get("agente", agente_f)
+        c = over.get("canal", canal); t = over.get("tipo", tipo_f); a = over.get("agente", agente_f); tm = over.get("time", time_f)
         d = {}
         if c: d["canal"] = c
+        if tm: d["time"] = tm
         if t: d["tipo"] = t
         if a: d["agente"] = a
         return ("?" + urlencode(d)) if d else "?"
@@ -5140,6 +5147,16 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         act = "active" if tipo_f == tp else ""
         chips.append(f'<a href="{_qs(tipo=tp)}" class="opp-chip {act}" style="--cc:{color}">{emoji} {html_mod.escape(label)} ({cnt})</a>')
     chips_html = "".join(chips)
+
+    time_select = (
+        '<select class="opp-select" onchange="location.href=this.value" title="Filtrar por time comercial">'
+        + f'<option value="{_qs(time="")}">Todos os times</option>'
+        + "".join(
+            f'<option value="{_qs(time=tm)}" {"selected" if time_f == tm else ""}>{html_mod.escape(tm)}</option>'
+            for tm in times
+        )
+        + "</select>"
+    )
 
     ag_select = (
         '<select class="opp-select" onchange="location.href=this.value" title="Filtrar por assessor">'
@@ -5197,7 +5214,7 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         '<div class="opp-toolbar">'
         '<div class="opp-chips">' + chips_html + '</div>'
         '<div class="opp-tools">'
-        + ag_select +
+        + time_select + ag_select +
         '<select class="opp-select" onchange="setOppDays(this.value)" title="Período da busca">'
         '<option value="7">Últimos 7 dias</option>'
         '<option value="15">Últimos 15 dias</option>'
