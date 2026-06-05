@@ -4411,6 +4411,16 @@ _OPP_TIPOS = {
     "outro":           ("Outra oportunidade",     "💡", "#8995b3"),
 }
 
+# Kanban pipeline stages: (id, rótulo, emoji, cor). New opportunities start in
+# "mapeada"; the team drags them across as the deal progresses.
+_OPP_STAGES = [
+    ("mapeada",  "Mapeada",     "🔵", "#3b82f6"),
+    ("execucao", "Em execução", "🟡", "#f59e0b"),
+    ("ganha",    "Ganha",       "🟢", "#0fa968"),
+    ("perdido",  "Perdido",     "🔴", "#ef4444"),
+]
+_OPP_STAGE_IDS = {s[0] for s in _OPP_STAGES}
+
 # Pré-filtro barato (normalizado, sem acento). Só conversas em que o CLIENTE
 # (mensagem IN) disse algo com um destes sinais vão para a análise da IA — isso
 # reduz muito o custo de varrer o banco inteiro.
@@ -4560,6 +4570,23 @@ def _save_dismissed_opps(db, s: set) -> None:
     set_setting(db, "dismissed_opps", json.dumps(sorted(s), ensure_ascii=False))
 
 
+def _get_opp_stages(db) -> dict:
+    """Return {opp_key: stage} for the Kanban. Keys not present default to
+    'mapeada'. opp_key = phone|last_event_id|idx (same as the dismiss key)."""
+    raw = get_setting(db, "opp_stages")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_opp_stages(db, d: dict) -> None:
+    set_setting(db, "opp_stages", json.dumps(d, ensure_ascii=False))
+
+
 @router.post("/dashboard/opp-scan", include_in_schema=False)
 def opp_scan_endpoint(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
     """Mine conversations for commercial opportunities, in batches (AJAX polling).
@@ -4703,6 +4730,23 @@ def dismiss_opp_endpoint(request: Request, body: dict = Body(default={}), db: Se
     return JSONResponse({"ok": True})
 
 
+@router.post("/dashboard/opp-stage", include_in_schema=False)
+def opp_stage_endpoint(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
+    """Move an opportunity to a Kanban stage. Body: {key, stage}."""
+    if not _check_auth(request):
+        return JSONResponse({"error": "unauth"}, status_code=401)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    key = (body.get("key") or "").strip()
+    stage = (body.get("stage") or "").strip()
+    if not key or stage not in _OPP_STAGE_IDS:
+        return JSONResponse({"error": "bad params"}, status_code=400)
+    d = _get_opp_stages(db)
+    d[key] = stage
+    _save_opp_stages(db, d)
+    return JSONResponse({"ok": True})
+
+
 _OPP_CSS = """<style>
 .opp-toolbar{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:18px}
 .opp-chips{display:flex;gap:8px;flex-wrap:wrap}
@@ -4713,23 +4757,36 @@ _OPP_CSS = """<style>
 .opp-select{background:#111a2e;color:#e8ecf1;border:1px solid #1a2540;padding:7px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit}
 .opp-scan-btn{background:#0fa968;color:#0b1120;border:none;padding:8px 16px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit}
 .opp-scan-btn:hover{background:#12c47e}
-.opp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(335px,1fr));gap:14px}
-.opp-card{background:#0e1626;border:1px solid #1a2540;border-left:3px solid #0fa968;border-radius:12px;padding:15px 16px;display:flex;flex-direction:column;gap:9px}
-.opp-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.opp-badge{font-size:10px;font-weight:700;padding:3px 9px;border-radius:6px;text-transform:uppercase;letter-spacing:.03em}
-.opp-valor{font-size:13px;font-weight:800;color:#d4af37;font-family:'JetBrains Mono',monospace}
-.opp-conf{margin-left:auto;font-size:11px;color:#5a6a8a;font-family:'JetBrains Mono',monospace}
-.opp-title{font-size:14.5px;font-weight:700;color:#e8ecf1;line-height:1.3}
-.opp-quote{font-size:12.5px;color:#c6cee0;font-style:italic;border-left:2px solid #2a3a5a;padding:3px 0 3px 10px;line-height:1.45}
-.opp-desc{font-size:12px;color:#8995b3;line-height:1.5}
-.opp-meta{font-size:11px;color:#5a6a8a;font-family:'JetBrains Mono',monospace}
-.opp-actions{display:flex;gap:8px;margin-top:4px;flex-wrap:wrap}
 .opp-btn{font-size:11px;font-weight:600;border-radius:7px;padding:7px 11px;cursor:pointer;border:1px solid;font-family:inherit;transition:.12s}
-.opp-btn-zenvia{background:#16c78415;color:#3ddc97;border-color:#16c78440}
-.opp-btn-zenvia:hover{background:#16c78428}
 .opp-btn-ghost{background:transparent;color:#7a89a8;border-color:#1a2540}
 .opp-btn-ghost:hover{border-color:#ef444455;color:#ef8888}
-.opp-empty{grid-column:1/-1;text-align:center;padding:54px 20px}
+.opp-empty{text-align:center;padding:54px 20px}
+/* ── Kanban ── */
+.kb-board{display:flex;gap:13px;overflow-x:auto;padding-bottom:8px;align-items:flex-start}
+.kb-col{flex:1 1 0;min-width:260px;background:#0b1322;border:1px solid #16203a;border-radius:12px;display:flex;flex-direction:column;max-height:calc(100vh - 290px)}
+.kb-col-head{padding:11px 13px;border-bottom:1px solid #16203a;border-top:3px solid var(--kc,#3b82f6);border-radius:12px 12px 0 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;position:sticky;top:0;background:#0b1322;z-index:2}
+.kb-col-title{font-size:12.5px;font-weight:700;color:#e8ecf1;display:flex;align-items:center;gap:6px}
+.kb-count{margin-left:auto;font-size:11px;font-weight:700;color:#0b1120;background:var(--kc,#3b82f6);border-radius:10px;padding:1px 8px;min-width:20px;text-align:center}
+.kb-colval{font-size:10.5px;color:#8995b3;font-family:'JetBrains Mono',monospace;width:100%}
+.kb-body{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:10px;min-height:90px}
+.kb-body.over{background:#0fa9681a;outline:2px dashed #0fa96866;outline-offset:-6px}
+.kb-body:empty::before{content:'Arraste cards para cá';color:#3a4a6a;font-size:11px;text-align:center;margin:auto;font-style:italic}
+.kb-card{background:#0e1626;border:1px solid #1a2540;border-left:3px solid var(--cc,#0fa968);border-radius:10px;padding:11px 12px;display:flex;flex-direction:column;gap:7px;cursor:grab}
+.kb-card:active{cursor:grabbing}
+.kb-card.dragging{opacity:.4}
+.opp-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.kb-badge{font-size:9px;font-weight:700;padding:2px 7px;border-radius:5px;text-transform:uppercase;letter-spacing:.03em}
+.kb-valor{font-size:12px;font-weight:800;color:#d4af37;font-family:'JetBrains Mono',monospace}
+.kb-conf{margin-left:auto;font-size:10px;color:#5a6a8a;font-family:'JetBrains Mono',monospace}
+.kb-title{font-size:13px;font-weight:700;color:#e8ecf1;line-height:1.3}
+.kb-quote{font-size:11.5px;color:#aeb8cf;font-style:italic;border-left:2px solid #2a3a5a;padding:2px 0 2px 8px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.kb-meta{font-size:10px;color:#5a6a8a;font-family:'JetBrains Mono',monospace}
+.kb-card-foot{display:flex;gap:6px;align-items:center;margin-top:2px}
+.kb-move{flex:1;min-width:0;background:#111a2e;color:#c0c8d8;border:1px solid #1a2540;border-radius:6px;padding:4px 6px;font-size:10.5px;cursor:pointer;font-family:inherit}
+.kb-zbtn{background:#16c78415;color:#3ddc97;border:1px solid #16c78440;border-radius:6px;padding:4px 9px;font-size:11px;cursor:pointer;font-family:inherit}
+.kb-zbtn:hover{background:#16c78428}
+.kb-iconbtn{background:transparent;border:1px solid #1a2540;color:#7a89a8;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer}
+.kb-iconbtn:hover{border-color:#ef444455;color:#ef8888}
 .opp-modal{display:none;position:fixed;inset:0;background:rgba(5,9,18,.8);z-index:1000;align-items:center;justify-content:center}
 .opp-modal-box{background:#0e1626;border:1px solid #1a2540;border-radius:16px;padding:26px 28px;width:90%;max-width:430px;text-align:center}
 .opp-modal-title{font-size:16px;font-weight:700;color:#e8ecf1;margin-bottom:6px}
@@ -4786,10 +4843,62 @@ function oppCopyPhone(phone,zurl){
   if(zurl){window.open(zurl,'_blank','noopener');}
 }
 function dismissOpp(key,btn){
-  if(!confirm('Descartar esta oportunidade da lista?'))return;
+  if(!confirm('Descartar esta oportunidade (falso positivo)?'))return;
   fetch('/dashboard/dismiss-opp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:key,on:true})})
-    .then(function(r){if(r.ok){var c=btn.closest('.opp-card');if(c)c.style.display='none';}});
+    .then(function(r){if(r.ok){var c=btn.closest('.kb-card');if(c)c.remove();refreshKbCounts();}});
 }
+/* ── Kanban: drag-and-drop + dropdown fallback ── */
+var _oppDragKey=null;
+function oppDragStart(ev,key){
+  _oppDragKey=key;
+  try{ev.dataTransfer.effectAllowed='move';ev.dataTransfer.setData('text/plain',key);}catch(e){}
+  ev.currentTarget.classList.add('dragging');
+}
+function oppDragEnd(ev){
+  ev.currentTarget.classList.remove('dragging');
+  document.querySelectorAll('.kb-body.over').forEach(function(c){c.classList.remove('over');});
+}
+function _oppCardByKey(key){
+  var found=null;
+  document.querySelectorAll('.kb-card').forEach(function(c){if(c.getAttribute('data-opp-key')===key)found=c;});
+  return found;
+}
+function moveOpp(key,stage,card){
+  if(card){card.setAttribute('data-stage',stage);var s=card.querySelector('.kb-move');if(s)s.value=stage;}
+  refreshKbCounts();
+  fetch('/dashboard/opp-stage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:key,stage:stage})}).catch(function(){});
+}
+function moveOppSelect(sel){
+  var card=sel.closest('.kb-card');if(!card)return;
+  var key=card.getAttribute('data-opp-key');var stage=sel.value;
+  var body=document.querySelector('.kb-body[data-stage="'+stage+'"]');
+  if(body)body.appendChild(card);
+  moveOpp(key,stage,card);
+}
+function refreshKbCounts(){
+  document.querySelectorAll('.kb-col').forEach(function(col){
+    var body=col.querySelector('.kb-body');if(!body)return;
+    var cards=body.querySelectorAll('.kb-card');
+    var val=0;cards.forEach(function(c){val+=parseInt(c.getAttribute('data-valor')||'0',10)||0;});
+    var cEl=col.querySelector('.kb-count');if(cEl)cEl.textContent=cards.length;
+    var vEl=col.querySelector('.kb-colval');if(vEl)vEl.textContent=val?('R$ '+val.toLocaleString('pt-BR')):'';
+  });
+}
+document.addEventListener('DOMContentLoaded',function(){
+  document.querySelectorAll('.kb-body').forEach(function(body){
+    body.addEventListener('dragover',function(ev){ev.preventDefault();body.classList.add('over');try{ev.dataTransfer.dropEffect='move';}catch(e){}});
+    body.addEventListener('dragleave',function(ev){if(ev.target===body)body.classList.remove('over');});
+    body.addEventListener('drop',function(ev){
+      ev.preventDefault();body.classList.remove('over');
+      var key=_oppDragKey;try{if(!key)key=ev.dataTransfer.getData('text/plain');}catch(e){}
+      if(!key)return;
+      var card=_oppCardByKey(key);if(!card)return;
+      var stage=body.getAttribute('data-stage');
+      body.appendChild(card);
+      moveOpp(key,stage,card);
+    });
+  });
+});
 </script>"""
 
 
@@ -4798,42 +4907,45 @@ def _opp_card_html(i: dict) -> str:
     cliente = html_mod.escape(i["cliente"] or "")
     agente = html_mod.escape(_short_agent_name(i["agente"] or "—"))
     titulo = html_mod.escape(i["titulo"] or "")
-    descricao = html_mod.escape(i["descricao"] or "")
     data = html_mod.escape(i["data"] or "")
     conf = int(i["confianca"] or 0)
+    stage = i.get("stage", "mapeada")
+    valor_int = int(i["valor"]) if i["valor"] else 0
     if i["valor"]:
         valor_str = _fmt_brl(i["valor"])
     elif i["valor_texto"]:
         valor_str = "~ " + html_mod.escape(i["valor_texto"])
     else:
         valor_str = ""
-    valor_html = f'<span class="opp-valor">{valor_str}</span>' if valor_str else ""
-    quote_html = f'<div class="opp-quote">“{html_mod.escape(i["trecho"])}”</div>' if i["trecho"] else ""
-    desc_html = f'<div class="opp-desc">{descricao}</div>' if descricao else ""
+    valor_html = f'<span class="kb-valor">{valor_str}</span>' if valor_str else ""
+    quote_html = f'<div class="kb-quote">“{html_mod.escape(i["trecho"])}”</div>' if i["trecho"] else ""
     data_html = f" · {data}" if data else ""
+    desc_attr = html_mod.escape(i["descricao"] or "", quote=True)
     phone_a = html_mod.escape(i["phone"], quote=True)
     zurl_a = html_mod.escape(i["zurl"], quote=True)
     key_a = html_mod.escape(i["key"], quote=True)
-    if i["zurl"]:
-        action_btn = (f'<button class="opp-btn opp-btn-zenvia" '
-                      f'onclick="oppCopyPhone(&#39;{phone_a}&#39;,&#39;{zurl_a}&#39;)">'
-                      f'💬 Abrir na Zenvia</button>')
-    else:
-        action_btn = (f'<button class="opp-btn opp-btn-zenvia" '
-                      f'onclick="oppCopyPhone(&#39;{phone_a}&#39;,&#39;&#39;)">'
-                      f'⧉ Copiar telefone</button>')
+    z_arg = f"&#39;{zurl_a}&#39;" if i["zurl"] else "&#39;&#39;"
+    z_label = "💬" if i["zurl"] else "⧉"
+    z_title = "Abrir na Zenvia (copia o telefone)" if i["zurl"] else "Copiar telefone"
+    move_opts = "".join(
+        f'<option value="{sid}" {"selected" if stage == sid else ""}>{slabel}</option>'
+        for sid, slabel, _se, _sc in _OPP_STAGES
+    )
     return (
-        f'<div class="opp-card" style="border-left-color:{color}">'
+        f'<div class="kb-card" draggable="true" data-opp-key="{key_a}" data-stage="{stage}" '
+        f'data-valor="{valor_int}" style="--cc:{color}" title="{desc_attr}" '
+        f'ondragstart="oppDragStart(event,&#39;{key_a}&#39;)" ondragend="oppDragEnd(event)">'
         f'<div class="opp-head">'
-        f'<span class="opp-badge" style="background:{color}22;color:{color};border:1px solid {color}55">{emoji} {html_mod.escape(label)}</span>'
-        f'{valor_html}'
-        f'<span class="opp-conf" title="Confiança do sinal">{conf}%</span>'
+        f'<span class="kb-badge" style="background:{color}22;color:{color};border:1px solid {color}55">{emoji} {html_mod.escape(label)}</span>'
+        f'{valor_html}<span class="kb-conf" title="Confiança do sinal">{conf}%</span>'
         f'</div>'
-        f'<div class="opp-title">{titulo}</div>'
-        f'{quote_html}{desc_html}'
-        f'<div class="opp-meta">👤 {cliente} · 🎧 {agente}{data_html}</div>'
-        f'<div class="opp-actions">{action_btn}'
-        f'<button class="opp-btn opp-btn-ghost" onclick="dismissOpp(&#39;{key_a}&#39;,this)">✕ Descartar</button>'
+        f'<div class="kb-title">{titulo}</div>'
+        f'{quote_html}'
+        f'<div class="kb-meta">👤 {cliente} · 🎧 {agente}{data_html}</div>'
+        f'<div class="kb-card-foot">'
+        f'<select class="kb-move" title="Mover etapa" onchange="moveOppSelect(this)">{move_opts}</select>'
+        f'<button class="kb-zbtn" title="{z_title}" onclick="oppCopyPhone(&#39;{phone_a}&#39;,{z_arg})">{z_label}</button>'
+        f'<button class="kb-iconbtn" title="Descartar (falso positivo)" onclick="dismissOpp(&#39;{key_a}&#39;,this)">✕</button>'
         f'</div>'
         f'</div>'
     )
@@ -4855,6 +4967,7 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         q = q.filter(_CO.canal == canal)
     rows = q.all()
     dismissed = _get_dismissed_opps(db)
+    stages = _get_opp_stages(db)
 
     all_items = []
     for r in rows:
@@ -4865,6 +4978,9 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
             key = f"{r.phone}|{r.last_event_id}|{idx}"
             if key in dismissed:
                 continue
+            st = stages.get(key, "mapeada")
+            if st not in _OPP_STAGE_IDS:
+                st = "mapeada"
             all_items.append({
                 "key": key, "phone": r.phone, "conv_id": r.conv_id or "", "zurl": zurl,
                 "cliente": r.client_name or r.phone, "agente": r.agent or "—",
@@ -4872,7 +4988,7 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
                 "descricao": o.get("descricao", ""), "trecho": o.get("trecho", ""),
                 "valor": o.get("valor"), "valor_texto": o.get("valor_texto", ""),
                 "data": o.get("data", ""), "confianca": o.get("confianca", 0),
-                "last_msg_at": r.last_msg_at,
+                "last_msg_at": r.last_msg_at, "stage": st,
             })
     db.close()
 
@@ -4889,9 +5005,20 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
     _epoch = datetime.min.replace(tzinfo=timezone.utc)
     items.sort(key=lambda i: (i["last_msg_at"] or _epoch), reverse=True)
 
+    # Group into Kanban stages
+    by_stage = {sid: [] for sid, *_ in _OPP_STAGES}
+    for i in items:
+        by_stage[i["stage"]].append(i)
+
+    def _sumval(lst):
+        return sum(x["valor"] for x in lst if x["valor"])
+
     total_opps = len(items)
-    valor_total = sum(i["valor"] for i in items if i["valor"])
-    clientes = len({i["phone"] for i in items})
+    valor_aberto = _sumval(by_stage["mapeada"]) + _sumval(by_stage["execucao"])
+    valor_ganho = _sumval(by_stage["ganha"])
+    n_ganha = len(by_stage["ganha"])
+    n_perd = len(by_stage["perdido"])
+    conv_rate = round(100 * n_ganha / (n_ganha + n_perd)) if (n_ganha + n_perd) else 0
     risco = sum(1 for i in items if i["tipo"] == "risco_saida")
 
     from urllib.parse import urlencode
@@ -4923,10 +5050,24 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         + "</select>"
     )
 
-    if items:
-        cards_html = "".join(_opp_card_html(i) for i in items)
+    if all_items:
+        cols = []
+        for sid, slabel, semoji, scolor in _OPP_STAGES:
+            bucket = by_stage[sid]
+            cards = "".join(_opp_card_html(i) for i in bucket)
+            val = _sumval(bucket)
+            valtxt = _fmt_brl(val) if val else ""
+            cols.append(
+                f'<div class="kb-col" style="--kc:{scolor}" data-stage="{sid}">'
+                f'<div class="kb-col-head"><span class="kb-col-title">{semoji} {slabel}</span>'
+                f'<span class="kb-count">{len(bucket)}</span>'
+                f'<span class="kb-colval">{valtxt}</span></div>'
+                f'<div class="kb-body" data-stage="{sid}">{cards}</div>'
+                f'</div>'
+            )
+        board_html = '<div class="kb-board">' + "".join(cols) + '</div>'
     else:
-        cards_html = (
+        board_html = (
             '<div class="opp-empty">'
             '<div style="font-size:36px">💡</div>'
             '<div style="font-size:15px;color:#c0c8d8;margin-top:8px;font-weight:600">Nenhuma oportunidade mapeada ainda</div>'
@@ -4936,15 +5077,14 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
             '</div>'
         )
 
-    valor_fmt = _fmt_brl(valor_total) if valor_total else "—"
     nav = _nav_html("oportunidades", canal=canal, is_admin=is_admin, title="Oportunidades")
     js_vars = f'<script>window.OPP_CANAL={json.dumps(canal)};</script>'
 
     kpi_html = (
         '<div class="kpi-row">'
-        f'<div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{total_opps}</div><div class="label">Oportunidades</div></div>'
-        f'<div class="kpi" style="border-top:3px solid #d4af37"><div class="val" style="font-size:18px;color:#d4af37">{valor_fmt}</div><div class="label">Valor potencial identificado</div></div>'
-        f'<div class="kpi" style="border-top:3px solid #3b82f6"><div class="val">{clientes}</div><div class="label">Clientes com oportunidade</div></div>'
+        f'<div class="kpi" style="border-top:3px solid #d4af37"><div class="val" style="font-size:18px;color:#d4af37">{_fmt_brl(valor_aberto) if valor_aberto else "—"}</div><div class="label">Valor em aberto (mapeada + execução)</div></div>'
+        f'<div class="kpi" style="border-top:3px solid #0fa968"><div class="val" style="font-size:18px;color:#0fa968">{_fmt_brl(valor_ganho) if valor_ganho else "—"}</div><div class="label">Valor ganho</div></div>'
+        f'<div class="kpi" style="border-top:3px solid #3b82f6"><div class="val">{conv_rate}%</div><div class="label">Conversão ({n_ganha} ganhas / {n_perd} perdidas)</div></div>'
         f'<div class="kpi" style="border-top:3px solid {"#ef4444" if risco else "#1a2540"}"><div class="val" style="color:{"#ef4444" if risco else "#e8ecf1"}">{risco}</div><div class="label">⚠️ Risco de saída</div></div>'
         '</div>'
     )
@@ -4985,9 +5125,10 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         '<div class="container">'
         '<p style="font-size:12px;color:#5a6a8a;margin:0 0 14px;max-width:700px;line-height:1.5">'
         'Sinais comerciais que a IA encontrou nas conversas — quando o cliente menciona que vai aportar, '
-        'tem dinheiro em outra instituição, quer comprar um produto, teve um evento de liquidez, ou sinaliza risco de saída.'
+        'tem dinheiro em outra instituição, quer comprar um produto, teve um evento de liquidez, ou sinaliza risco de saída. '
+        'Arraste os cards entre as colunas conforme a negociação avança.'
         '</p>'
-        + kpi_html + toolbar + '<div class="opp-grid">' + cards_html + '</div>'
+        + kpi_html + toolbar + board_html +
         '</div>'
         + modal + js_vars + _OPP_JS +
         '</body></html>'
