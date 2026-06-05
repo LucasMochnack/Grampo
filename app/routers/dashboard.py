@@ -669,10 +669,35 @@ def _extract_channel(payload: dict) -> str:
 
 
 def _filter_events_by_channel(events, canal: str):
-    """Filter events to only those on a specific company channel."""
+    """Filter events to only those on a specific company channel.
+
+    Many real messages (≈12% in prod — outbound templates/files) arrive without
+    from/to, so _extract_channel can't see the company line directly. We first
+    build conversation.id → channel from the events that DO expose it, then let
+    the channel-less events inherit their conversation's channel — otherwise they
+    would be silently dropped from per-channel views.
+    """
     if not canal:
         return events
-    return [ev for ev in events if _extract_channel(ev.raw_payload or {}) == canal]
+    conv_chan: dict[str, str] = {}
+    for ev in events:
+        p = ev.raw_payload or {}
+        ch = _extract_channel(p)
+        if ch:
+            cid = (p.get("conversation") or {}).get("id")
+            if cid:
+                conv_chan[cid] = ch
+    out = []
+    for ev in events:
+        p = ev.raw_payload or {}
+        ch = _extract_channel(p)
+        if not ch:
+            cid = (p.get("conversation") or {}).get("id")
+            if cid:
+                ch = conv_chan.get(cid, "")
+        if ch == canal:
+            out.append(ev)
+    return out
 
 
 # ── Cache key helpers ────────────────────────────────────────────────────────
@@ -1002,7 +1027,13 @@ def _render_msg_content(payload: dict) -> str:
 def _extract_conversation_id(payload: dict) -> str:
     try:
         msg = payload.get("message", {})
-        return msg.get("conversationId", "") or payload.get("conversationId", "")
+        # Real Zenvia field is conversation.id; the message.conversationId /
+        # top-level conversationId forms are kept as defensive fallbacks.
+        return (
+            msg.get("conversationId", "")
+            or payload.get("conversationId", "")
+            or (payload.get("conversation") or {}).get("id", "")
+        )
     except Exception:
         return ""
 
@@ -1190,7 +1221,7 @@ def _group_events(events, client_agent_map):
         p = ev.raw_payload or {}
         conv_id = _extract_conversation_id(p)
         client_num = _extract_client_number(p)
-        if conv_id and client_num:
+        if conv_id and client_num and _real_phone(client_num) not in COMPANY_CHANNELS:
             conv_to_client[conv_id] = client_num
 
     # Sort events chronologically
