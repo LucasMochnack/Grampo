@@ -2184,8 +2184,8 @@ def dashboard_acessos(request: Request, db: Session = Depends(get_db)):
     msg = request.query_params.get("msg", "")
 
     # Build a data-json blob for the JS editor
-    data_json = json.dumps(accesses, ensure_ascii=False)
-    agents_json = json.dumps(agents, ensure_ascii=False)
+    data_json = json.dumps(accesses, ensure_ascii=False).replace("</", "<\\/")
+    agents_json = json.dumps(agents, ensure_ascii=False).replace("</", "<\\/")
 
     # Access log
     try:
@@ -5520,7 +5520,7 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         )
 
     js_vars = (
-        f'<script>window.OPP_CANAL={json.dumps(canal)};'
+        f'<script>window.OPP_CANAL={json.dumps(canal).replace("</", "<\\/")};'
         f'window.OPP_HAS_DATA={"true" if all_items else "false"};</script>'
     )
 
@@ -7082,12 +7082,17 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
     # ── CSV ──────────────────────────────────────────────────────────────────
     if fmt == "csv":
         import csv as _csv, io as _io
+        # Neutralize CSV/Excel formula injection: cells starting with = + - @ or
+        # a tab/CR (client name or message text could) get a leading apostrophe.
+        def _cz(v):
+            s = "" if v is None else str(v)
+            return "'" + s if s[:1] in ("=", "+", "-", "@", "\t", "\r") else s
         out = _io.StringIO()
         w = _csv.writer(out, delimiter=";")
         w.writerow(["Data", "Cliente", "Telefone", "Agente", "O que aconteceu", "Conversa (Grampo)", "Zenvia ID", "Zenvia link"])
         base = str(request.base_url).rstrip("/")
         for r in rows:
-            w.writerow([r["data"], r["cliente"], f'\t{r["telefone"]}', r["agente"], r["oque"],
+            w.writerow([_cz(r["data"]), _cz(r["cliente"]), f'\t{r["telefone"]}', _cz(r["agente"]), _cz(r["oque"]),
                         base + r["grampo_link"], r["conv_id"], r["zenvia_link"]])
         from fastapi.responses import StreamingResponse
         fname = f"relatorio-juridico-{datetime.now(BRASILIA).strftime('%Y%m%d-%H%M')}.csv"
@@ -11147,8 +11152,8 @@ def dashboard_evolucao(request: Request, db: Session = Depends(get_db)):
     # JSON payloads
     _wk_labels_js   = json.dumps(week_labels)
     _team_totals_js  = json.dumps(team_totals)
-    _agents_data_js  = json.dumps({ag: agent_chart[ag] for ag in active_agents})
-    _agents_names_js = json.dumps({ag: _short_agent_name(ag) for ag in active_agents})
+    _agents_data_js  = json.dumps({ag: agent_chart[ag] for ag in active_agents}).replace("</", "<\\/")
+    _agents_names_js = json.dumps({ag: _short_agent_name(ag) for ag in active_agents}).replace("</", "<\\/")
     _agents_colors_js= json.dumps({ag: agent_colors[ag] for ag in active_agents})
     _topics_data_js  = json.dumps({tid: topic_week_data[tid] for tid, *_ in active_topic_info})
     _topics_labels_js= json.dumps([tlabel for _, tlabel, _ in active_topic_info])
