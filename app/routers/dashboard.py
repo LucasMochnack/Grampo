@@ -516,6 +516,11 @@ def _get_access(request: Request, db: Session | None = None) -> dict | None:
     """Return the active access dict {role, agents} or None if not authenticated.
     Admin (master password) → {"role":"admin","agents":[]}.
     """
+    if db is not None:
+        try:
+            _load_seg_overrides(db)   # keep DB segment overrides fresh
+        except Exception:
+            pass
     master_pwd = settings.DASHBOARD_PASSWORD
     if not master_pwd:
         # auth disabled
@@ -556,8 +561,8 @@ def _user_sees(access: dict | None, agent_name: str) -> bool:
     allowed = access.get("agents") or []
     if not allowed:
         return False
-    name = (agent_name or "").strip()
-    return any(name == a for a in allowed)
+    name = _norm_name(agent_name)
+    return any(name == _norm_name(a) for a in allowed)
 
 
 def _auth_redirect():
@@ -872,7 +877,7 @@ def _extract_content_preview(payload: dict, max_len: int = 300) -> str:
             return f"📞 Ligação{_dur_str}"
         # Check top-level event type for special cases
         ev_type = (payload.get("type", "") or "").upper()
-        if ev_type == "MESSAGE_STATUS":
+        if ev_type in ("MESSAGE_STATUS", "CONVERSATION_STATUS"):
             return ""
         # Fallback: try top-level contents
         top_contents = payload.get("contents", [])
@@ -1073,13 +1078,15 @@ def _extract_agent_from_payload(payload: dict) -> str:
                         if known.lower() == candidate.lower():
                             return known
                     # Partial match: if candidate is part of a known agent name
-                    # e.g. "Caio Batista" matches "CAIO HENRIQUE LIMA BATISTA"
+                    # e.g. "Caio Batista" matches "CAIO HENRIQUE LIMA BATISTA".
+                    # Only accept when EXACTLY ONE known agent matches (avoids
+                    # crediting a same-surname colleague).
                     candidate_parts = candidate.lower().split()
                     if len(candidate_parts) >= 2:
-                        for known in AGENT_SEGMENT:
-                            known_parts = known.lower().split()
-                            if all(cp in known_parts for cp in candidate_parts):
-                                return known
+                        _hits = [k for k in AGENT_SEGMENT
+                                 if all(cp in k.lower().split() for cp in candidate_parts)]
+                        if len(_hits) == 1:
+                            return _hits[0]
 
         # Fallback: scan full message body for "Sou [Nome]" / "me chamo [Nome]"
         # matching any known agent name (full or partial)
@@ -1160,13 +1167,64 @@ def _extract_agent_from_payload(payload: dict) -> str:
         return ""
 
 
+def _norm_name(s: str) -> str:
+    """Normalize a person name for matching: lowercase, accent-folded, single-spaced."""
+    import unicodedata
+    s = (s or "").strip().lower()
+    s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+    return " ".join(s.split())
+
+
+# Normalized views of the hardcoded segment map (built once at import).
+_AGENT_SEGMENT_NORM = {_norm_name(k): v for k, v in AGENT_SEGMENT.items()}
+_AGENT_SEGMENT_KEYS = {_norm_name(k): k for k in AGENT_SEGMENT}
+
+# DB-backed segment overrides (normalized name -> segment), refreshed per request
+# from app_settings. Lets new advisors be segmented WITHOUT a code deploy.
+_seg_overrides: dict[str, str] = {}
+
+
+def _load_seg_overrides(db) -> None:
+    global _seg_overrides
+    try:
+        raw = get_setting(db, "agent_segments")
+        data = json.loads(raw) if raw else {}
+        _seg_overrides = {_norm_name(k): v for k, v in data.items() if v} if isinstance(data, dict) else {}
+    except Exception:
+        _seg_overrides = {}
+
+
+def _set_agent_segment(db, agent_name: str, segment: str) -> None:
+    """Persist (or clear) an agent→segment override and refresh the cache."""
+    try:
+        raw = get_setting(db, "agent_segments")
+        data = json.loads(raw) if raw else {}
+        if not isinstance(data, dict):
+            data = {}
+    except Exception:
+        data = {}
+    if segment:
+        data[agent_name] = segment
+    else:
+        data.pop(agent_name, None)
+    set_setting(db, "agent_segments", json.dumps(data, ensure_ascii=False))
+    _load_seg_overrides(db)
+
+
+def _canon_agent_name(name: str) -> str:
+    """Map a free-text advisor name to its canonical AGENT_SEGMENT key when it
+    matches (accent/case/space-insensitive); otherwise return it trimmed."""
+    return _AGENT_SEGMENT_KEYS.get(_norm_name(name), (name or "").strip())
+
+
 def _get_segment(agent_name: str) -> str:
     if not agent_name or agent_name == "Sem atendente":
         return ""
-    for known, seg in AGENT_SEGMENT.items():
-        if known.lower() == agent_name.lower():
-            return seg
-    return ""
+    n = _norm_name(agent_name)
+    if not n:
+        return ""
+    # DB override wins over the hardcoded map; both matched accent/case-insensitively.
+    return _seg_overrides.get(n) or _AGENT_SEGMENT_NORM.get(n) or ""
 
 
 def _segment_badge(agent_name: str) -> str:
@@ -2325,13 +2383,41 @@ async def upload_csv(request: Request, db: Session = Depends(get_db)):
     text = content.decode("utf-8-sig", errors="replace")
     reader = csv.DictReader(io.StringIO(text))
     mappings: dict[str, dict[str, str]] = {}
+    seg_updates: dict[str, str] = {}
+    import re as _re_csv
     for row in reader:
-        phone = (row.get("Telefone") or "").strip()
+        phone_raw = (row.get("Telefone") or "").strip()
         agent = (row.get("Agente") or "").strip()
         client = (row.get("Nome completo") or "").strip()
-        if phone and agent:
-            mappings[phone] = {"agent_name": agent, "client_name": client}
+        seg = (row.get("Segmento") or row.get("Time") or row.get("Time comercial") or "").strip()
+        agent_c = _canon_agent_name(agent)
+        # Normalize the phone to digits and cover with/without the 55 country code,
+        # so the gabarito key matches the digits extracted from the webhook.
+        digits = _re_csv.sub(r"\D", "", phone_raw)
+        keys = set()
+        if digits:
+            keys.add(digits)
+            if len(digits) in (10, 11):
+                keys.add("55" + digits)
+            elif digits.startswith("55") and len(digits) >= 12:
+                keys.add(digits[2:])
+        if agent and keys:
+            for k in keys:
+                mappings[k] = {"agent_name": agent_c, "client_name": client}
+        if agent and seg:
+            seg_updates[agent_c] = seg
     count = replace_agent_mappings(db, mappings)
+    if seg_updates:
+        try:
+            raw = get_setting(db, "agent_segments")
+            data = json.loads(raw) if raw else {}
+            if not isinstance(data, dict):
+                data = {}
+        except Exception:
+            data = {}
+        data.update(seg_updates)
+        set_setting(db, "agent_segments", json.dumps(data, ensure_ascii=False))
+        _load_seg_overrides(db)
     set_setting(db, "gabarito_updated_at", datetime.now(BRASILIA).isoformat())
     # Gabarito mudou → invalida o cache de pipeline para que a próxima
     # request reconstrua os groups com o novo client_agent_map.
@@ -8036,7 +8122,7 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
             "id":          c["phone"],
             "cliente":     c.get("client_name") or c["phone"],
             "numero":      c["phone"],
-            "tier":        _TIER_MAP.get(AGENT_SEGMENT.get(c["agent"], ""), "interno"),
+            "tier":        _TIER_MAP.get(_get_segment(c["agent"]), "interno"),
             "assessor":    c["agent"],
             "h":           biz_h,
             "realH":       c.get("silence_real_h", 0),
@@ -8830,7 +8916,7 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
 
         agents_data.append({
             "name":        agent,
-            "tier":        _TIER_MAP.get(AGENT_SEGMENT.get(agent, ""), "interno"),
+            "tier":        _TIER_MAP.get(_get_segment(agent), "interno"),
             "score":       round(avg, 2),
             "dist":        dist,
             "atendimentos": len(slist),
