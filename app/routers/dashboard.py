@@ -4518,7 +4518,7 @@ def _call_opp_llm(transcript: str) -> list:
     client = _anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
     resp = client.messages.create(
         model=settings.ANTHROPIC_MODEL,
-        max_tokens=900,
+        max_tokens=1500,
         system=_OPP_SYSTEM,
         messages=[{"role": "user", "content": f"Analise a conversa e extraia as oportunidades:\n\n{transcript}"}],
     )
