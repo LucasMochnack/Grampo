@@ -198,3 +198,43 @@ class ConversationAnalysis(Base):
     )
 
 
+class ConversationOpportunity(Base):
+    """Cached commercial/investment opportunities mined from a conversation by
+    Claude (e.g. client says they'll deposit, has money at another bank, wants
+    to buy a product, had a liquidity event, or is at risk of leaving).
+
+    Keyed by (phone, last_event_id) so a conversation is only mined once per
+    state — a new message changes the key and triggers a re-scan. A single
+    conversation can surface several opportunities, stored as a JSON list.
+    Conversations scanned with no opportunity are cached with has_opp=0 so they
+    are not re-sent to the LLM on the next run.
+    """
+    __tablename__ = "conversation_opportunities"
+
+    phone         = Column(String(32), primary_key=True)
+    last_event_id = Column(String(64), primary_key=True)
+    canal         = Column(String(32), nullable=True)
+    conv_id       = Column(String(64), nullable=True)   # Zenvia conversation.id (deep link)
+
+    client_name   = Column(String(255), nullable=True)
+    agent         = Column(String(255), nullable=True)
+
+    has_opp       = Column(Integer, nullable=False, default=0)   # 1/0 — any opportunity?
+    opp_count     = Column(Integer, nullable=False, default=0)
+    # list[dict]: {tipo,titulo,descricao,trecho,valor,valor_texto,data,confianca}
+    opportunities = Column(JSON, nullable=True)
+    last_msg_at   = Column(DateTime(timezone=True), nullable=True)  # recency sort
+    opp_version   = Column(String(16), nullable=False, default="v1")
+
+    detected_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_conv_opps_has", "has_opp"),
+        Index("ix_conv_opps_canal", "canal"),
+    )
+
+

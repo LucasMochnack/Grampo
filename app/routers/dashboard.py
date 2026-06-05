@@ -2381,6 +2381,7 @@ _PAGE_TITLES: dict[str, str] = {
     "mensagens":  "Mensagens Iniciais",
     "alertas":    "Alertas",
     "sem-resposta": "Sem Resposta",
+    "oportunidades": "Oportunidades",
     "temas":      "Temas",
     "evolucao":   "Evolução",
     "acessos":    "Acessos",
@@ -2428,6 +2429,7 @@ def _nav_html(active: str, extra: str = "", canal: str = "", unacked_alerts: int
     {_ni("conversas", "Conversas", f"/dashboard{canal_qs}", unacked_b)}
     <a href="/dashboard/alertas{canal_qs}" class="nav-item {'active' if active == 'alertas' else ''}">Alertas{acked_b_html}</a>
     {_ni("sem-resposta", "Sem Resposta", f"/dashboard/sem-resposta{canal_qs}")}
+    {_ni("oportunidades", "Oportunidades", f"/dashboard/oportunidades{canal_qs}")}
     {_ni("agentes", "Agentes", f"/dashboard/agentes{canal_qs}")}
   </div>
   <div class="nav-group">
@@ -4393,6 +4395,604 @@ def cron_score_daily(request: Request, db: Session = Depends(get_db)):
         "errors": total_errors,
         "days": days,
     })
+
+
+# ══════════════ OPORTUNIDADES — sinais comerciais nas conversas ══════════════
+_OPP_VERSION = "v1"
+
+# (tipo) -> (rótulo, emoji, cor hex)
+_OPP_TIPOS = {
+    "aporte":          ("Novo aporte",            "💰", "#0fa968"),
+    "recurso_externo": ("Recurso em outro banco", "🏦", "#3b82f6"),
+    "liquidez":        ("Evento de liquidez",     "💵", "#d4af37"),
+    "produto":         ("Interesse em produto",   "📈", "#a855f7"),
+    "indicacao":       ("Indicação",              "🤝", "#22d3ee"),
+    "risco_saida":     ("Risco de saída",         "⚠️", "#ef4444"),
+    "outro":           ("Outra oportunidade",     "💡", "#8995b3"),
+}
+
+# Pré-filtro barato (normalizado, sem acento). Só conversas em que o CLIENTE
+# (mensagem IN) disse algo com um destes sinais vão para a análise da IA — isso
+# reduz muito o custo de varrer o banco inteiro.
+_OPP_KEYWORDS = (
+    "aport", "aplicar", "aplicacao", "investir", "investimento", "investe",
+    "dinheiro parado", "dinheiro fora", "dinheiro sobrando", "sobrou", "sobrando",
+    "poupanca", "outro banco", "outra corretora", "no banco", "no itau", "no bradesco",
+    "no santander", "na caixa", "no nubank", "no inter", "no btg", "no c6",
+    "resgat", "sacar", "saque", "retirar", "tirar o dinheiro", "levar o dinheiro",
+    "transferir", "portabilidade", "trazer o dinheiro", "trazer meu",
+    "vender", "vendi", "vou vender", "venda do", "heranca", "fgts", "rescisao",
+    "bonus", "plr", "decimo terceiro", "13o", "premio", "indenizacao",
+    "recebi", "vou receber", "vai cair", "caiu na conta", "recebimento",
+    "comprar", "quero comprar", "tenho interesse", "interessado", "gostaria de investir",
+    "previdencia", "cdb", "tesouro", "lci", "lca", "fundo", "fundos", "acoes",
+    "dolar", "dolares", "cripto", "bitcoin", "coe", "debenture", "renda fixa",
+    "mil reais", "milhao", "milhoes", "100 mil", "50 mil", "200 mil", "300 mil",
+    "abrir conta", "comecar a investir", "diversificar", "rentabilidade melhor",
+)
+
+_OPP_SYSTEM = """Você é um analista comercial de uma assessoria de investimentos (Alto Valor / XP). \
+Leia a conversa de WhatsApp entre ASSESSOR e CLIENTE e identifique OPORTUNIDADES COMERCIAIS \
+sinalizadas pelo CLIENTE — momentos com dinheiro a captar, investir ou reter.
+
+CATEGORIAS (campo "tipo"):
+- "aporte": cliente sinaliza que vai aportar, tem dinheiro disponível para investir, vai depositar.
+- "recurso_externo": cliente menciona dinheiro ou investimentos em OUTRA instituição (outro banco, outra corretora, poupança, dinheiro parado fora).
+- "liquidez": evento de liquidez — venda de imóvel/carro, herança, FGTS, rescisão, PLR, bônus, 13º, prêmio, indenização, recebimento futuro.
+- "produto": interesse explícito num produto (CDB, Tesouro, fundo, previdência, ações, dólar, cripto, COE, debênture, seguro...).
+- "indicacao": cliente menciona indicar alguém / um familiar ou conhecido que quer investir.
+- "risco_saida": ATENÇÃO — cliente quer resgatar/sacar/levar dinheiro embora, ou demonstra insatisfação que pode levar à evasão (importante para retenção).
+- "outro": outra oportunidade comercial relevante.
+
+REGRAS:
+- Só registre o que foi dito/sinalizado pelo CLIENTE (não promessas ou ofertas do assessor).
+- Ignore conversa social, disparo sem resposta e questão puramente operacional sem sinal comercial.
+- Se NÃO houver nenhuma oportunidade real, retorne lista vazia.
+- "valor": número em reais (só dígitos, sem pontos) SE o cliente citar um valor; senão null.
+- "valor_texto": o valor como dito ("uns 50 mil", "R$ 200.000"); senão "".
+- "trecho": citação curta da fala do CLIENTE que evidencia o sinal (até ~140 caracteres).
+- "titulo": rótulo curto (3-6 palavras). Ex: "Vai aportar 50 mil", "Tem grana em outro banco", "Quer comprar CDB".
+- "descricao": 1 frase objetiva com a oportunidade e o próximo passo sugerido ao assessor.
+- "data": data (DD/MM) da mensagem do cliente que gerou o sinal.
+- "confianca": 0-100, quão claro e forte é o sinal.
+
+Responda SOMENTE em JSON, sem markdown:
+{"oportunidades":[{"tipo":"aporte","titulo":"Vai aportar 50 mil","descricao":"Cliente recebeu bônus e quer investir; agendar ligação para alocar.","trecho":"recebi um bônus, queria aplicar uns 50 mil","valor":50000,"valor_texto":"uns 50 mil","data":"12/05","confianca":85}]}
+Se nenhuma oportunidade: {"oportunidades":[]}"""
+
+
+def _opp_norm(s: str) -> str:
+    import unicodedata as _ud
+    s = (s or "").lower()
+    return "".join(c for c in _ud.normalize("NFKD", s) if not _ud.combining(c))
+
+
+def _opp_text_has_signal(text: str) -> bool:
+    t = _opp_norm(text)
+    return any(k in t for k in _OPP_KEYWORDS)
+
+
+def _fmt_brl(v) -> str:
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    return "R$ " + f"{n:,.0f}".replace(",", ".")
+
+
+def _call_opp_llm(transcript: str) -> list:
+    """Call Claude and return a validated list of opportunity dicts."""
+    import anthropic as _anthropic, re as _re
+    client = _anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
+    resp = client.messages.create(
+        model=settings.ANTHROPIC_MODEL,
+        max_tokens=900,
+        system=_OPP_SYSTEM,
+        messages=[{"role": "user", "content": f"Analise a conversa e extraia as oportunidades:\n\n{transcript}"}],
+    )
+    raw = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
+    m = _re.search(r"\{[\s\S]*\}", raw)
+    data = json.loads(m.group(0)) if m else {}
+
+    out = []
+    for o in (data.get("oportunidades") or [])[:8]:
+        tipo = str(o.get("tipo", "outro")).strip().lower()
+        if tipo not in _OPP_TIPOS:
+            tipo = "outro"
+        titulo = str(o.get("titulo", "")).strip()[:80]
+        if not titulo:
+            continue
+        try:
+            valor = int(float(o["valor"])) if o.get("valor") not in (None, "", "null") else None
+        except (TypeError, ValueError):
+            valor = None
+        try:
+            conf = max(0, min(100, int(o.get("confianca", 0))))
+        except (TypeError, ValueError):
+            conf = 0
+        out.append({
+            "tipo":        tipo,
+            "titulo":      titulo,
+            "descricao":   str(o.get("descricao", "")).strip()[:300],
+            "trecho":      str(o.get("trecho", "")).strip()[:240],
+            "valor":       valor,
+            "valor_texto": str(o.get("valor_texto", "")).strip()[:60],
+            "data":        str(o.get("data", "")).strip()[:20],
+            "confianca":   conf,
+        })
+    # keep only reasonably confident signals (cuts noise)
+    return [o for o in out if o["confianca"] >= 40]
+
+
+def _upsert_opp(db, phone, last_event_id, canal, conv_id, client_name, agent, last_msg_at, opps) -> None:
+    from app.models import ConversationOpportunity as _CO
+    row = db.get(_CO, (phone, last_event_id))
+    now_utc = datetime.now(timezone.utc)
+    has = 1 if opps else 0
+    if row:
+        row.canal = canal; row.conv_id = conv_id; row.client_name = client_name
+        row.agent = agent; row.has_opp = has; row.opp_count = len(opps)
+        row.opportunities = opps; row.last_msg_at = last_msg_at
+        row.opp_version = _OPP_VERSION; row.detected_at = now_utc
+    else:
+        row = _CO(
+            phone=phone, last_event_id=last_event_id, canal=canal, conv_id=conv_id,
+            client_name=client_name, agent=agent, has_opp=has, opp_count=len(opps),
+            opportunities=opps, last_msg_at=last_msg_at,
+            opp_version=_OPP_VERSION, detected_at=now_utc,
+        )
+        db.add(row)
+    db.commit()
+
+
+def _get_dismissed_opps(db) -> set:
+    raw = get_setting(db, "dismissed_opps")
+    if not raw:
+        return set()
+    try:
+        data = json.loads(raw)
+        return set(data) if isinstance(data, list) else set()
+    except Exception:
+        return set()
+
+
+def _save_dismissed_opps(db, s: set) -> None:
+    set_setting(db, "dismissed_opps", json.dumps(sorted(s), ensure_ascii=False))
+
+
+@router.post("/dashboard/opp-scan", include_in_schema=False)
+def opp_scan_endpoint(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
+    """Mine conversations for commercial opportunities, in batches (AJAX polling).
+
+    Body: { canal, offset, batch_size, days }
+    Returns: { done, total, next_offset, finished, scanned_this_call, found_this_call, errors }
+
+    A cheap keyword pre-filter on the CLIENT messages selects candidates; only
+    those go to the LLM. Already-mined states (same last_event_id + version) are
+    skipped instantly. Sync def → threadpool (never freezes the event loop).
+    """
+    if not _check_auth(request):
+        return JSONResponse({"error": "unauth"}, status_code=401)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad json"}, status_code=400)
+
+    canal      = (body.get("canal") or "").strip()      # "" = todos os canais
+    offset     = max(0, int(body.get("offset") or 0))
+    batch_size = max(1, min(15, int(body.get("batch_size") or 8)))
+    days       = max(1, min(180, int(body.get("days") or 30)))
+
+    if not settings.ANTHROPIC_API_KEY:
+        db.close()
+        return JSONResponse({"error": "ANTHROPIC_API_KEY não configurada"}, status_code=503)
+
+    from app.crud import get_events_since, get_agent_mappings, get_client_names
+    from app.models import ConversationOpportunity as _CO
+
+    cutoff_utc = (datetime.now(BRASILIA) - timedelta(days=days)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ).astimezone(timezone.utc)
+
+    raw_evs = get_events_since(db, since=cutoff_utc, limit=120000)
+    raw_evs = _filter_events_by_channel(raw_evs, canal)
+    cam = get_agent_mappings(db)
+    cnm = get_client_names(db)
+
+    groups_orm, phone_learned = _group_events(raw_evs, cam)
+    cp = _real_phone(canal) if canal else None
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
+
+    candidates = []
+    for key, evs in groups_orm.items():
+        rp = _real_phone(key)
+        if cp and rp == cp:
+            continue
+        agent = (phone_learned.get(key) or cam.get(rp)
+                 or phone_learned.get(rp) or "Sem atendente")
+        if agent == "Sem atendente":
+            continue
+        sorted_evs = sorted(
+            [e for e in evs if (e.raw_payload or {}).get("type", "").upper()
+             not in ("MESSAGE_STATUS", "CONVERSATION_STATUS")],
+            key=lambda e: e.received_at or _epoch
+        )
+        if not sorted_evs:
+            continue
+        last_event_id = str(sorted_evs[-1].id)
+        last_msg_at = sorted_evs[-1].received_at
+        conv_id = ""
+        conv_canal = ""
+        msg_tuples = []
+        has_signal = False
+        for ev in sorted_evs:
+            _p = ev.raw_payload or {}
+            if not conv_id:
+                _cid = _extract_conversation_id(_p)
+                if _cid:
+                    conv_id = _cid
+            if not conv_canal:
+                _cc = _extract_channel(_p)
+                if _cc:
+                    conv_canal = _cc
+            _dir = _extract_direction(_p)
+            _txt = _extract_content_preview(_p, max_len=1000) or ""
+            _ts = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
+            if _txt:
+                msg_tuples.append((_dir, _txt, _ts))
+                if (_dir or "").upper() == "IN" and _opp_text_has_signal(_txt):
+                    has_signal = True
+        if not has_signal or not msg_tuples:
+            continue
+        client_name = cnm.get(rp, "") or rp
+        candidates.append((rp, last_event_id, conv_id, conv_canal or canal,
+                           agent, client_name, last_msg_at, msg_tuples))
+
+    # Stable order: most recent activity first
+    candidates.sort(key=lambda c: c[6] or _epoch, reverse=True)
+
+    total = len(candidates)
+    slice_ = candidates[offset: offset + batch_size]
+
+    scanned_this = 0
+    found_this = 0
+    errors = 0
+    for rp, last_event_id, conv_id, conv_canal, agent, client_name, last_msg_at, msg_tuples in slice_:
+        cached = db.get(_CO, (rp, last_event_id))
+        if cached and cached.opp_version == _OPP_VERSION:
+            scanned_this += 1
+            continue
+        try:
+            opps = _call_opp_llm(_build_transcript(msg_tuples))
+            _upsert_opp(db, rp, last_event_id, conv_canal, conv_id,
+                        client_name, agent, last_msg_at, opps)
+            scanned_this += 1
+            found_this += len(opps)
+        except Exception:
+            errors += 1
+
+    next_offset = offset + batch_size
+    finished = next_offset >= total
+    db.close()
+    return JSONResponse({
+        "done":              min(next_offset, total),
+        "total":             total,
+        "next_offset":       next_offset if not finished else total,
+        "finished":          finished,
+        "scanned_this_call": scanned_this,
+        "found_this_call":   found_this,
+        "errors":            errors,
+    })
+
+
+@router.post("/dashboard/dismiss-opp", include_in_schema=False)
+def dismiss_opp_endpoint(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
+    """Hide/unhide a single opportunity (false positive). Key = phone|event_id|idx."""
+    if not _check_auth(request):
+        return JSONResponse({"error": "unauth"}, status_code=401)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    key = (body.get("key") or "").strip()
+    if not key:
+        return JSONResponse({"error": "missing key"}, status_code=400)
+    on = bool(body.get("on", True))
+    s = _get_dismissed_opps(db)
+    if on:
+        s.add(key)
+    else:
+        s.discard(key)
+    _save_dismissed_opps(db, s)
+    return JSONResponse({"ok": True})
+
+
+_OPP_CSS = """<style>
+.opp-toolbar{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+.opp-chips{display:flex;gap:8px;flex-wrap:wrap}
+.opp-chip{font-size:12px;padding:6px 12px;border-radius:20px;border:1px solid #1a2540;color:#9fb0c9;text-decoration:none;background:#111a2e;transition:.12s;white-space:nowrap}
+.opp-chip:hover{border-color:#2a3a5a;color:#c0c8d8}
+.opp-chip.active{background:var(--cc,#0fa968);color:#0b1120;border-color:var(--cc,#0fa968);font-weight:700}
+.opp-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.opp-select{background:#111a2e;color:#e8ecf1;border:1px solid #1a2540;padding:7px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit}
+.opp-scan-btn{background:#0fa968;color:#0b1120;border:none;padding:8px 16px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit}
+.opp-scan-btn:hover{background:#12c47e}
+.opp-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(335px,1fr));gap:14px}
+.opp-card{background:#0e1626;border:1px solid #1a2540;border-left:3px solid #0fa968;border-radius:12px;padding:15px 16px;display:flex;flex-direction:column;gap:9px}
+.opp-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.opp-badge{font-size:10px;font-weight:700;padding:3px 9px;border-radius:6px;text-transform:uppercase;letter-spacing:.03em}
+.opp-valor{font-size:13px;font-weight:800;color:#d4af37;font-family:'JetBrains Mono',monospace}
+.opp-conf{margin-left:auto;font-size:11px;color:#5a6a8a;font-family:'JetBrains Mono',monospace}
+.opp-title{font-size:14.5px;font-weight:700;color:#e8ecf1;line-height:1.3}
+.opp-quote{font-size:12.5px;color:#c6cee0;font-style:italic;border-left:2px solid #2a3a5a;padding:3px 0 3px 10px;line-height:1.45}
+.opp-desc{font-size:12px;color:#8995b3;line-height:1.5}
+.opp-meta{font-size:11px;color:#5a6a8a;font-family:'JetBrains Mono',monospace}
+.opp-actions{display:flex;gap:8px;margin-top:4px;flex-wrap:wrap}
+.opp-btn{font-size:11px;font-weight:600;border-radius:7px;padding:7px 11px;cursor:pointer;border:1px solid;font-family:inherit;transition:.12s}
+.opp-btn-zenvia{background:#16c78415;color:#3ddc97;border-color:#16c78440}
+.opp-btn-zenvia:hover{background:#16c78428}
+.opp-btn-ghost{background:transparent;color:#7a89a8;border-color:#1a2540}
+.opp-btn-ghost:hover{border-color:#ef444455;color:#ef8888}
+.opp-empty{grid-column:1/-1;text-align:center;padding:54px 20px}
+.opp-modal{display:none;position:fixed;inset:0;background:rgba(5,9,18,.8);z-index:1000;align-items:center;justify-content:center}
+.opp-modal-box{background:#0e1626;border:1px solid #1a2540;border-radius:16px;padding:26px 28px;width:90%;max-width:430px;text-align:center}
+.opp-modal-title{font-size:16px;font-weight:700;color:#e8ecf1;margin-bottom:6px}
+.opp-modal-sub{font-size:12px;color:#8995b3;margin-bottom:16px;min-height:16px}
+.opp-bar-track{height:8px;background:#1a2540;border-radius:6px;overflow:hidden}
+.opp-bar-fill{height:100%;width:0;background:linear-gradient(90deg,#0fa968,#12c47e);transition:width .3s}
+.opp-modal-label{font-size:12px;color:#c0c8d8;margin-top:8px;font-family:'JetBrains Mono',monospace}
+.opp-modal-found{font-size:12px;color:#0fa968;margin-top:4px;font-weight:600;min-height:15px}
+</style>"""
+
+
+_OPP_JS = """<script>
+window._oppCancel=false;
+function setOppDays(v){window.OPP_DAYS=parseInt(v,10)||30;}
+async function startOppScan(){
+  if(window.OPP_DAYS===undefined)window.OPP_DAYS=30;
+  var modal=document.getElementById('opp-modal');
+  var bar=document.getElementById('opp-bar');
+  var label=document.getElementById('opp-label');
+  var sub=document.getElementById('opp-sub');
+  var btn=document.getElementById('opp-close-btn');
+  var foundEl=document.getElementById('opp-found');
+  bar.style.width='0%';label.textContent='0 / ?';foundEl.textContent='';
+  sub.textContent='Procurando oportunidades nos últimos '+window.OPP_DAYS+' dias…';
+  btn.textContent='Cancelar';window._oppCancel=false;
+  btn.onclick=function(){window._oppCancel=true;modal.style.display='none';};
+  modal.style.display='flex';
+  var offset=0,total=0,found=0;
+  while(true){
+    if(window._oppCancel)break;
+    try{
+      var resp=await fetch('/dashboard/opp-scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({canal:window.OPP_CANAL,offset:offset,batch_size:8,days:window.OPP_DAYS})});
+      if(!resp.ok){sub.textContent='Erro HTTP '+resp.status;break;}
+      var data=await resp.json();
+      if(data.error){sub.textContent='⚠ '+data.error;break;}
+      total=data.total;offset=data.next_offset;found+=(data.found_this_call||0);
+      var pct=total>0?Math.round(data.done/total*100):100;
+      bar.style.width=pct+'%';
+      label.textContent=data.done+' / '+total+' conversas';
+      foundEl.textContent=found+' oportunidade(s) encontrada(s)';
+      if(data.finished){
+        sub.textContent='Concluído! Atualizando a lista…';
+        btn.textContent='Fechar';btn.onclick=function(){location.reload();};
+        setTimeout(function(){location.reload();},1200);
+        break;
+      }
+    }catch(e){sub.textContent='Erro de rede: '+e.message;break;}
+  }
+}
+function oppCopyPhone(phone,zurl){
+  var d=String(phone||'').replace(/\\D/g,'');
+  if(d.length>11&&d.indexOf('55')===0)d=d.slice(2);
+  if(navigator.clipboard){navigator.clipboard.writeText(d).catch(function(){});}
+  if(zurl){window.open(zurl,'_blank','noopener');}
+}
+function dismissOpp(key,btn){
+  if(!confirm('Descartar esta oportunidade da lista?'))return;
+  fetch('/dashboard/dismiss-opp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:key,on:true})})
+    .then(function(r){if(r.ok){var c=btn.closest('.opp-card');if(c)c.style.display='none';}});
+}
+</script>"""
+
+
+def _opp_card_html(i: dict) -> str:
+    label, emoji, color = _OPP_TIPOS.get(i["tipo"], _OPP_TIPOS["outro"])
+    cliente = html_mod.escape(i["cliente"] or "")
+    agente = html_mod.escape(_short_agent_name(i["agente"] or "—"))
+    titulo = html_mod.escape(i["titulo"] or "")
+    descricao = html_mod.escape(i["descricao"] or "")
+    data = html_mod.escape(i["data"] or "")
+    conf = int(i["confianca"] or 0)
+    if i["valor"]:
+        valor_str = _fmt_brl(i["valor"])
+    elif i["valor_texto"]:
+        valor_str = "~ " + html_mod.escape(i["valor_texto"])
+    else:
+        valor_str = ""
+    valor_html = f'<span class="opp-valor">{valor_str}</span>' if valor_str else ""
+    quote_html = f'<div class="opp-quote">“{html_mod.escape(i["trecho"])}”</div>' if i["trecho"] else ""
+    desc_html = f'<div class="opp-desc">{descricao}</div>' if descricao else ""
+    data_html = f" · {data}" if data else ""
+    phone_a = html_mod.escape(i["phone"], quote=True)
+    zurl_a = html_mod.escape(i["zurl"], quote=True)
+    key_a = html_mod.escape(i["key"], quote=True)
+    if i["zurl"]:
+        action_btn = (f'<button class="opp-btn opp-btn-zenvia" '
+                      f'onclick="oppCopyPhone(&#39;{phone_a}&#39;,&#39;{zurl_a}&#39;)">'
+                      f'💬 Abrir na Zenvia</button>')
+    else:
+        action_btn = (f'<button class="opp-btn opp-btn-zenvia" '
+                      f'onclick="oppCopyPhone(&#39;{phone_a}&#39;,&#39;&#39;)">'
+                      f'⧉ Copiar telefone</button>')
+    return (
+        f'<div class="opp-card" style="border-left-color:{color}">'
+        f'<div class="opp-head">'
+        f'<span class="opp-badge" style="background:{color}22;color:{color};border:1px solid {color}55">{emoji} {html_mod.escape(label)}</span>'
+        f'{valor_html}'
+        f'<span class="opp-conf" title="Confiança do sinal">{conf}%</span>'
+        f'</div>'
+        f'<div class="opp-title">{titulo}</div>'
+        f'{quote_html}{desc_html}'
+        f'<div class="opp-meta">👤 {cliente} · 🎧 {agente}{data_html}</div>'
+        f'<div class="opp-actions">{action_btn}'
+        f'<button class="opp-btn opp-btn-ghost" onclick="dismissOpp(&#39;{key_a}&#39;,this)">✕ Descartar</button>'
+        f'</div>'
+        f'</div>'
+    )
+
+
+@router.get("/dashboard/oportunidades", response_class=HTMLResponse, include_in_schema=False)
+def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
+    access = _get_access(request, db)
+    if access is None:
+        return RedirectResponse("/dashboard/login", status_code=302)
+    is_admin = (access or {}).get("role") == "admin"
+    canal    = (request.query_params.get("canal") or "").strip()
+    tipo_f   = (request.query_params.get("tipo") or "").strip()
+    agente_f = (request.query_params.get("agente") or "").strip()
+
+    from app.models import ConversationOpportunity as _CO
+    q = db.query(_CO).filter(_CO.has_opp == 1, _CO.opp_version == _OPP_VERSION)
+    if canal:
+        q = q.filter(_CO.canal == canal)
+    rows = q.all()
+    dismissed = _get_dismissed_opps(db)
+
+    all_items = []
+    for r in rows:
+        if not _user_sees(access, r.agent or ""):
+            continue
+        zurl = ZENVIA_CONV_URL_TEMPLATE.replace("{id}", r.conv_id) if (ZENVIA_CONV_URL_TEMPLATE and r.conv_id) else ""
+        for idx, o in enumerate(r.opportunities or []):
+            key = f"{r.phone}|{r.last_event_id}|{idx}"
+            if key in dismissed:
+                continue
+            all_items.append({
+                "key": key, "phone": r.phone, "conv_id": r.conv_id or "", "zurl": zurl,
+                "cliente": r.client_name or r.phone, "agente": r.agent or "—",
+                "tipo": o.get("tipo", "outro"), "titulo": o.get("titulo", ""),
+                "descricao": o.get("descricao", ""), "trecho": o.get("trecho", ""),
+                "valor": o.get("valor"), "valor_texto": o.get("valor_texto", ""),
+                "data": o.get("data", ""), "confianca": o.get("confianca", 0),
+                "last_msg_at": r.last_msg_at,
+            })
+    db.close()
+
+    agents = sorted({i["agente"] for i in all_items if i["agente"]})
+    tipo_counts_all = {}
+    for i in all_items:
+        tipo_counts_all[i["tipo"]] = tipo_counts_all.get(i["tipo"], 0) + 1
+
+    items = all_items
+    if tipo_f:
+        items = [i for i in items if i["tipo"] == tipo_f]
+    if agente_f:
+        items = [i for i in items if i["agente"] == agente_f]
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
+    items.sort(key=lambda i: (i["last_msg_at"] or _epoch), reverse=True)
+
+    total_opps = len(items)
+    valor_total = sum(i["valor"] for i in items if i["valor"])
+    clientes = len({i["phone"] for i in items})
+    risco = sum(1 for i in items if i["tipo"] == "risco_saida")
+
+    from urllib.parse import urlencode
+
+    def _qs(**over):
+        c = over.get("canal", canal); t = over.get("tipo", tipo_f); a = over.get("agente", agente_f)
+        d = {}
+        if c: d["canal"] = c
+        if t: d["tipo"] = t
+        if a: d["agente"] = a
+        return ("?" + urlencode(d)) if d else "?"
+
+    chips = [f'<a href="{_qs(tipo="")}" class="opp-chip {"active" if not tipo_f else ""}">Todas ({len(all_items)})</a>']
+    for tp, (label, emoji, color) in _OPP_TIPOS.items():
+        cnt = tipo_counts_all.get(tp, 0)
+        if not cnt:
+            continue
+        act = "active" if tipo_f == tp else ""
+        chips.append(f'<a href="{_qs(tipo=tp)}" class="opp-chip {act}" style="--cc:{color}">{emoji} {html_mod.escape(label)} ({cnt})</a>')
+    chips_html = "".join(chips)
+
+    ag_select = (
+        '<select class="opp-select" onchange="location.href=this.value" title="Filtrar por assessor">'
+        + f'<option value="{_qs(agente="")}">Todos os assessores</option>'
+        + "".join(
+            f'<option value="{_qs(agente=a)}" {"selected" if agente_f == a else ""}>{html_mod.escape(_short_agent_name(a))}</option>'
+            for a in agents
+        )
+        + "</select>"
+    )
+
+    if items:
+        cards_html = "".join(_opp_card_html(i) for i in items)
+    else:
+        cards_html = (
+            '<div class="opp-empty">'
+            '<div style="font-size:36px">💡</div>'
+            '<div style="font-size:15px;color:#c0c8d8;margin-top:8px;font-weight:600">Nenhuma oportunidade mapeada ainda</div>'
+            '<div style="font-size:12.5px;color:#5a6a8a;margin-top:7px;max-width:440px;margin-left:auto;margin-right:auto;line-height:1.5">'
+            'Clique em <b style="color:#0fa968">🔍 Buscar oportunidades</b> para a IA varrer as conversas e identificar quando o cliente '
+            'sinaliza aporte, dinheiro em outro banco, interesse em produtos, eventos de liquidez e risco de saída.</div>'
+            '</div>'
+        )
+
+    valor_fmt = _fmt_brl(valor_total) if valor_total else "—"
+    nav = _nav_html("oportunidades", canal=canal, is_admin=is_admin, title="Oportunidades")
+    js_vars = f'<script>window.OPP_CANAL={json.dumps(canal)};</script>'
+
+    kpi_html = (
+        '<div class="kpi-row">'
+        f'<div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{total_opps}</div><div class="label">Oportunidades</div></div>'
+        f'<div class="kpi" style="border-top:3px solid #d4af37"><div class="val" style="font-size:18px;color:#d4af37">{valor_fmt}</div><div class="label">Valor potencial identificado</div></div>'
+        f'<div class="kpi" style="border-top:3px solid #3b82f6"><div class="val">{clientes}</div><div class="label">Clientes com oportunidade</div></div>'
+        f'<div class="kpi" style="border-top:3px solid {"#ef4444" if risco else "#1a2540"}"><div class="val" style="color:{"#ef4444" if risco else "#e8ecf1"}">{risco}</div><div class="label">⚠️ Risco de saída</div></div>'
+        '</div>'
+    )
+
+    toolbar = (
+        '<div class="opp-toolbar">'
+        '<div class="opp-chips">' + chips_html + '</div>'
+        '<div class="opp-tools">'
+        + ag_select +
+        '<select class="opp-select" onchange="setOppDays(this.value)" title="Período da busca">'
+        '<option value="7">Últimos 7 dias</option>'
+        '<option value="15">Últimos 15 dias</option>'
+        '<option value="30" selected>Últimos 30 dias</option>'
+        '<option value="60">Últimos 60 dias</option>'
+        '<option value="90">Últimos 90 dias</option>'
+        '</select>'
+        '<button class="opp-scan-btn" onclick="startOppScan()">🔍 Buscar oportunidades</button>'
+        '</div></div>'
+    )
+
+    modal = (
+        '<div id="opp-modal" class="opp-modal"><div class="opp-modal-box">'
+        '<div class="opp-modal-title">🔍 Buscando oportunidades</div>'
+        '<div id="opp-sub" class="opp-modal-sub">Iniciando…</div>'
+        '<div class="opp-bar-track"><div id="opp-bar" class="opp-bar-fill"></div></div>'
+        '<div id="opp-label" class="opp-modal-label">0 / ?</div>'
+        '<div id="opp-found" class="opp-modal-found"></div>'
+        '<button id="opp-close-btn" class="opp-btn opp-btn-ghost" style="margin-top:14px">Cancelar</button>'
+        '</div></div>'
+    )
+
+    page = (
+        '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">'
+        '<title>Oportunidades — Alto Valor</title>'
+        + COMMON_CSS + _OPP_CSS +
+        '</head><body>'
+        + nav +
+        '<div class="container">'
+        '<p style="font-size:12px;color:#5a6a8a;margin:0 0 14px;max-width:700px;line-height:1.5">'
+        'Sinais comerciais que a IA encontrou nas conversas — quando o cliente menciona que vai aportar, '
+        'tem dinheiro em outra instituição, quer comprar um produto, teve um evento de liquidez, ou sinaliza risco de saída.'
+        '</p>'
+        + kpi_html + toolbar + '<div class="opp-grid">' + cards_html + '</div>'
+        '</div>'
+        + modal + js_vars + _OPP_JS +
+        '</body></html>'
+    )
+    return HTMLResponse(page)
 
 
 @router.post("/dashboard/suggest-reply", include_in_schema=False)
