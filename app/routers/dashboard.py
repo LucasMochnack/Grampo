@@ -4398,7 +4398,10 @@ def cron_score_daily(request: Request, db: Session = Depends(get_db)):
 
 
 # ══════════════ OPORTUNIDADES — sinais comerciais nas conversas ══════════════
-_OPP_VERSION = "v2"
+_OPP_VERSION = "v3"
+# Resgates abaixo deste valor são rotineiros (uso normal da conta) e NÃO viram
+# alerta de risco de saída — evita ruído de saques pequenos.
+_OPP_RISCO_MIN_VALOR = 3000
 
 # (tipo) -> (rótulo, emoji, cor hex)
 _OPP_TIPOS = {
@@ -4467,12 +4470,23 @@ REGRAS:
 - "confianca": 0-100, quão claro e forte é o sinal.
 
 ═══════ ESTÁGIO (campo "status") — deduza pela conversa ═══════
-Para CADA oportunidade, classifique em que pé está, lendo o histórico:
-- "mapeada": o sinal apareceu mas o ASSESSOR ainda NÃO agiu sobre ELE (não respondeu sobre o tema / não encaminhou).
-- "execucao": o ASSESSOR já está tratando — respondeu sobre o tema, pediu dados/documentos, mandou proposta/cotação, ou combinou próximos passos, mas ainda não fechou.
-- "ganha": o CLIENTE confirmou e a oportunidade se concretizou — autorizou aplicar, disse que já transferiu/depositou, ou fechou ("pode aplicar", "pode alocar", "já transferi", "fechado", "feito").
-- "perdido": o CLIENTE recusou ou desistiu de forma explícita ("vou deixar onde está", "não tenho interesse", "vou ficar com o outro banco", "depois eu vejo" repetido).
-Regra de desempate: se a última mensagem relevante foi do CLIENTE e o assessor não respondeu sobre o tema → "mapeada"; se o assessor já respondeu/avançou → "execucao". Só use "ganha"/"perdido" com evidência clara na conversa.
+Classifique o estágio de CADA oportunidade. O sentido de "ganha"/"perdido" DEPENDE do tipo:
+
+▸ CAPTAÇÃO / VENDA (aporte, recurso_externo, liquidez, produto, indicacao, outro):
+- "mapeada": o sinal apareceu mas o ASSESSOR ainda NÃO agiu sobre ele.
+- "execucao": o ASSESSOR já está tratando — respondeu sobre o tema, pediu dados, mandou proposta/cotação ou combinou próximos passos, mas ainda não fechou.
+- "ganha": concretizou — o cliente aplicou/comprou/trouxe o recurso ("pode aplicar", "já transferi", "fechado", "feito").
+- "perdido": o cliente recusou ou desistiu ("não tenho interesse", "vou deixar onde está", "vou ficar com o outro banco").
+
+▸ RETENÇÃO (risco_saida) — o objetivo é MANTER o dinheiro, então a lógica INVERTE:
+- "mapeada": risco identificado (cliente quer resgatar/sair) e o ASSESSOR ainda não agiu.
+- "execucao": o ASSESSOR está tentando reverter/reter (negociando, oferecendo alternativa).
+- "ganha": conseguiu RETER — o cliente desistiu do resgate ou decidiu ficar (BOM resultado).
+- "perdido": o cliente SACOU / levou o dinheiro / saiu de fato. ATENÇÃO: resgate concretizado é "perdido", NUNCA "ganha".
+
+REGRAS adicionais:
+- risco_saida só vale alerta se for relevante: NÃO registre resgates pequenos e rotineiros (uso normal da conta, valores baixos) como risco — só registre quando houver valor relevante, insatisfação, intenção de levar o dinheiro para outro lugar, ou de encerrar a relação.
+- Desempate mapeada×execucao: se a última ação relevante foi do CLIENTE sem resposta do assessor sobre o tema → "mapeada"; se o assessor já respondeu/avançou → "execucao". Use "ganha"/"perdido" só com evidência clara.
 
 Responda SOMENTE em JSON, sem markdown:
 {"oportunidades":[{"tipo":"aporte","titulo":"Vai aportar 50 mil","descricao":"Cliente recebeu bônus e quer investir; agendar ligação para alocar.","trecho":"recebi um bônus, queria aplicar uns 50 mil","valor":50000,"valor_texto":"uns 50 mil","data":"12/05","confianca":85,"status":"execucao"}]}
@@ -4531,6 +4545,9 @@ def _call_opp_llm(transcript: str) -> list:
         status = str(o.get("status", "mapeada")).strip().lower()
         if status not in _OPP_STAGE_IDS:
             status = "mapeada"
+        # Ignore routine small withdrawals flagged as retention risk.
+        if tipo == "risco_saida" and valor is not None and valor < _OPP_RISCO_MIN_VALOR:
+            continue
         out.append({
             "tipo":        tipo,
             "titulo":      titulo,
