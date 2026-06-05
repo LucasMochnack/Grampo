@@ -321,6 +321,10 @@ SEGMENT_COLORS: dict[str, str] = {
     "Alta Renda": "#d4af37",
     "Externo": "#4a9eff",
     "On Demand": "#8b5cf6",
+    # Mesas criadas via classificação (overrides no banco)
+    "Mesa RV": "#14b8a6",
+    "PJ": "#ec4899",
+    "Expansão": "#f97316",
 }
 
 
@@ -1225,6 +1229,28 @@ def _get_segment(agent_name: str) -> str:
         return ""
     # DB override wins over the hardcoded map; both matched accent/case-insensitively.
     return _seg_overrides.get(n) or _AGENT_SEGMENT_NORM.get(n) or ""
+
+
+# Canonical ordering: the 3 historic mesas first, then any extra mesa created
+# via classification (DB overrides), so filters/colunas são dinâmicos.
+_SEGMENT_BASE_ORDER = ["Alta Renda", "On Demand", "Externo"]
+
+
+def _all_segments() -> list:
+    vals = set(AGENT_SEGMENT.values()) | set(_seg_overrides.values())
+    extra = sorted(s for s in vals if s and s not in _SEGMENT_BASE_ORDER)
+    return _SEGMENT_BASE_ORDER + extra
+
+
+def _segment_color(seg: str) -> str:
+    """Stable color for a mesa: explicit SEGMENT_COLORS, else a palette pick so
+    even mesas criadas depois ganham uma cor distinta."""
+    if seg in SEGMENT_COLORS:
+        return SEGMENT_COLORS[seg]
+    if not seg:
+        return "#5a6a8a"
+    _pal = ["#14b8a6", "#ec4899", "#f97316", "#22d3ee", "#a855f7", "#84cc16", "#eab308"]
+    return _pal[sum(ord(c) for c in seg) % len(_pal)]
 
 
 def _segment_badge(agent_name: str) -> str:
@@ -9257,7 +9283,7 @@ def dashboard_agentes_heatmap(request: Request, db: Session = Depends(get_db)):
         sorted_agents = [(a, s) for a, s in sorted_agents if _get_segment(a) in segmentos]
 
     # ── Segment-grouped sorted list for heatmap ──────────────────────────────
-    _HM_SEG_ORDER = ["Alta Renda", "On Demand", "Externo"]
+    _HM_SEG_ORDER = _all_segments()
     all_known = [a for a in AGENT_SEGMENT if not segmentos or AGENT_SEGMENT[a] in segmentos]
     _in_stats = {a for a, _ in sorted_agents}
     for _ka in all_known:
@@ -9392,7 +9418,7 @@ def dashboard_agentes_heatmap(request: Request, db: Session = Depends(get_db)):
     _seg_base_hm = f"/dashboard/agentes/heatmap?periodo={periodo}{_canal_qs}"
     _todos_act = "background:#0fa968;color:#fff" if not segmentos else "background:#111a2e;color:#c0c8d8"
     _seg_pills += f'<a href="{_seg_base_hm}" style="{_todos_act};border:1px solid #1a2540;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:700;text-decoration:none">Todos</a>'
-    for _sv in ["Alta Renda", "On Demand", "Externo"]:
+    for _sv in _all_segments():
         _is_sel = _sv in segmentos
         _ns = set(segmentos); (_ns.discard(_sv) if _is_sel else _ns.add(_sv))
         _sl = f"{_seg_base_hm}&segmentos={','.join(sorted(_ns))}" if _ns else _seg_base_hm
@@ -9910,7 +9936,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
             sorted_agents.append((known_agent, {"out": 0, "in": 0, "clients": set(), "days_out": defaultdict(int), "days_in": defaultdict(int)}))
 
     # Segment order for heatmap grouping
-    _HM_SEG_ORDER = ["Alta Renda", "On Demand", "Externo"]
+    _HM_SEG_ORDER = _all_segments()
 
     # Re-sort agents for heatmap: group by segment (fixed order), then by total desc within each group
     _hm_by_seg: dict = defaultdict(list)
@@ -10222,7 +10248,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
 
     # ── Build segment panel (with worked-today / no-activity split) ───────────
     # Include any extra segments found in data (agents not in Alta Renda/On Demand/Externo)
-    _SEG_ORDER_BASE = ["Alta Renda", "On Demand", "Externo"]
+    _SEG_ORDER_BASE = _all_segments()
     _extra_segs = sorted(s for s in set(list(_offline_by_seg.keys()) + list(_idle_by_seg.keys())) if s not in _SEG_ORDER_BASE)
     _SEG_ORDER = _SEG_ORDER_BASE + _extra_segs
 
