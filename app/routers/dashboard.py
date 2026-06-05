@@ -4398,7 +4398,7 @@ def cron_score_daily(request: Request, db: Session = Depends(get_db)):
 
 
 # ══════════════ OPORTUNIDADES — sinais comerciais nas conversas ══════════════
-_OPP_VERSION = "v1"
+_OPP_VERSION = "v2"
 
 # (tipo) -> (rótulo, emoji, cor hex)
 _OPP_TIPOS = {
@@ -4466,8 +4466,16 @@ REGRAS:
 - "data": data (DD/MM) da mensagem do cliente que gerou o sinal.
 - "confianca": 0-100, quão claro e forte é o sinal.
 
+═══════ ESTÁGIO (campo "status") — deduza pela conversa ═══════
+Para CADA oportunidade, classifique em que pé está, lendo o histórico:
+- "mapeada": o sinal apareceu mas o ASSESSOR ainda NÃO agiu sobre ELE (não respondeu sobre o tema / não encaminhou).
+- "execucao": o ASSESSOR já está tratando — respondeu sobre o tema, pediu dados/documentos, mandou proposta/cotação, ou combinou próximos passos, mas ainda não fechou.
+- "ganha": o CLIENTE confirmou e a oportunidade se concretizou — autorizou aplicar, disse que já transferiu/depositou, ou fechou ("pode aplicar", "pode alocar", "já transferi", "fechado", "feito").
+- "perdido": o CLIENTE recusou ou desistiu de forma explícita ("vou deixar onde está", "não tenho interesse", "vou ficar com o outro banco", "depois eu vejo" repetido).
+Regra de desempate: se a última mensagem relevante foi do CLIENTE e o assessor não respondeu sobre o tema → "mapeada"; se o assessor já respondeu/avançou → "execucao". Só use "ganha"/"perdido" com evidência clara na conversa.
+
 Responda SOMENTE em JSON, sem markdown:
-{"oportunidades":[{"tipo":"aporte","titulo":"Vai aportar 50 mil","descricao":"Cliente recebeu bônus e quer investir; agendar ligação para alocar.","trecho":"recebi um bônus, queria aplicar uns 50 mil","valor":50000,"valor_texto":"uns 50 mil","data":"12/05","confianca":85}]}
+{"oportunidades":[{"tipo":"aporte","titulo":"Vai aportar 50 mil","descricao":"Cliente recebeu bônus e quer investir; agendar ligação para alocar.","trecho":"recebi um bônus, queria aplicar uns 50 mil","valor":50000,"valor_texto":"uns 50 mil","data":"12/05","confianca":85,"status":"execucao"}]}
 Se nenhuma oportunidade: {"oportunidades":[]}"""
 
 
@@ -4520,6 +4528,9 @@ def _call_opp_llm(transcript: str) -> list:
             conf = max(0, min(100, int(o.get("confianca", 0))))
         except (TypeError, ValueError):
             conf = 0
+        status = str(o.get("status", "mapeada")).strip().lower()
+        if status not in _OPP_STAGE_IDS:
+            status = "mapeada"
         out.append({
             "tipo":        tipo,
             "titulo":      titulo,
@@ -4529,6 +4540,7 @@ def _call_opp_llm(transcript: str) -> list:
             "valor_texto": str(o.get("valor_texto", "")).strip()[:60],
             "data":        str(o.get("data", "")).strip()[:20],
             "confianca":   conf,
+            "status":      status,
         })
     # keep only reasonably confident signals (cuts noise)
     return [o for o in out if o["confianca"] >= 40]
@@ -4681,6 +4693,7 @@ def opp_scan_endpoint(request: Request, body: dict = Body(default={}), db: Sessi
 
     scanned_this = 0
     found_this = 0
+    llm_calls = 0
     errors = 0
     for rp, last_event_id, conv_id, conv_canal, agent, client_name, last_msg_at, msg_tuples in slice_:
         cached = db.get(_CO, (rp, last_event_id))
@@ -4692,6 +4705,7 @@ def opp_scan_endpoint(request: Request, body: dict = Body(default={}), db: Sessi
             _upsert_opp(db, rp, last_event_id, conv_canal, conv_id,
                         client_name, agent, last_msg_at, opps)
             scanned_this += 1
+            llm_calls += 1
             found_this += len(opps)
         except Exception:
             errors += 1
@@ -4706,6 +4720,7 @@ def opp_scan_endpoint(request: Request, body: dict = Body(default={}), db: Sessi
         "finished":          finished,
         "scanned_this_call": scanned_this,
         "found_this_call":   found_this,
+        "llm_calls":         llm_calls,
         "errors":            errors,
     })
 
@@ -4732,17 +4747,27 @@ def dismiss_opp_endpoint(request: Request, body: dict = Body(default={}), db: Se
 
 @router.post("/dashboard/opp-stage", include_in_schema=False)
 def opp_stage_endpoint(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
-    """Move an opportunity to a Kanban stage. Body: {key, stage}."""
+    """Pin an opportunity to a Kanban stage (manual override of the AI status).
+
+    Body: {okey, stage}. okey = phone|tipo (stable across re-scans). stage one
+    of the 4 stages pins it; stage="auto" removes the pin so the AI-inferred
+    status takes over again.
+    """
     if not _check_auth(request):
         return JSONResponse({"error": "unauth"}, status_code=401)
     if not isinstance(body, dict):
         return JSONResponse({"error": "bad json"}, status_code=400)
-    key = (body.get("key") or "").strip()
+    okey = (body.get("okey") or "").strip()
     stage = (body.get("stage") or "").strip()
-    if not key or stage not in _OPP_STAGE_IDS:
-        return JSONResponse({"error": "bad params"}, status_code=400)
+    if not okey:
+        return JSONResponse({"error": "missing okey"}, status_code=400)
     d = _get_opp_stages(db)
-    d[key] = stage
+    if stage == "auto":
+        d.pop(okey, None)
+    elif stage in _OPP_STAGE_IDS:
+        d[okey] = stage
+    else:
+        return JSONResponse({"error": "bad stage"}, status_code=400)
     _save_opp_stages(db, d)
     return JSONResponse({"ok": True})
 
@@ -4757,6 +4782,7 @@ _OPP_CSS = """<style>
 .opp-select{background:#111a2e;color:#e8ecf1;border:1px solid #1a2540;padding:7px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit}
 .opp-scan-btn{background:#0fa968;color:#0b1120;border:none;padding:8px 16px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit}
 .opp-scan-btn:hover{background:#12c47e}
+.opp-autosync{font-size:11px;color:#7cb0ff;display:inline-flex;align-items:center;gap:4px;font-family:'JetBrains Mono',monospace}
 .opp-btn{font-size:11px;font-weight:600;border-radius:7px;padding:7px 11px;cursor:pointer;border:1px solid;font-family:inherit;transition:.12s}
 .opp-btn-ghost{background:transparent;color:#7a89a8;border-color:#1a2540}
 .opp-btn-ghost:hover{border-color:#ef444455;color:#ef8888}
@@ -4781,6 +4807,8 @@ _OPP_CSS = """<style>
 .kb-title{font-size:13px;font-weight:700;color:#e8ecf1;line-height:1.3}
 .kb-quote{font-size:11.5px;color:#aeb8cf;font-style:italic;border-left:2px solid #2a3a5a;padding:2px 0 2px 8px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .kb-meta{font-size:10px;color:#5a6a8a;font-family:'JetBrains Mono',monospace}
+.kb-mode{font-size:9px;padding:1px 5px;border-radius:4px;background:#1a2540;color:#7a89a8;white-space:nowrap}
+.kb-mode.pinned{background:#f59e0b22;color:#fbbf24}
 .kb-card-foot{display:flex;gap:6px;align-items:center;margin-top:2px}
 .kb-move{flex:1;min-width:0;background:#111a2e;color:#c0c8d8;border:1px solid #1a2540;border-radius:6px;padding:4px 6px;font-size:10.5px;cursor:pointer;font-family:inherit}
 .kb-zbtn{background:#16c78415;color:#3ddc97;border:1px solid #16c78440;border-radius:6px;padding:4px 9px;font-size:11px;cursor:pointer;font-family:inherit}
@@ -4847,33 +4875,42 @@ function dismissOpp(key,btn){
   fetch('/dashboard/dismiss-opp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:key,on:true})})
     .then(function(r){if(r.ok){var c=btn.closest('.kb-card');if(c)c.remove();refreshKbCounts();}});
 }
-/* ── Kanban: drag-and-drop + dropdown fallback ── */
-var _oppDragKey=null;
-function oppDragStart(ev,key){
-  _oppDragKey=key;
-  try{ev.dataTransfer.effectAllowed='move';ev.dataTransfer.setData('text/plain',key);}catch(e){}
+/* ── Kanban: status automático (IA) + arrasta/dropdown para fixar manual ── */
+var _oppDragOkey=null;
+function oppDragStart(ev,okey){
+  _oppDragOkey=okey;
+  try{ev.dataTransfer.effectAllowed='move';ev.dataTransfer.setData('text/plain',okey);}catch(e){}
   ev.currentTarget.classList.add('dragging');
 }
 function oppDragEnd(ev){
   ev.currentTarget.classList.remove('dragging');
   document.querySelectorAll('.kb-body.over').forEach(function(c){c.classList.remove('over');});
 }
-function _oppCardByKey(key){
+function _oppCardByOkey(okey){
   var found=null;
-  document.querySelectorAll('.kb-card').forEach(function(c){if(c.getAttribute('data-opp-key')===key)found=c;});
+  document.querySelectorAll('.kb-card').forEach(function(c){if(c.getAttribute('data-okey')===okey)found=c;});
   return found;
 }
-function moveOpp(key,stage,card){
-  if(card){card.setAttribute('data-stage',stage);var s=card.querySelector('.kb-move');if(s)s.value=stage;}
-  refreshKbCounts();
-  fetch('/dashboard/opp-stage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:key,stage:stage})}).catch(function(){});
+function _oppSetMode(card,pinned){
+  var tag=card.querySelector('.kb-mode');if(!tag)return;
+  if(pinned){tag.className='kb-mode pinned';tag.textContent='📌 fixado';tag.title='Etapa fixada manualmente';}
+  else{tag.className='kb-mode';tag.textContent='🤖 auto';tag.title='Etapa definida automaticamente pela IA';}
+}
+function _oppPlace(card,targetStage){
+  var body=document.querySelector('.kb-body[data-stage="'+targetStage+'"]');
+  if(body)body.appendChild(card);
+  card.setAttribute('data-stage',targetStage);
+}
+function _oppPostStage(okey,stage){
+  fetch('/dashboard/opp-stage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({okey:okey,stage:stage})}).catch(function(){});
 }
 function moveOppSelect(sel){
   var card=sel.closest('.kb-card');if(!card)return;
-  var key=card.getAttribute('data-opp-key');var stage=sel.value;
-  var body=document.querySelector('.kb-body[data-stage="'+stage+'"]');
-  if(body)body.appendChild(card);
-  moveOpp(key,stage,card);
+  var okey=card.getAttribute('data-okey');var choice=sel.value;
+  if(choice==='auto'){_oppPlace(card,card.getAttribute('data-ai-status')||'mapeada');_oppSetMode(card,false);}
+  else{_oppPlace(card,choice);_oppSetMode(card,true);}
+  refreshKbCounts();
+  _oppPostStage(okey,choice);
 }
 function refreshKbCounts(){
   document.querySelectorAll('.kb-col').forEach(function(col){
@@ -4884,20 +4921,41 @@ function refreshKbCounts(){
     var vEl=col.querySelector('.kb-colval');if(vEl)vEl.textContent=val?('R$ '+val.toLocaleString('pt-BR')):'';
   });
 }
+async function autoSyncOpp(){
+  var ind=document.getElementById('opp-autosync');
+  if(ind)ind.style.display='inline-flex';
+  var offset=0,calls=0,guard=0;
+  while(guard++<200){
+    try{
+      var resp=await fetch('/dashboard/opp-scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({canal:window.OPP_CANAL,offset:offset,batch_size:8,days:3})});
+      if(!resp.ok)break;
+      var data=await resp.json();
+      if(data.error)break;
+      offset=data.next_offset;calls+=(data.llm_calls||0);
+      if(data.finished)break;
+    }catch(e){break;}
+  }
+  if(ind)ind.style.display='none';
+  if(calls>0){location.reload();}
+}
 document.addEventListener('DOMContentLoaded',function(){
   document.querySelectorAll('.kb-body').forEach(function(body){
     body.addEventListener('dragover',function(ev){ev.preventDefault();body.classList.add('over');try{ev.dataTransfer.dropEffect='move';}catch(e){}});
     body.addEventListener('dragleave',function(ev){if(ev.target===body)body.classList.remove('over');});
     body.addEventListener('drop',function(ev){
       ev.preventDefault();body.classList.remove('over');
-      var key=_oppDragKey;try{if(!key)key=ev.dataTransfer.getData('text/plain');}catch(e){}
-      if(!key)return;
-      var card=_oppCardByKey(key);if(!card)return;
+      var okey=_oppDragOkey;try{if(!okey)okey=ev.dataTransfer.getData('text/plain');}catch(e){}
+      if(!okey)return;
+      var card=_oppCardByOkey(okey);if(!card)return;
       var stage=body.getAttribute('data-stage');
-      body.appendChild(card);
-      moveOpp(key,stage,card);
+      body.appendChild(card);card.setAttribute('data-stage',stage);
+      var s=card.querySelector('.kb-move');if(s)s.value=stage;
+      _oppSetMode(card,true);
+      refreshKbCounts();
+      _oppPostStage(okey,stage);
     });
   });
+  if(window.OPP_HAS_DATA){autoSyncOpp();}
 });
 </script>"""
 
@@ -4927,23 +4985,32 @@ def _opp_card_html(i: dict) -> str:
     z_arg = f"&#39;{zurl_a}&#39;" if i["zurl"] else "&#39;&#39;"
     z_label = "💬" if i["zurl"] else "⧉"
     z_title = "Abrir na Zenvia (copia o telefone)" if i["zurl"] else "Copiar telefone"
-    move_opts = "".join(
-        f'<option value="{sid}" {"selected" if stage == sid else ""}>{slabel}</option>'
-        for sid, slabel, _se, _sc in _OPP_STAGES
+    pinned = bool(i.get("pinned"))
+    ai_status = i.get("ai_status", "mapeada")
+    okey_a = html_mod.escape(i.get("okey", ""), quote=True)
+    move_opts = (
+        '<option value="auto"' + ('' if pinned else ' selected')
+        + '>🤖 Automático (IA)</option>'
     )
+    for sid, slabel, _se, _sc in _OPP_STAGES:
+        move_opts += f'<option value="{sid}"{" selected" if (pinned and stage == sid) else ""}>{slabel}</option>'
+    mode_tag = ('<span class="kb-mode pinned" title="Etapa fixada manualmente">📌 fixado</span>'
+                if pinned else
+                '<span class="kb-mode" title="Etapa definida automaticamente pela IA">🤖 auto</span>')
     return (
-        f'<div class="kb-card" draggable="true" data-opp-key="{key_a}" data-stage="{stage}" '
-        f'data-valor="{valor_int}" style="--cc:{color}" title="{desc_attr}" '
-        f'ondragstart="oppDragStart(event,&#39;{key_a}&#39;)" ondragend="oppDragEnd(event)">'
+        f'<div class="kb-card" draggable="true" data-opp-key="{key_a}" data-okey="{okey_a}" '
+        f'data-stage="{stage}" data-ai-status="{ai_status}" data-valor="{valor_int}" '
+        f'style="--cc:{color}" title="{desc_attr}" '
+        f'ondragstart="oppDragStart(event,&#39;{okey_a}&#39;)" ondragend="oppDragEnd(event)">'
         f'<div class="opp-head">'
         f'<span class="kb-badge" style="background:{color}22;color:{color};border:1px solid {color}55">{emoji} {html_mod.escape(label)}</span>'
         f'{valor_html}<span class="kb-conf" title="Confiança do sinal">{conf}%</span>'
         f'</div>'
         f'<div class="kb-title">{titulo}</div>'
         f'{quote_html}'
-        f'<div class="kb-meta">👤 {cliente} · 🎧 {agente}{data_html}</div>'
+        f'<div class="kb-meta">👤 {cliente} · 🎧 {agente}{data_html} {mode_tag}</div>'
         f'<div class="kb-card-foot">'
-        f'<select class="kb-move" title="Mover etapa" onchange="moveOppSelect(this)">{move_opts}</select>'
+        f'<select class="kb-move" title="Etapa (Automático = IA decide)" onchange="moveOppSelect(this)">{move_opts}</select>'
         f'<button class="kb-zbtn" title="{z_title}" onclick="oppCopyPhone(&#39;{phone_a}&#39;,{z_arg})">{z_label}</button>'
         f'<button class="kb-iconbtn" title="Descartar (falso positivo)" onclick="dismissOpp(&#39;{key_a}&#39;,this)">✕</button>'
         f'</div>'
@@ -4967,10 +5034,21 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         q = q.filter(_CO.canal == canal)
     rows = q.all()
     dismissed = _get_dismissed_opps(db)
-    stages = _get_opp_stages(db)
+    overrides = _get_opp_stages(db)
+
+    # A conversation is re-mined under a new last_event_id as it advances, so an
+    # older row can linger. Keep only the LATEST row per phone (the current
+    # state of the conversation) to avoid stale duplicates on the board.
+    latest = {}
+    for r in rows:
+        when = r.last_msg_at or r.detected_at
+        prev = latest.get(r.phone)
+        if prev is None or (when and (prev[1] is None or when > prev[1])):
+            latest[r.phone] = (r, when)
+    rows_latest = [v[0] for v in latest.values()]
 
     all_items = []
-    for r in rows:
+    for r in rows_latest:
         if not _user_sees(access, r.agent or ""):
             continue
         zurl = ZENVIA_CONV_URL_TEMPLATE.replace("{id}", r.conv_id) if (ZENVIA_CONV_URL_TEMPLATE and r.conv_id) else ""
@@ -4978,17 +5056,23 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
             key = f"{r.phone}|{r.last_event_id}|{idx}"
             if key in dismissed:
                 continue
-            st = stages.get(key, "mapeada")
-            if st not in _OPP_STAGE_IDS:
-                st = "mapeada"
+            tipo = o.get("tipo", "outro")
+            okey = f"{r.phone}|{tipo}"           # stable id (survives re-scans)
+            ai_status = o.get("status", "mapeada")
+            if ai_status not in _OPP_STAGE_IDS:
+                ai_status = "mapeada"
+            override = overrides.get(okey)
+            pinned = override in _OPP_STAGE_IDS
+            stage = override if pinned else ai_status   # manual pin wins over IA
             all_items.append({
-                "key": key, "phone": r.phone, "conv_id": r.conv_id or "", "zurl": zurl,
+                "key": key, "okey": okey, "phone": r.phone, "conv_id": r.conv_id or "", "zurl": zurl,
                 "cliente": r.client_name or r.phone, "agente": r.agent or "—",
-                "tipo": o.get("tipo", "outro"), "titulo": o.get("titulo", ""),
+                "tipo": tipo, "titulo": o.get("titulo", ""),
                 "descricao": o.get("descricao", ""), "trecho": o.get("trecho", ""),
                 "valor": o.get("valor"), "valor_texto": o.get("valor_texto", ""),
                 "data": o.get("data", ""), "confianca": o.get("confianca", 0),
-                "last_msg_at": r.last_msg_at, "stage": st,
+                "last_msg_at": r.last_msg_at, "stage": stage,
+                "ai_status": ai_status, "pinned": pinned,
             })
     db.close()
 
@@ -5078,7 +5162,10 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         )
 
     nav = _nav_html("oportunidades", canal=canal, is_admin=is_admin, title="Oportunidades")
-    js_vars = f'<script>window.OPP_CANAL={json.dumps(canal)};</script>'
+    js_vars = (
+        f'<script>window.OPP_CANAL={json.dumps(canal)};'
+        f'window.OPP_HAS_DATA={"true" if all_items else "false"};</script>'
+    )
 
     kpi_html = (
         '<div class="kpi-row">'
@@ -5101,6 +5188,7 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         '<option value="60">Últimos 60 dias</option>'
         '<option value="90">Últimos 90 dias</option>'
         '</select>'
+        '<span id="opp-autosync" class="opp-autosync" style="display:none">🔄 atualizando status…</span>'
         '<button class="opp-scan-btn" onclick="startOppScan()">🔍 Buscar oportunidades</button>'
         '</div></div>'
     )
