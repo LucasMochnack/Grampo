@@ -1,13 +1,23 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
 from app import crud
 from app.dependencies import get_db
 from app.schemas import EventDetail, EventListResponse
 
-router = APIRouter(prefix="/events", tags=["events"])
+
+def _require_auth(request: Request) -> None:
+    """Gate the raw-event inspection endpoints behind the dashboard session —
+    these return verbatim webhook payloads (client PII), so they must never be
+    public."""
+    from app.routers.dashboard import _check_auth
+    if not _check_auth(request):
+        raise HTTPException(status_code=401, detail="Não autenticado")
+
+
+router = APIRouter(prefix="/events", tags=["events"], dependencies=[Depends(_require_auth)])
 
 
 @router.get("/", response_model=EventListResponse)

@@ -2889,7 +2889,8 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
         _alrt_bg = {"#ef4444":"#3a1414","#f97316":"#3a1a0a","#eab308":"#2a2208","#3b82f6":"#0d1a38"}.get(alert_level_color,"#1a1a1a")
         _alrt_border = {"#ef4444":"#5a2424","#f97316":"#6a3010","#eab308":"#4a4010","#3b82f6":"#1a2a5a"}.get(alert_level_color,"#333")
         alert_badge_chat = f'<span style="background:{_alrt_bg};color:{alert_level_color};border:1px solid {_alrt_border};padding:4px 10px;border-radius:6px;font-size:11px;font-weight:700;letter-spacing:.5px">{alert_level_label}</span>' if has_alert else ""
-        ok_btn_chat = f'<button onclick="ackAlert(\'{safe_phone}\',\'{html_mod.escape(agent).replace(chr(39),"&#39;")}\',\'{safe_snippet}\',\'{safe_display_name}\',\'{chat_id}\')" style="background:#0fa968;color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:11px;font-weight:700;cursor:pointer;font-family:\'Montserrat\',sans-serif">✓ OK</button>' if has_alert else ""
+        _ack_chat = html_mod.escape(json.dumps({"phone_key": phone, "agent": agent, "snippet": alert_snippet, "display_name": client_name or phone, "card_id": chat_id}), quote=True)
+        ok_btn_chat = f'<button data-ack="{_ack_chat}" onclick="ackAlertFromData(this)" style="background:#0fa968;color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:11px;font-weight:700;cursor:pointer;font-family:\'Montserrat\',sans-serif">✓ OK</button>' if has_alert else ""
         _enc_key = html_mod.escape(client_num)
         _enc_canal = html_mod.escape(canal)
         chat_panels_html += f"""<div class="gp-chat-panel" id="cpanel-{chat_id}" data-phone="{_enc_key}" data-canal="{_enc_canal}" data-loaded="0">
@@ -3276,6 +3277,7 @@ async function ackAlert(phoneKey,agent,snippet,displayName,cardId){{
     }}
   }}catch(e){{console.error(e);}}
 }}
+function ackAlertFromData(btn){{var d;try{{d=JSON.parse(btn.getAttribute('data-ack')||'{{}}');}}catch(e){{return;}}ackAlert(d.phone_key,d.agent,d.snippet,d.display_name,d.card_id);}}
 var _activeFilter='';
 function filterCards(type,el){{
   document.querySelectorAll('.gp-chip').forEach(c=>c.classList.remove('active'));
@@ -6372,6 +6374,7 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
         safe_agent = html_mod.escape(agent)
         safe_snippet = html_mod.escape(alert_snippet).replace("'", "&#39;")
         safe_display = html_mod.escape(client_name if client_name else phone).replace("'", "&#39;")
+        _ack_pg = html_mod.escape(json.dumps({"phone_key": phone, "agent": agent, "snippet": alert_snippet, "display_name": client_name or phone}), quote=True)
         from urllib.parse import quote as _uq4
         _conv_link = f"/dashboard/conversa?phone={_uq4(phone, safe='')}&canal={_uq4(canal, safe='')}"
         # Highlight the trigger keyword inside the snippet so the reason
@@ -6402,8 +6405,8 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
     <div style="font-size:11.5px;color:{alrt_color};opacity:.85;font-style:italic">"{_snip_html}"</div>
   </a>
   <div style="display:flex;gap:6px;flex-shrink:0">
-    <button onclick="ackAlertPage('{safe_phone}','{safe_agent}','{safe_snippet}','{safe_display}',this,'ok')" title="Revisado — sem problemas" style="background:#0fa968;border:none;color:#fff;padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif">✓ OK</button>
-    <button onclick="ackAlertPage('{safe_phone}','{safe_agent}','{safe_snippet}','{safe_display}',this,'problema')" title="Confirmar como problema real" style="background:#dc2626;border:none;color:#fff;padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif">⚠ PROBLEMA</button>
+    <button data-ack="{_ack_pg}" onclick="ackAlertPageFromData(this,'ok')" title="Revisado — sem problemas" style="background:#0fa968;border:none;color:#fff;padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif">✓ OK</button>
+    <button data-ack="{_ack_pg}" onclick="ackAlertPageFromData(this,'problema')" title="Confirmar como problema real" style="background:#dc2626;border:none;color:#fff;padding:5px 12px;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;font-family:'Montserrat',sans-serif">⚠ PROBLEMA</button>
   </div>
 </div>"""
 
@@ -6778,6 +6781,10 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
                 alert('Falha ao registrar (HTTP ' + resp.status + ').');
             }}
         }} catch(e) {{ console.error(e); alert('Erro de rede ao registrar.'); }}
+    }}
+    function ackAlertPageFromData(btn, status) {{
+        var d; try {{ d = JSON.parse(btn.getAttribute('data-ack') || '{{}}'); }} catch(e) {{ return; }}
+        ackAlertPage(d.phone_key, d.agent, d.snippet, d.display_name, btn, status);
     }}
 
     // Audit-table row variant — reads payload from data-ack attribute and
