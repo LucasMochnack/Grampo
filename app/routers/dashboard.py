@@ -54,6 +54,7 @@ COMPANY_CHANNELS_MAP: dict[str, str] = {
     "551920425800": "Suporte Interno",
     "5519971572548": "Mesa RV",
     "5519996789754": "Mesa Cambio",
+    "551920424283": "Expansão",
 }
 COMPANY_CHANNELS = set(COMPANY_CHANNELS_MAP.keys())
 HOUR_START, HOUR_END = 6, 19
