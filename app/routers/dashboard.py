@@ -4404,25 +4404,59 @@ _OPP_VERSION = "v4"
 _OPP_RISCO_MIN_VALOR = 3000
 
 # (tipo) -> (rótulo, emoji, cor hex)
+# (tipo) -> (rótulo, cor de acento, ícone) — paleta do design "Grid".
 _OPP_TIPOS = {
-    "aporte":          ("Novo aporte",            "💰", "#0fa968"),
-    "recurso_externo": ("Recurso em outro banco", "🏦", "#3b82f6"),
-    "liquidez":        ("Evento de liquidez",     "💵", "#d4af37"),
-    "produto":         ("Interesse em produto",   "📈", "#a855f7"),
-    "indicacao":       ("Indicação",              "🤝", "#22d3ee"),
-    "risco_saida":     ("Risco de saída",         "⚠️", "#ef4444"),
-    "outro":           ("Outra oportunidade",     "💡", "#8995b3"),
+    "aporte":          ("Novo aporte",            "#F59E0B", "coins"),
+    "recurso_externo": ("Recurso em outro banco", "#38BDF8", "bank"),
+    "liquidez":        ("Evento de liquidez",     "#14B8A6", "wave"),
+    "produto":         ("Interesse em produto",   "#8B5CF6", "box"),
+    "indicacao":       ("Indicação",              "#EC4899", "heart"),
+    "risco_saida":     ("Risco de saída",         "#EF4444", "warning"),
+    "outro":           ("Outra oportunidade",     "#71717A", "pin"),
 }
 
-# Kanban pipeline stages: (id, rótulo, emoji, cor). New opportunities start in
+# Kanban pipeline stages: (id, rótulo, _, cor). New opportunities start in
 # "mapeada"; the team drags them across as the deal progresses.
 _OPP_STAGES = [
-    ("mapeada",  "Mapeada",     "🔵", "#3b82f6"),
-    ("execucao", "Em execução", "🟡", "#f59e0b"),
-    ("ganha",    "Ganha",       "🟢", "#0fa968"),
-    ("perdido",  "Perdido",     "🔴", "#ef4444"),
+    ("mapeada",  "Mapeada",     "", "#3B82F6"),
+    ("execucao", "Em execução", "", "#F59E0B"),
+    ("ganha",    "Ganha",       "", "#22C55E"),
+    ("perdido",  "Perdido",     "", "#EF4444"),
 ]
 _OPP_STAGE_IDS = {s[0] for s in _OPP_STAGES}
+
+# Inline line-icon set (from the Claude Design handoff, JSX→HTML).
+_OPP_ICONS = {
+    "coins":   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg>',
+    "bank":    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10l9-6 9 6"/><path d="M5 10v9M19 10v9M9 10v9M15 10v9M3 21h18"/></svg>',
+    "wave":    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12c2-4 4-4 6 0s4 4 6 0 4-4 6 0"/><path d="M3 18c2-4 4-4 6 0s4 4 6 0 4-4 6 0"/></svg>',
+    "box":     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/></svg>',
+    "heart":   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20s-7-4.5-7-10a4 4 0 017-2.6A4 4 0 0119 10c0 5.5-7 10-7 10z"/></svg>',
+    "warning": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 16H3z"/><path d="M12 10v4M12 17.5v.5"/></svg>',
+    "pin":     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-6-5.3-6-10a6 6 0 1112 0c0 4.7-6 10-6 10z"/><circle cx="12" cy="11" r="2"/></svg>',
+    "wallet":  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 012-2h13v4"/><path d="M3 7v10a2 2 0 002 2h14a1 1 0 001-1v-3"/><path d="M21 11h-5a2 2 0 000 4h5z"/></svg>',
+    "trophy":  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4h12v4a6 6 0 01-12 0z"/><path d="M6 6H3v1a3 3 0 003 3M18 6h3v1a3 3 0 01-3 3M9 16h6M10 20h4M12 16v4"/></svg>',
+    "target":  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>',
+    "exit":    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3h5v18h-5"/><path d="M10 8l4 4-4 4M14 12H3"/></svg>',
+    "chevron": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>',
+    "refresh": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 11-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>',
+    "search":  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>',
+    "user":    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0116 0"/></svg>',
+    "headset": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13v-1a8 8 0 0116 0v1"/><path d="M4 13a2 2 0 012 2v2a2 2 0 01-4 0v-2a2 2 0 012-2zM20 13a2 2 0 012 2v2a2 2 0 01-4 0v-2a2 2 0 012-2z"/><path d="M20 17v1a3 3 0 01-3 3h-4"/></svg>',
+    "team":    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3 20a6 6 0 0112 0"/><path d="M16.5 5.3a3.2 3.2 0 010 5.4M18 14.4A6 6 0 0121 20"/></svg>',
+    "cal":     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 9h18M8 3v4M16 3v4"/></svg>',
+    "x":       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+    "chat":    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 01-11.3 7.3L3 21l1.7-6.7A8 8 0 1121 12z"/></svg>',
+    "spark":   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M5 12H1M23 12h-4M6 6l2 2M16 16l2 2M18 6l-2 2M8 16l-2 2"/></svg>',
+    "arrow":   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
+}
+
+def _opp_icon(key: str) -> str:
+    return _OPP_ICONS.get(key, _OPP_ICONS["pin"])
+
+def _cat_icon(tipo: str) -> str:
+    meta = _OPP_TIPOS.get(tipo) or _OPP_TIPOS["outro"]
+    return _opp_icon(meta[2])
 
 # Pré-filtro barato (normalizado, sem acento). Só conversas em que o CLIENTE
 # (mensagem IN) disse algo com um destes sinais vão para a análise da IA — isso
@@ -4791,75 +4825,201 @@ def opp_stage_endpoint(request: Request, body: dict = Body(default={}), db: Sess
 
 
 _OPP_CSS = """<style>
-.opp-toolbar{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:18px}
-.opp-chips{display:flex;gap:8px;flex-wrap:wrap}
-.opp-chip{font-size:12px;padding:6px 12px;border-radius:20px;border:1px solid #1a2540;color:#9fb0c9;text-decoration:none;background:#111a2e;transition:.12s;white-space:nowrap}
-.opp-chip:hover{border-color:#2a3a5a;color:#c0c8d8}
-.opp-chip.active{background:var(--cc,#0fa968);color:#0b1120;border-color:var(--cc,#0fa968);font-weight:700}
-.opp-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.opp-select{background:#111a2e;color:#e8ecf1;border:1px solid #1a2540;padding:7px 12px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit}
-.opp-scan-btn{background:#0fa968;color:#0b1120;border:none;padding:8px 16px;border-radius:8px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit}
-.opp-scan-btn:hover{background:#12c47e}
-.opp-autosync{font-size:11px;color:#7cb0ff;display:inline-flex;align-items:center;gap:4px;font-family:'JetBrains Mono',monospace}
-.opp-btn{font-size:11px;font-weight:600;border-radius:7px;padding:7px 11px;cursor:pointer;border:1px solid;font-family:inherit;transition:.12s}
-.opp-btn-ghost{background:transparent;color:#7a89a8;border-color:#1a2540}
-.opp-btn-ghost:hover{border-color:#ef444455;color:#ef8888}
-.opp-empty{text-align:center;padding:54px 20px}
-/* ── Kanban ── */
-.kb-board{display:flex;gap:13px;overflow-x:auto;padding-bottom:8px;align-items:flex-start}
-.kb-col{flex:1 1 0;min-width:260px;background:#0b1322;border:1px solid #16203a;border-radius:12px;display:flex;flex-direction:column;max-height:calc(100vh - 290px)}
-.kb-col-head{padding:11px 13px;border-bottom:1px solid #16203a;border-top:3px solid var(--kc,#3b82f6);border-radius:12px 12px 0 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap;position:sticky;top:0;background:#0b1322;z-index:2}
-.kb-col-title{font-size:12.5px;font-weight:700;color:#e8ecf1;display:flex;align-items:center;gap:6px}
-.kb-count{margin-left:auto;font-size:11px;font-weight:700;color:#0b1120;background:var(--kc,#3b82f6);border-radius:10px;padding:1px 8px;min-width:20px;text-align:center}
-.kb-colval{font-size:10.5px;color:#8995b3;font-family:'JetBrains Mono',monospace;width:100%}
-.kb-body{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:10px;min-height:90px}
-.kb-body.over{background:#0fa9681a;outline:2px dashed #0fa96866;outline-offset:-6px}
-.kb-body:empty::before{content:'Arraste cards para cá';color:#3a4a6a;font-size:11px;text-align:center;margin:auto;font-style:italic}
-.kb-card{background:#0e1626;border:1px solid #1a2540;border-left:3px solid var(--cc,#0fa968);border-radius:10px;padding:11px 12px;display:flex;flex-direction:column;gap:7px;cursor:grab}
-.kb-card:active{cursor:grabbing}
-.kb-card.dragging{opacity:.4}
-.opp-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.kb-badge{font-size:9px;font-weight:700;padding:2px 7px;border-radius:5px;text-transform:uppercase;letter-spacing:.03em}
-.kb-valor{font-size:12px;font-weight:800;color:#d4af37;font-family:'JetBrains Mono',monospace}
-.kb-conf{margin-left:auto;font-size:10px;color:#5a6a8a;font-family:'JetBrains Mono',monospace}
-.kb-title{font-size:13px;font-weight:700;color:#e8ecf1;line-height:1.3}
-.kb-quote{font-size:11.5px;color:#aeb8cf;font-style:italic;border-left:2px solid #2a3a5a;padding:2px 0 2px 8px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.kb-meta{font-size:10px;color:#5a6a8a;font-family:'JetBrains Mono',monospace}
-.kb-mode{font-size:9px;padding:1px 5px;border-radius:4px;background:#1a2540;color:#7a89a8;white-space:nowrap}
-.kb-mode.pinned{background:#f59e0b22;color:#fbbf24}
-.kb-card-foot{display:flex;gap:6px;align-items:center;margin-top:2px}
-.kb-move{flex:1;min-width:0;background:#111a2e;color:#c0c8d8;border:1px solid #1a2540;border-radius:6px;padding:4px 6px;font-size:10.5px;cursor:pointer;font-family:inherit}
-.kb-zbtn{background:#16c78415;color:#3ddc97;border:1px solid #16c78440;border-radius:6px;padding:4px 9px;font-size:11px;cursor:pointer;font-family:inherit}
-.kb-zbtn:hover{background:#16c78428}
-.kb-iconbtn{background:transparent;border:1px solid #1a2540;color:#7a89a8;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer}
-.kb-iconbtn:hover{border-color:#ef444455;color:#ef8888}
-.opp-modal{display:none;position:fixed;inset:0;background:rgba(5,9,18,.8);z-index:1000;align-items:center;justify-content:center}
-.opp-modal-box{background:#0e1626;border:1px solid #1a2540;border-radius:16px;padding:26px 28px;width:90%;max-width:430px;text-align:center}
-.opp-modal-title{font-size:16px;font-weight:700;color:#e8ecf1;margin-bottom:6px}
-.opp-modal-sub{font-size:12px;color:#8995b3;margin-bottom:16px;min-height:16px}
-.opp-bar-track{height:8px;background:#1a2540;border-radius:6px;overflow:hidden}
-.opp-bar-fill{height:100%;width:0;background:linear-gradient(90deg,#0fa968,#12c47e);transition:width .3s}
-.opp-modal-label{font-size:12px;color:#c0c8d8;margin-top:8px;font-family:'JetBrains Mono',monospace}
-.opp-modal-found{font-size:12px;color:#0fa968;margin-top:4px;font-weight:600;min-height:15px}
+*,*::before,*::after{box-sizing:border-box}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#2D2D33;border-radius:8px;border:2px solid transparent;background-clip:padding-box}
+html,body{margin:0;padding:0}
+.op-root{--bg:#09090B;--panel:#111113;--panel2:#0D0D0F;--col-bg:#0C0C0E;--col-border:#1C1C20;--border:#1F1F23;--border-2:#2D2D33;--text:#EDEDEF;--dim:#9B9BA4;--mute:#5E5E67;--brand:#22C55E;--brand-ink:#03130A;--c-green:#22C55E;--c-red:#EF4444;--radius:12px;--radius-card:10px;--radius-sm:8px;--font-ui:"Sora",system-ui,sans-serif;--font-mono:"DM Mono",ui-monospace,monospace;--font-quote:"Sora",sans-serif;--shadow-hover:0 8px 24px rgba(0,0,0,.5);min-height:100vh;background:var(--bg);color:var(--text);font-family:var(--font-ui);-webkit-font-smoothing:antialiased;position:relative}
+.op-root::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;background-image:radial-gradient(circle at center,rgba(255,255,255,.025) 1px,transparent 1px);background-size:28px 28px;opacity:.6}
+[data-accent="amber"]{--accent:#F59E0B}[data-accent="sky"]{--accent:#38BDF8}[data-accent="teal"]{--accent:#14B8A6}
+[data-accent="violet"]{--accent:#8B5CF6}[data-accent="pink"]{--accent:#EC4899}[data-accent="red"]{--accent:#EF4444}
+[data-accent="green"]{--accent:#22C55E}[data-accent="blue"]{--accent:#3B82F6}[data-accent="slate"]{--accent:#71717A}
+.op-shell{position:relative;z-index:1;max-width:1680px;margin:0 auto;padding:26px 30px 56px}
+.op-top{display:flex;justify-content:space-between;align-items:flex-start;gap:28px;flex-wrap:wrap}
+.op-title{margin:0;font-size:27px;font-weight:700;letter-spacing:-0.025em;line-height:1.1}
+.op-lede{margin:11px 0 0;max-width:820px;font-size:13px;line-height:1.6;color:var(--dim)}
+.op-top-right{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.op-brand img{height:30px;width:auto;opacity:.92;display:block}
+.op-pill{display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 13px;background:var(--panel);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12.5px;font-weight:500;transition:.18s}
+.op-pill:hover{border-color:var(--border-2)}
+.op-pill svg{width:13px;height:13px;opacity:.6}
+.op-pill select{appearance:none;background:transparent;border:0;color:var(--text);font-family:inherit;font-size:12.5px;cursor:pointer;outline:none}
+.op-updated{font-size:11px;color:var(--mute);font-family:var(--font-mono);display:flex;align-items:center;gap:7px}
+.op-dotlive{width:7px;height:7px;border-radius:50%;background:var(--c-green);animation:oplive 2.6s ease-out infinite}
+@keyframes oplive{0%{box-shadow:0 0 0 0 #22c55e88}70%,100%{box-shadow:0 0 0 7px transparent}}
+.op-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-top:24px}
+.kpi{position:relative;padding:18px 20px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
+.kpi-top{display:flex;align-items:center;gap:9px}
+.kpi-ic{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;color:var(--accent);background:color-mix(in oklab,var(--accent) 15%,transparent)}
+.kpi-ic svg{width:16px;height:16px}
+.kpi-label{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--mute);font-weight:600}
+.kpi-val{margin-top:13px;font-family:var(--font-mono);font-size:26px;font-weight:600;letter-spacing:-0.02em;line-height:1;font-variant-numeric:tabular-nums;background:linear-gradient(180deg,var(--accent),color-mix(in oklab,var(--accent) 60%,#fff));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.kpi-sub{margin-top:8px;font-size:11px;color:var(--dim)}
+.op-filters{margin-top:22px;display:flex;flex-wrap:wrap;gap:8px}
+.chip{appearance:none;cursor:pointer;font-family:var(--font-ui);font-size:12px;font-weight:500;display:inline-flex;align-items:center;gap:7px;height:33px;padding:0 13px;background:var(--panel);border:1px solid var(--border);border-radius:999px;color:var(--dim);transition:.18s;text-decoration:none}
+.chip:hover{color:var(--text);border-color:var(--border-2)}
+.chip svg{width:13px;height:13px;color:var(--accent)}
+.chip .chip-ct{font-family:var(--font-mono);font-size:11px;color:var(--mute)}
+.chip.on{background:color-mix(in oklab,var(--accent) 16%,var(--panel));border-color:color-mix(in oklab,var(--accent) 55%,transparent);color:var(--text)}
+.chip.on .chip-ct{color:var(--accent)}
+.chip[data-accent="todas"]{--accent:var(--brand)}
+.chip.on[data-accent="todas"]{background:var(--brand);color:var(--brand-ink);border-color:transparent}
+.chip.on[data-accent="todas"] svg,.chip.on[data-accent="todas"] .chip-ct{color:var(--brand-ink)}
+.op-subfilters{margin-top:12px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.op-select{display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 11px;background:var(--panel);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:var(--font-ui);font-size:12.5px;transition:.18s}
+.op-select:hover{border-color:var(--border-2)}
+.op-select > svg{width:13px;height:13px;opacity:.55}
+.op-select select{appearance:none;background:transparent;border:0;color:var(--text);font-family:inherit;font-size:12.5px;cursor:pointer;outline:none}
+.op-select.on{border-color:color-mix(in oklab,var(--brand) 55%,transparent);background:color-mix(in oklab,var(--brand) 12%,var(--panel))}
+.op-select.on > svg{color:var(--brand);opacity:1}
+.op-search{display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 16px;cursor:pointer;border:0;background:var(--brand);color:var(--brand-ink);border-radius:8px;font-family:var(--font-ui);font-size:12.5px;font-weight:600;transition:.18s;box-shadow:0 2px 14px color-mix(in oklab,var(--brand) 32%,transparent)}
+.op-search:hover{filter:brightness(1.06)}
+.op-search svg{width:14px;height:14px}
+.op-autosync{font-size:11px;color:var(--dim);display:none;align-items:center;gap:6px;font-family:var(--font-mono)}
+.op-autosync.show{display:inline-flex}
+.op-board{margin-top:22px;display:grid;grid-template-columns:repeat(4,1fr);gap:16px;align-items:start}
+.column{display:flex;flex-direction:column;background:var(--col-bg);border:1px solid var(--col-border);border-radius:var(--radius);overflow:hidden;max-height:calc(100vh - 96px)}
+.col-head{padding:14px 16px 12px;border-top:3px solid var(--accent);border-bottom:1px solid var(--border);background:var(--col-bg)}
+.col-head-top{display:flex;align-items:center;gap:9px}
+.col-name{font-size:14px;font-weight:600;letter-spacing:-0.01em}
+.col-count{margin-left:auto;font-family:var(--font-mono);font-size:11.5px;font-weight:600;color:var(--accent);background:color-mix(in oklab,var(--accent) 16%,transparent);padding:3px 9px;border-radius:999px}
+.col-total{margin-top:7px;font-family:var(--font-mono);font-size:12px;color:var(--accent)}
+.col-cards{padding:7px 12px 14px;display:flex;flex-direction:column;gap:11px;overflow-y:auto}
+.col-cards.over{background:color-mix(in oklab,var(--brand) 8%,transparent);outline:2px dashed color-mix(in oklab,var(--brand) 40%,transparent);outline-offset:-6px}
+.col-empty{padding:24px 10px;text-align:center;color:var(--mute);font-size:12px}
+.card{position:relative;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-card);padding:14px 14px 14px 16px;cursor:pointer;transition:transform .16s,box-shadow .2s,border-color .2s;overflow:hidden}
+.card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}
+.card:hover{transform:translateY(-3px);border-color:color-mix(in oklab,var(--accent) 45%,var(--border));box-shadow:var(--shadow-hover)}
+.card.dragging{opacity:.4}
+.card-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.cat{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:5px;font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;line-height:1;color:var(--accent);background:color-mix(in oklab,var(--accent) 15%,transparent)}
+.cat svg{width:11px;height:11px}
+.card-value{font-family:var(--font-mono);font-size:13px;font-weight:600;color:var(--text);white-space:nowrap}
+.card-value .cur{color:var(--mute);font-size:11px;margin-right:2px}
+.card-head2{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-top:11px}
+.card-title{font-size:14.5px;font-weight:600;letter-spacing:-0.01em;line-height:1.3;flex:1;min-width:0;overflow-wrap:break-word}
+.card-quote{margin-top:9px;font-family:var(--font-quote);font-style:italic;color:var(--text);opacity:.82;font-size:15.5px;line-height:1.55;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.card-meta{margin-top:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:11px;color:var(--mute)}
+.card-meta .mi{display:inline-flex;align-items:center;gap:5px}
+.card-meta svg{width:11px;height:11px;opacity:.8}
+.card-meta .mclient{color:var(--dim);font-weight:500;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge-mode{padding:2px 7px;border-radius:5px;font-family:var(--font-mono);font-size:9.5px;font-weight:600;cursor:pointer}
+.badge-mode.auto{background:color-mix(in oklab,var(--c-green) 16%,transparent);color:var(--c-green)}
+.badge-mode.pinned{background:color-mix(in oklab,#F59E0B 18%,transparent);color:#F59E0B}
+.card-foot{margin-top:13px;padding-top:11px;border-top:1px solid var(--border);display:flex;gap:6px;align-items:center}
+.mode-pill{flex:1;display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 10px;border-radius:8px;background:color-mix(in oklab,var(--c-green) 12%,transparent);border:1px solid color-mix(in oklab,var(--c-green) 28%,transparent);color:var(--c-green);font-size:11.5px;font-weight:500;cursor:pointer;font-family:var(--font-ui)}
+.mode-pill:hover{filter:brightness(1.14)}
+.mode-pill svg{width:12px;height:12px}
+.mode-pill .chev{margin-left:auto;opacity:.7;display:inline-flex}
+.mode-pill .chev svg{width:12px;height:12px}
+.movesel{height:30px;border-radius:8px;border:1px solid var(--border);background:var(--panel);color:var(--dim);font-family:var(--font-ui);font-size:11px;cursor:pointer;padding:0 6px;max-width:128px}
+.movesel:hover{border-color:var(--border-2);color:var(--text)}
+.icon-btn{width:30px;height:30px;display:grid;place-items:center;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--dim);cursor:pointer;transition:.15s;flex-shrink:0}
+.icon-btn:hover{border-color:var(--border-2);color:var(--text);background:var(--panel)}
+.icon-btn.danger:hover{color:var(--c-red);border-color:color-mix(in oklab,var(--c-red) 50%,transparent)}
+.icon-btn svg{width:13px;height:13px}
+.score{position:relative;display:inline-grid;place-items:center;flex-shrink:0;width:34px;height:34px}
+.score-ring{width:34px;height:34px;transform:rotate(-90deg)}
+.score-ring circle{fill:none;stroke-width:3}
+.score-track{stroke:color-mix(in oklab,var(--accent) 18%,transparent)}
+.score-prog{stroke:var(--accent);stroke-linecap:round;stroke-dasharray:calc(var(--v) * 1) 100;transition:stroke-dasharray 1s cubic-bezier(.22,.61,.36,1)}
+.score-n{position:absolute;font-family:var(--font-mono);font-size:9.5px;font-weight:600;color:var(--text)}
+.op-overlay{position:fixed;inset:0;background:rgba(3,5,10,.55);backdrop-filter:blur(3px);opacity:0;visibility:hidden;transition:.3s;z-index:50}
+.op-overlay.open{opacity:1;visibility:visible}
+.drawer{position:fixed;top:0;right:0;height:100vh;width:468px;max-width:92vw;background:var(--panel2);border-left:1px solid var(--border-2);box-shadow:-30px 0 80px rgba(0,0,0,.5);transform:translateX(102%);transition:transform .36s cubic-bezier(.22,.61,.36,1);z-index:51;display:flex;flex-direction:column}
+.drawer.open{transform:none}
+.dw-head{padding:20px 22px 16px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+.dw-close{width:32px;height:32px;display:grid;place-items:center;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--dim);cursor:pointer;flex-shrink:0;transition:.15s}
+.dw-close:hover{color:var(--text);border-color:var(--border-2)}
+.dw-close svg{width:14px;height:14px}
+.dw-body{flex:1;overflow-y:auto;padding:20px 22px 28px}
+.dw-title{font-size:20px;font-weight:600;letter-spacing:-0.02em;line-height:1.25;margin:0}
+.dw-stat{display:flex;gap:22px;margin-top:16px;padding:15px 17px;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius)}
+.dw-stat .lbl{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--mute);font-weight:600}
+.dw-stat .v{margin-top:6px;font-family:var(--font-mono);font-size:19px;font-weight:600;color:var(--accent)}
+.dw-quote{margin-top:18px;padding:15px 17px;background:color-mix(in oklab,var(--accent) 8%,transparent);border-radius:10px;border-left:3px solid var(--accent)}
+.dw-quote p{margin:0;font-family:var(--font-quote);font-style:italic;font-size:15px;line-height:1.6;color:var(--text)}
+.dw-quote .ch{display:inline-flex;align-items:center;gap:6px;margin-top:10px;font-size:11px;color:var(--mute)}
+.dw-quote .ch svg{width:12px;height:12px}
+.dw-section-t{margin:24px 0 11px;font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--mute);font-weight:700}
+.dw-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.dw-field{padding:11px 13px;background:var(--panel);border:1px solid var(--border);border-radius:8px}
+.dw-field .k{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--mute)}
+.dw-field .val{margin-top:5px;font-size:13.5px;font-weight:500;color:var(--text);word-break:break-word}
+.dw-field .val.mono{font-family:var(--font-mono);font-size:12.5px}
+.dw-action{margin-top:11px;padding:14px 15px;border-radius:var(--radius);background:color-mix(in oklab,var(--brand) 12%,transparent);border:1px solid color-mix(in oklab,var(--brand) 30%,transparent)}
+.dw-action .h{display:flex;align-items:center;gap:8px;font-size:11px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;color:var(--brand)}
+.dw-action .h svg{width:13px;height:13px}
+.dw-action p{margin:8px 0 0;font-size:13.5px;line-height:1.55;color:var(--text)}
+.dw-foot{padding:15px 22px;border-top:1px solid var(--border);display:flex;gap:10px}
+.dw-btn{flex:1;height:42px;border-radius:8px;font-family:var(--font-ui);font-size:13px;font-weight:600;cursor:pointer;transition:.16s;display:inline-flex;align-items:center;justify-content:center;gap:8px;border:0}
+.dw-btn svg{width:15px;height:15px}
+.dw-btn.primary{background:var(--brand);color:var(--brand-ink);box-shadow:0 3px 16px color-mix(in oklab,var(--brand) 32%,transparent)}
+.dw-btn.primary:hover{filter:brightness(1.07)}
+.dw-btn.ghost{background:transparent;border:1px solid var(--border-2);color:var(--text);flex:0 0 auto;padding:0 16px}
+.dw-btn.ghost:hover{background:var(--panel)}
+.chat-wrap{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:28px;background:rgba(3,5,10,.6);backdrop-filter:blur(4px);opacity:0;visibility:hidden;transition:.26s}
+.chat-wrap.open{opacity:1;visibility:visible}
+.chat-modal{width:460px;max-width:95vw;height:min(82vh,720px);display:flex;flex-direction:column;background:var(--panel2);border:1px solid var(--border-2);border-radius:16px;box-shadow:0 40px 120px rgba(0,0,0,.6);overflow:hidden;transform:translateY(14px) scale(.97);opacity:0;transition:.3s}
+.chat-wrap.open .chat-modal{transform:none;opacity:1}
+.chat-head{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid var(--border);background:var(--panel)}
+.chat-av{width:40px;height:40px;border-radius:50%;display:grid;place-items:center;flex-shrink:0;font-family:var(--font-mono);font-size:13px;font-weight:600;color:var(--accent);background:color-mix(in oklab,var(--accent) 18%,transparent)}
+.chat-id{flex:1;min-width:0}
+.chat-name{font-size:14.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chat-meta{display:flex;align-items:center;gap:6px;margin-top:2px;font-size:11.5px;color:var(--mute)}
+.chat-meta svg{width:12px;height:12px}
+.chat-scroll{flex:1;overflow-y:auto;padding:16px 14px;display:flex;flex-direction:column;gap:9px}
+.chat-banner{margin:4px 0 2px;padding:13px 14px;border-radius:var(--radius);background:color-mix(in oklab,var(--accent) 10%,transparent);border:1px solid color-mix(in oklab,var(--accent) 30%,transparent)}
+.chat-banner .cb-h{display:flex;align-items:center;gap:7px;font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--accent)}
+.chat-banner .cb-h svg{width:13px;height:13px}
+.chat-banner .cb-row{display:flex;align-items:center;gap:10px;margin-top:9px}
+.chat-banner .cb-score{font-family:var(--font-mono);font-size:11.5px;font-weight:600;color:var(--accent)}
+.chat-banner p{margin:9px 0 0;font-size:13px;line-height:1.5;color:var(--dim)}
+.chat-foot{display:flex;align-items:center;gap:10px;padding:12px 14px;border-top:1px solid var(--border);background:var(--panel)}
+.chat-zbtn{flex:1;height:38px;display:inline-flex;align-items:center;justify-content:center;gap:8px;border-radius:999px;border:0;cursor:pointer;background:var(--brand);color:var(--brand-ink);font-family:var(--font-ui);font-size:12.5px;font-weight:600}
+.chat-zbtn svg{width:15px;height:15px}
+.chat-detail{width:38px;height:38px;flex-shrink:0;display:grid;place-items:center;border-radius:50%;border:1px solid var(--border-2);cursor:pointer;background:transparent;color:var(--text)}
+.chat-detail:hover{background:var(--panel)}
+.chat-detail svg{width:15px;height:15px}
+.opp-modal{display:none;position:fixed;inset:0;background:rgba(3,5,10,.72);z-index:70;align-items:center;justify-content:center}
+.opp-modal.open{display:flex}
+.opp-modal-box{background:var(--panel2);border:1px solid var(--border-2);border-radius:16px;padding:26px 28px;width:90%;max-width:430px;text-align:center}
+.opp-modal-title{font-size:16px;font-weight:700;color:var(--text);margin-bottom:6px}
+.opp-modal-sub{font-size:12px;color:var(--dim);margin-bottom:16px;min-height:16px}
+.opp-bar-track{height:8px;background:var(--border);border-radius:6px;overflow:hidden}
+.opp-bar-fill{height:100%;width:0;background:var(--brand);transition:width .3s}
+.opp-modal-label{font-size:12px;color:var(--text);margin-top:8px;font-family:var(--font-mono)}
+.opp-modal-found{font-size:12px;color:var(--brand);margin-top:4px;font-weight:600;min-height:15px}
+.opp-empty{text-align:center;padding:60px 20px;color:var(--dim)}
+/* real thread (conv-messages fragment) rendered inside the chat modal */
+.chat-scroll .gp-msg{max-width:82%;padding:9px 12px 6px;border-radius:14px;font-size:13.5px;line-height:1.45;position:relative;word-break:break-word}
+.chat-scroll .gp-msg.in{align-self:flex-start;background:var(--panel);border:1px solid var(--border);border-bottom-left-radius:5px}
+.chat-scroll .gp-msg.out{align-self:flex-end;background:color-mix(in oklab,var(--brand) 20%,var(--panel));border:1px solid color-mix(in oklab,var(--brand) 32%,transparent);border-bottom-right-radius:5px}
+.chat-scroll .gp-msg-t{margin-top:3px;font-size:9px;font-family:var(--font-mono);color:var(--mute);text-align:right}
+.chat-scroll .gp-msg img{max-width:100%;border-radius:8px;margin-top:4px}
+.chat-scroll .gp-msg button{display:none}
+.chat-loading{margin:18px auto;color:var(--mute);font-size:12px}
+@media(max-width:1100px){.op-kpis{grid-template-columns:repeat(2,1fr)}.op-board{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:640px){.op-board{grid-template-columns:1fr}}
 </style>"""
 
 
 _OPP_JS = """<script>
 window._oppCancel=false;
+var OP_SPARK='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v4M12 17v4M5 12H1M23 12h-4M6 6l2 2M16 16l2 2M18 6l-2 2M8 16l-2 2"/></svg>';
+var OP_STAGE_LABELS={mapeada:'Mapeada',execucao:'Em execução',ganha:'Ganha',perdido:'Perdido'};
+function opEsc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 function setOppDays(v){window.OPP_DAYS=parseInt(v,10)||30;}
+/* ---- busca em lote ---- */
 async function startOppScan(){
   if(window.OPP_DAYS===undefined)window.OPP_DAYS=30;
-  var modal=document.getElementById('opp-modal');
-  var bar=document.getElementById('opp-bar');
-  var label=document.getElementById('opp-label');
-  var sub=document.getElementById('opp-sub');
-  var btn=document.getElementById('opp-close-btn');
-  var foundEl=document.getElementById('opp-found');
+  var modal=document.getElementById('opp-modal'),bar=document.getElementById('opp-bar'),label=document.getElementById('opp-label'),sub=document.getElementById('opp-sub'),btn=document.getElementById('opp-close-btn'),foundEl=document.getElementById('opp-found');
   bar.style.width='0%';label.textContent='0 / ?';foundEl.textContent='';
   sub.textContent='Procurando oportunidades nos últimos '+window.OPP_DAYS+' dias…';
   btn.textContent='Cancelar';window._oppCancel=false;
-  btn.onclick=function(){window._oppCancel=true;modal.style.display='none';};
-  modal.style.display='flex';
+  btn.onclick=function(){window._oppCancel=true;modal.classList.remove('open');};
+  modal.classList.add('open');
   var offset=0,total=0,found=0;
   while(true){
     if(window._oppCancel)break;
@@ -4870,17 +5030,24 @@ async function startOppScan(){
       if(data.error){sub.textContent='⚠ '+data.error;break;}
       total=data.total;offset=data.next_offset;found+=(data.found_this_call||0);
       var pct=total>0?Math.round(data.done/total*100):100;
-      bar.style.width=pct+'%';
-      label.textContent=data.done+' / '+total+' conversas';
+      bar.style.width=pct+'%';label.textContent=data.done+' / '+total+' conversas';
       foundEl.textContent=found+' oportunidade(s) encontrada(s)';
-      if(data.finished){
-        sub.textContent='Concluído! Atualizando a lista…';
-        btn.textContent='Fechar';btn.onclick=function(){location.reload();};
-        setTimeout(function(){location.reload();},1200);
-        break;
-      }
+      if(data.finished){sub.textContent='Concluído! Atualizando…';btn.textContent='Fechar';btn.onclick=function(){location.reload();};setTimeout(function(){location.reload();},1100);break;}
     }catch(e){sub.textContent='Erro de rede: '+e.message;break;}
   }
+}
+async function autoSyncOpp(){
+  var ind=document.getElementById('opp-autosync');if(ind)ind.classList.add('show');
+  var offset=0,calls=0,guard=0;
+  while(guard++<200){
+    try{
+      var resp=await fetch('/dashboard/opp-scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({canal:window.OPP_CANAL,offset:offset,batch_size:8,days:3})});
+      if(!resp.ok)break;var data=await resp.json();if(data.error)break;
+      offset=data.next_offset;calls+=(data.llm_calls||0);if(data.finished)break;
+    }catch(e){break;}
+  }
+  if(ind)ind.classList.remove('show');
+  if(calls>0){location.reload();}
 }
 function oppCopyPhone(phone,zurl){
   var d=String(phone||'').replace(/\\D/g,'');
@@ -4888,149 +5055,157 @@ function oppCopyPhone(phone,zurl){
   if(navigator.clipboard){navigator.clipboard.writeText(d).catch(function(){});}
   if(zurl){window.open(zurl,'_blank','noopener');}
 }
-function dismissOpp(key,btn){
+function dismissOpp(card){
+  if(!card)return;
   if(!confirm('Descartar esta oportunidade (falso positivo)?'))return;
-  fetch('/dashboard/dismiss-opp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:key,on:true})})
-    .then(function(r){if(r.ok){var c=btn.closest('.kb-card');if(c)c.remove();refreshKbCounts();}});
+  fetch('/dashboard/dismiss-opp',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:card.dataset.key,on:true})})
+    .then(function(r){if(r.ok){card.remove();refreshCols();}});
 }
-/* ── Kanban: status automático (IA) + arrasta/dropdown para fixar manual ── */
+/* ---- etapa: status automático (IA) + arrastar/dropdown p/ fixar ---- */
 var _oppDragOkey=null;
-function oppDragStart(ev,okey){
-  _oppDragOkey=okey;
-  try{ev.dataTransfer.effectAllowed='move';ev.dataTransfer.setData('text/plain',okey);}catch(e){}
-  ev.currentTarget.classList.add('dragging');
-}
-function oppDragEnd(ev){
-  ev.currentTarget.classList.remove('dragging');
-  document.querySelectorAll('.kb-body.over').forEach(function(c){c.classList.remove('over');});
-}
-function _oppCardByOkey(okey){
-  var found=null;
-  document.querySelectorAll('.kb-card').forEach(function(c){if(c.getAttribute('data-okey')===okey)found=c;});
-  return found;
-}
-function _oppSetMode(card,pinned){
-  var tag=card.querySelector('.kb-mode');if(!tag)return;
-  if(pinned){tag.className='kb-mode pinned';tag.textContent='📌 fixado';tag.title='Etapa fixada manualmente';}
-  else{tag.className='kb-mode';tag.textContent='🤖 auto';tag.title='Etapa definida automaticamente pela IA';}
-}
-function _oppPlace(card,targetStage){
-  var body=document.querySelector('.kb-body[data-stage="'+targetStage+'"]');
-  if(body)body.appendChild(card);
-  card.setAttribute('data-stage',targetStage);
-}
-function _oppPostStage(okey,stage){
-  fetch('/dashboard/opp-stage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({okey:okey,stage:stage})}).catch(function(){});
-}
+function oppDragStart(ev,okey){_oppDragOkey=okey;try{ev.dataTransfer.effectAllowed='move';ev.dataTransfer.setData('text/plain',okey);}catch(e){}ev.currentTarget.classList.add('dragging');}
+function oppDragEnd(ev){ev.currentTarget.classList.remove('dragging');document.querySelectorAll('.col-cards.over').forEach(function(c){c.classList.remove('over');});}
+function _oppCardByOkey(okey){var f=null;document.querySelectorAll('.card').forEach(function(c){if(c.getAttribute('data-okey')===okey)f=c;});return f;}
+function _oppSetMode(card,pinned){var t=card.querySelector('.badge-mode');if(t){t.className='badge-mode '+(pinned?'pinned':'auto');t.textContent=pinned?'fixado':'auto';}}
+function _oppPlace(card,stage){var b=document.querySelector('.col-cards[data-stage="'+stage+'"]');if(b)b.appendChild(card);card.setAttribute('data-stage',stage);}
+function _oppPostStage(okey,stage){fetch('/dashboard/opp-stage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({okey:okey,stage:stage})}).catch(function(){});}
 function moveOppSelect(sel){
-  var card=sel.closest('.kb-card');if(!card)return;
-  var okey=card.getAttribute('data-okey');var choice=sel.value;
+  var card=sel.closest('.card');if(!card)return;
+  var okey=card.getAttribute('data-okey'),choice=sel.value;
   if(choice==='auto'){_oppPlace(card,card.getAttribute('data-ai-status')||'mapeada');_oppSetMode(card,false);}
   else{_oppPlace(card,choice);_oppSetMode(card,true);}
-  refreshKbCounts();
-  _oppPostStage(okey,choice);
+  refreshCols();_oppPostStage(okey,choice);
 }
-function refreshKbCounts(){
-  document.querySelectorAll('.kb-col').forEach(function(col){
-    var body=col.querySelector('.kb-body');if(!body)return;
-    var cards=body.querySelectorAll('.kb-card');
-    var val=0;cards.forEach(function(c){val+=parseInt(c.getAttribute('data-valor')||'0',10)||0;});
-    var cEl=col.querySelector('.kb-count');if(cEl)cEl.textContent=cards.length;
-    var vEl=col.querySelector('.kb-colval');if(vEl)vEl.textContent=val?('R$ '+val.toLocaleString('pt-BR')):'';
+function refreshCols(){
+  document.querySelectorAll('.column').forEach(function(col){
+    var b=col.querySelector('.col-cards');if(!b)return;
+    var cards=b.querySelectorAll('.card');var val=0;
+    cards.forEach(function(c){val+=parseInt(c.getAttribute('data-valor')||'0',10)||0;});
+    var cE=col.querySelector('.col-count');if(cE)cE.textContent=cards.length;
+    var vE=col.querySelector('.col-total');if(vE)vE.textContent='R$ '+val.toLocaleString('pt-BR');
   });
 }
-async function autoSyncOpp(){
-  var ind=document.getElementById('opp-autosync');
-  if(ind)ind.style.display='inline-flex';
-  var offset=0,calls=0,guard=0;
-  while(guard++<200){
-    try{
-      var resp=await fetch('/dashboard/opp-scan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({canal:window.OPP_CANAL,offset:offset,batch_size:8,days:3})});
-      if(!resp.ok)break;
-      var data=await resp.json();
-      if(data.error)break;
-      offset=data.next_offset;calls+=(data.llm_calls||0);
-      if(data.finished)break;
-    }catch(e){break;}
-  }
-  if(ind)ind.style.display='none';
-  if(calls>0){location.reload();}
+/* ---- gaveta de detalhes ---- */
+function openDrawer(card){
+  var d=card.dataset;
+  document.getElementById('opDrawer').style.setProperty('--accent',d.accent||'#71717A');
+  document.getElementById('dwCat').innerHTML=card.querySelector('.cat').innerHTML;
+  document.getElementById('dwTitle').textContent=d.title||'';
+  document.getElementById('dwValor').textContent=d.valorFmt||'—';
+  document.getElementById('dwScore').textContent=(d.score||'0')+'%';
+  document.getElementById('dwStage').textContent=OP_STAGE_LABELS[d.stage]||'—';
+  document.getElementById('dwQuote').textContent='“'+(d.quote||'')+'”';
+  document.getElementById('dwChan').textContent='WhatsApp · '+(d.cliente||'');
+  document.getElementById('dwClient').textContent=d.cliente||'';
+  document.getElementById('dwPhone').textContent=d.phone||'';
+  document.getElementById('dwAdvisor').textContent=d.advisor||'';
+  document.getElementById('dwDate').textContent=d.date||'—';
+  document.getElementById('dwAction').textContent=d.action||'—';
+  document.getElementById('dwChatBtn').onclick=function(){closeDrawer();openChat(card);};
+  document.getElementById('dwGrampoBtn').onclick=function(){oppCopyPhone(d.phone,d.zurl);};
+  document.getElementById('opOverlay').classList.add('open');
+  document.getElementById('opDrawer').classList.add('open');
 }
+function closeDrawer(){document.getElementById('opOverlay').classList.remove('open');document.getElementById('opDrawer').classList.remove('open');}
+/* ---- conversa real no momento do mapeamento ---- */
+function openChat(card){
+  var d=card.dataset;
+  document.getElementById('chatModal').style.setProperty('--accent',d.accent||'#71717A');
+  document.getElementById('chatName').textContent=d.cliente||'';
+  document.getElementById('chatAdvisor').textContent=d.advisor||'';
+  var nm=(d.cliente||'?').trim();
+  document.getElementById('chatAv').textContent=(nm&&nm!=='—')?nm.slice(0,2).toUpperCase():'··';
+  var banner='<div class="chat-banner"><div class="cb-h">'+OP_SPARK+'<span>Oportunidade mapeada</span></div><div class="cb-row">'+card.querySelector('.cat').outerHTML+'<span class="cb-score">Score '+(d.score||'0')+'%</span></div><p>'+opEsc(d.action||'')+'</p></div>';
+  var scroll=document.getElementById('chatScroll');
+  scroll.innerHTML=banner+'<div class="chat-loading">Carregando conversa…</div>';
+  document.getElementById('chatZ').onclick=function(){oppCopyPhone(d.phone,d.zurl);};
+  document.getElementById('chatDetail').onclick=function(){closeChat();openDrawer(card);};
+  document.getElementById('chatWrap').classList.add('open');
+  var url='/dashboard/conv-messages?phone='+encodeURIComponent(d.phone)+'&canal='+encodeURIComponent(d.canal)+'&full=1';
+  fetch(url).then(function(r){return r.text();}).then(function(html){scroll.innerHTML=banner+html;scroll.scrollTop=scroll.scrollHeight;}).catch(function(){scroll.innerHTML=banner+'<div class="chat-loading">Erro ao carregar a conversa.</div>';});
+}
+function closeChat(){document.getElementById('chatWrap').classList.remove('open');}
+/* ---- wire ---- */
 document.addEventListener('DOMContentLoaded',function(){
-  document.querySelectorAll('.kb-body').forEach(function(body){
+  document.querySelectorAll('.col-cards').forEach(function(body){
     body.addEventListener('dragover',function(ev){ev.preventDefault();body.classList.add('over');try{ev.dataTransfer.dropEffect='move';}catch(e){}});
     body.addEventListener('dragleave',function(ev){if(ev.target===body)body.classList.remove('over');});
     body.addEventListener('drop',function(ev){
       ev.preventDefault();body.classList.remove('over');
       var okey=_oppDragOkey;try{if(!okey)okey=ev.dataTransfer.getData('text/plain');}catch(e){}
-      if(!okey)return;
-      var card=_oppCardByOkey(okey);if(!card)return;
+      if(!okey)return;var card=_oppCardByOkey(okey);if(!card)return;
       var stage=body.getAttribute('data-stage');
       body.appendChild(card);card.setAttribute('data-stage',stage);
-      var s=card.querySelector('.kb-move');if(s)s.value=stage;
-      _oppSetMode(card,true);
-      refreshKbCounts();
-      _oppPostStage(okey,stage);
+      var s=card.querySelector('.movesel');if(s)s.value=stage;
+      _oppSetMode(card,true);refreshCols();_oppPostStage(okey,stage);
     });
   });
+  document.querySelectorAll('.card').forEach(function(card){
+    card.addEventListener('click',function(e){if(e.target.closest('.card-foot'))return;openDrawer(card);});
+  });
+  window.addEventListener('keydown',function(e){if(e.key==='Escape'){if(document.getElementById('chatWrap').classList.contains('open'))closeChat();else closeDrawer();}});
   if(window.OPP_HAS_DATA){autoSyncOpp();}
 });
 </script>"""
 
 
 def _opp_card_html(i: dict) -> str:
-    label, emoji, color = _OPP_TIPOS.get(i["tipo"], _OPP_TIPOS["outro"])
-    cliente = html_mod.escape(i["cliente"] or "")
-    agente = html_mod.escape(_short_agent_name(i["agente"] or "—"))
-    titulo = html_mod.escape(i["titulo"] or "")
-    data = html_mod.escape(i["data"] or "")
+    e = html_mod.escape
+    label, hexc, icon_key = _OPP_TIPOS.get(i["tipo"], _OPP_TIPOS["outro"])
+    cliente = e(i["cliente"] or "")
+    advisor = e(_short_agent_name(i["agente"] or "—"))
+    titulo = e(i["titulo"] or "")
+    data_str = e(i["data"] or "")
     conf = int(i["confianca"] or 0)
     stage = i.get("stage", "mapeada")
+    ai_status = i.get("ai_status", "mapeada")
+    pinned = bool(i.get("pinned"))
     valor_int = int(i["valor"]) if i["valor"] else 0
     if i["valor"]:
-        valor_str = _fmt_brl(i["valor"])
+        valor_fmt = _fmt_brl(i["valor"])
+        value_html = f'<span class="card-value"><span class="cur">R$</span>{int(i["valor"]):,}'.replace(",", ".") + "</span>"
     elif i["valor_texto"]:
-        valor_str = "~ " + html_mod.escape(i["valor_texto"])
+        valor_fmt = e(i["valor_texto"])
+        value_html = f'<span class="card-value">{valor_fmt}</span>'
     else:
-        valor_str = ""
-    valor_html = f'<span class="kb-valor">{valor_str}</span>' if valor_str else ""
-    quote_html = f'<div class="kb-quote">“{html_mod.escape(i["trecho"])}”</div>' if i["trecho"] else ""
-    data_html = f" · {data}" if data else ""
-    desc_attr = html_mod.escape(i["descricao"] or "", quote=True)
-    phone_a = html_mod.escape(i["phone"], quote=True)
-    zurl_a = html_mod.escape(i["zurl"], quote=True)
-    key_a = html_mod.escape(i["key"], quote=True)
-    z_arg = f"&#39;{zurl_a}&#39;" if i["zurl"] else "&#39;&#39;"
-    z_label = "💬" if i["zurl"] else "⧉"
-    z_title = "Abrir na Zenvia (copia o telefone)" if i["zurl"] else "Copiar telefone"
-    pinned = bool(i.get("pinned"))
-    ai_status = i.get("ai_status", "mapeada")
-    okey_a = html_mod.escape(i.get("okey", ""), quote=True)
-    move_opts = (
-        '<option value="auto"' + ('' if pinned else ' selected')
-        + '>🤖 Automático (IA)</option>'
-    )
+        valor_fmt = "—"
+        value_html = ""
+    quote_html = f'<div class="card-quote">“{e(i["trecho"])}”</div>' if i["trecho"] else ""
+    date_html = f'<span class="mi">{data_str}</span>' if data_str else ""
+    okey_a = e(i.get("okey", ""), quote=True)
+    move_opts = '<option value="auto"' + ('' if pinned else ' selected') + '>🤖 Automático (IA)</option>'
     for sid, slabel, _se, _sc in _OPP_STAGES:
         move_opts += f'<option value="{sid}"{" selected" if (pinned and stage == sid) else ""}>{slabel}</option>'
-    mode_tag = ('<span class="kb-mode pinned" title="Etapa fixada manualmente">📌 fixado</span>'
-                if pinned else
-                '<span class="kb-mode" title="Etapa definida automaticamente pela IA">🤖 auto</span>')
+    mode = ('<span class="badge-mode pinned" title="Etapa fixada manualmente">fixado</span>'
+            if pinned else '<span class="badge-mode auto" title="Etapa definida pela IA">auto</span>')
+    cat_badge = f'<span class="cat">{_opp_icon(icon_key)}<span>{e(label)}</span></span>'
+    # data-* feed the drawer + chat modal (read client-side)
+    attrs = (
+        f'class="card" draggable="true" style="--accent:{hexc}" '
+        f'data-accent="{hexc}" data-okey="{okey_a}" data-stage="{stage}" data-ai-status="{ai_status}" '
+        f'data-valor="{valor_int}" data-key="{e(i["key"], quote=True)}" '
+        f'data-title="{e(i["titulo"] or "", quote=True)}" data-quote="{e(i["trecho"] or "", quote=True)}" '
+        f'data-cliente="{e(i["cliente"] or "", quote=True)}" data-phone="{e(i["phone"], quote=True)}" '
+        f'data-advisor="{e(i["agente"] or "—", quote=True)}" data-date="{e(i["data"] or "", quote=True)}" '
+        f'data-score="{conf}" data-valor-fmt="{e(valor_fmt, quote=True)}" '
+        f'data-action="{e(i["descricao"] or "", quote=True)}" data-canal="{e(i.get("canal",""), quote=True)}" '
+        f'data-zurl="{e(i["zurl"], quote=True)}" '
+        f'ondragstart="oppDragStart(event,&#39;{okey_a}&#39;)" ondragend="oppDragEnd(event)"'
+    )
     return (
-        f'<div class="kb-card" draggable="true" data-opp-key="{key_a}" data-okey="{okey_a}" '
-        f'data-stage="{stage}" data-ai-status="{ai_status}" data-valor="{valor_int}" '
-        f'style="--cc:{color}" title="{desc_attr}" '
-        f'ondragstart="oppDragStart(event,&#39;{okey_a}&#39;)" ondragend="oppDragEnd(event)">'
-        f'<div class="opp-head">'
-        f'<span class="kb-badge" style="background:{color}22;color:{color};border:1px solid {color}55">{emoji} {html_mod.escape(label)}</span>'
-        f'{valor_html}<span class="kb-conf" title="Confiança do sinal">{conf}%</span>'
-        f'</div>'
-        f'<div class="kb-title">{titulo}</div>'
+        f'<div {attrs}>'
+        f'<div class="card-top">{cat_badge}{value_html}</div>'
+        f'<div class="card-head2"><div class="card-title">{titulo}</div>'
+        f'<div class="score" style="--v:{conf}"><svg class="score-ring" viewBox="0 0 36 36">'
+        f'<circle class="score-track" cx="18" cy="18" r="15.9155"/><circle class="score-prog" cx="18" cy="18" r="15.9155"/></svg>'
+        f'<span class="score-n">{conf}%</span></div></div>'
         f'{quote_html}'
-        f'<div class="kb-meta">👤 {cliente} · 🎧 {agente}{data_html} {mode_tag}</div>'
-        f'<div class="kb-card-foot">'
-        f'<select class="kb-move" title="Etapa (Automático = IA decide)" onchange="moveOppSelect(this)">{move_opts}</select>'
-        f'<button class="kb-zbtn" title="{z_title}" onclick="oppCopyPhone(&#39;{phone_a}&#39;,{z_arg})">{z_label}</button>'
-        f'<button class="kb-iconbtn" title="Descartar (falso positivo)" onclick="dismissOpp(&#39;{key_a}&#39;,this)">✕</button>'
+        f'<div class="card-meta"><span class="mi mclient">{_opp_icon("user")}<span>{cliente}</span></span>'
+        f'<span class="mi">{_opp_icon("headset")}<span>{advisor}</span></span>{date_html}{mode}</div>'
+        f'<div class="card-foot">'
+        f'<button class="mode-pill" title="Abrir a conversa no momento do sinal" onclick="event.stopPropagation();openChat(this.closest(&#39;.card&#39;))">{_opp_icon("chat")}<span>Abrir conversa</span><span class="chev">{_opp_icon("arrow")}</span></button>'
+        f'<select class="movesel" title="Etapa (Automático = IA decide)" onclick="event.stopPropagation()" onchange="moveOppSelect(this)">{move_opts}</select>'
+        f'<button class="icon-btn danger" title="Descartar (falso positivo)" onclick="event.stopPropagation();dismissOpp(this.closest(&#39;.card&#39;))">{_opp_icon("x")}</button>'
         f'</div>'
         f'</div>'
     )
@@ -5093,6 +5268,7 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
                 "data": o.get("data", ""), "confianca": o.get("confianca", 0),
                 "last_msg_at": r.last_msg_at, "stage": stage,
                 "ai_status": ai_status, "pinned": pinned, "time": seg,
+                "canal": r.canal or canal,
             })
     db.close()
 
@@ -5139,121 +5315,158 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         if a: d["agente"] = a
         return ("?" + urlencode(d)) if d else "?"
 
-    chips = [f'<a href="{_qs(tipo="")}" class="opp-chip {"active" if not tipo_f else ""}">Todas ({len(all_items)})</a>']
-    for tp, (label, emoji, color) in _OPP_TIPOS.items():
+    # ── category filter chips (Grid) ──
+    chips = [f'<a href="{_qs(tipo="")}" class="chip {"on" if not tipo_f else ""}" data-accent="todas"><span>Todas</span><span class="chip-ct">{len(all_items)}</span></a>']
+    for tp, (label, hexc, icon_key) in _OPP_TIPOS.items():
         cnt = tipo_counts_all.get(tp, 0)
         if not cnt:
             continue
-        act = "active" if tipo_f == tp else ""
-        chips.append(f'<a href="{_qs(tipo=tp)}" class="opp-chip {act}" style="--cc:{color}">{emoji} {html_mod.escape(label)} ({cnt})</a>')
+        on = "on" if tipo_f == tp else ""
+        chips.append(f'<a href="{_qs(tipo=tp)}" class="chip {on}" style="--accent:{hexc}">{_opp_icon(icon_key)}<span>{html_mod.escape(label)}</span><span class="chip-ct">{cnt}</span></a>')
     chips_html = "".join(chips)
 
-    time_select = (
-        '<select class="opp-select" onchange="location.href=this.value" title="Filtrar por time comercial">'
-        + f'<option value="{_qs(time="")}">Todos os times</option>'
-        + "".join(
-            f'<option value="{_qs(time=tm)}" {"selected" if time_f == tm else ""}>{html_mod.escape(tm)}</option>'
-            for tm in times
-        )
-        + "</select>"
-    )
+    def _opsel(icon, opts, on):
+        return (f'<span class="op-select{" on" if on else ""}">{icon}'
+                f'<select onchange="location.href=this.value">{opts}</select></span>')
 
-    ag_select = (
-        '<select class="opp-select" onchange="location.href=this.value" title="Filtrar por assessor">'
-        + f'<option value="{_qs(agente="")}">Todos os assessores</option>'
-        + "".join(
-            f'<option value="{_qs(agente=a)}" {"selected" if agente_f == a else ""}>{html_mod.escape(_short_agent_name(a))}</option>'
-            for a in agents
-        )
-        + "</select>"
+    team_opts = f'<option value="{_qs(time="")}">Todos os times</option>' + "".join(
+        f'<option value="{_qs(time=tm)}" {"selected" if time_f == tm else ""}>{html_mod.escape(tm)}</option>' for tm in times)
+    ag_opts = f'<option value="{_qs(agente="")}">Todos os assessores</option>' + "".join(
+        f'<option value="{_qs(agente=a)}" {"selected" if agente_f == a else ""}>{html_mod.escape(_short_agent_name(a))}</option>' for a in agents)
+    period_opts = "".join(f'<option value="{d}"{" selected" if d == 30 else ""}>Últimos {d} dias</option>' for d in (7, 15, 30, 60, 90))
+
+    subfilters = (
+        _opsel(_opp_icon("team"), team_opts, bool(time_f))
+        + _opsel(_opp_icon("headset"), ag_opts, bool(agente_f))
+        + f'<span class="op-select">{_opp_icon("cal")}<select onchange="setOppDays(this.value)">{period_opts}</select></span>'
+        + f'<span id="opp-autosync" class="op-autosync">{_opp_icon("refresh")}<span>atualizando…</span></span>'
+        + f'<button class="op-search" onclick="startOppScan()">{_opp_icon("search")}<span>Buscar oportunidades</span></button>'
     )
 
     if all_items:
         cols = []
-        for sid, slabel, semoji, scolor in _OPP_STAGES:
+        for sid, slabel, _se, scolor in _OPP_STAGES:
             bucket = by_stage[sid]
-            cards = "".join(_opp_card_html(i) for i in bucket)
-            val = _sumval(bucket)
-            valtxt = _fmt_brl(val) if val else ""
+            inner = ("".join(_opp_card_html(i) for i in bucket) if bucket
+                     else '<div class="col-empty">Nenhuma oportunidade nesta etapa</div>')
+            val_fmt = "R$ " + format(_sumval(bucket), ",").replace(",", ".")
             cols.append(
-                f'<div class="kb-col" style="--kc:{scolor}" data-stage="{sid}">'
-                f'<div class="kb-col-head"><span class="kb-col-title">{semoji} {slabel}</span>'
-                f'<span class="kb-count">{len(bucket)}</span>'
-                f'<span class="kb-colval">{valtxt}</span></div>'
-                f'<div class="kb-body" data-stage="{sid}">{cards}</div>'
-                f'</div>'
+                f'<div class="column" style="--accent:{scolor}">'
+                f'<div class="col-head"><div class="col-head-top"><span class="col-name">{slabel}</span>'
+                f'<span class="col-count">{len(bucket)}</span></div>'
+                f'<div class="col-total">{val_fmt}</div></div>'
+                f'<div class="col-cards" data-stage="{sid}">{inner}</div></div>'
             )
-        board_html = '<div class="kb-board">' + "".join(cols) + '</div>'
+        board_html = '<div class="op-board">' + "".join(cols) + '</div>'
     else:
         board_html = (
-            '<div class="opp-empty">'
-            '<div style="font-size:36px">💡</div>'
-            '<div style="font-size:15px;color:#c0c8d8;margin-top:8px;font-weight:600">Nenhuma oportunidade mapeada ainda</div>'
-            '<div style="font-size:12.5px;color:#5a6a8a;margin-top:7px;max-width:440px;margin-left:auto;margin-right:auto;line-height:1.5">'
-            'Clique em <b style="color:#0fa968">🔍 Buscar oportunidades</b> para a IA varrer as conversas e identificar quando o cliente '
-            'sinaliza aporte, dinheiro em outro banco, interesse em produtos, eventos de liquidez e risco de saída.</div>'
-            '</div>'
+            '<div class="opp-empty"><div style="font-size:40px">💡</div>'
+            '<div style="font-size:16px;color:var(--text);margin-top:10px;font-weight:600">Nenhuma oportunidade mapeada ainda</div>'
+            '<div style="font-size:13px;margin-top:8px;max-width:470px;margin-left:auto;margin-right:auto;line-height:1.55">'
+            'Clique em <b style="color:var(--brand)">Buscar oportunidades</b> para a IA varrer as conversas e identificar '
+            'sinais de aporte, recurso em outro banco, interesse em produtos, eventos de liquidez e risco de saída.</div></div>'
         )
 
-    nav = _nav_html("oportunidades", canal=canal, is_admin=is_admin, title="Oportunidades")
     js_vars = (
         f'<script>window.OPP_CANAL={json.dumps(canal)};'
         f'window.OPP_HAS_DATA={"true" if all_items else "false"};</script>'
     )
 
-    kpi_html = (
-        '<div class="kpi-row">'
-        f'<div class="kpi" style="border-top:3px solid #d4af37"><div class="val" style="font-size:18px;color:#d4af37">{_fmt_brl(valor_aberto) if valor_aberto else "—"}</div><div class="label">Valor em aberto (mapeada + execução)</div></div>'
-        f'<div class="kpi" style="border-top:3px solid #0fa968"><div class="val" style="font-size:18px;color:#0fa968">{_fmt_brl(valor_ganho) if valor_ganho else "—"}</div><div class="label">Valor ganho</div></div>'
-        f'<div class="kpi" style="border-top:3px solid #3b82f6"><div class="val">{conv_rate}%</div><div class="label">Conversão ({n_ganha} ganhas / {n_perd} perdidas)</div></div>'
-        f'<div class="kpi" style="border-top:3px solid {"#ef4444" if risco else "#1a2540"}"><div class="val" style="color:{"#ef4444" if risco else "#e8ecf1"}">{risco}</div><div class="label">⚠️ Risco de saída</div></div>'
-        '</div>'
+    def _kpi(accent, icon, label, val, sub):
+        return (f'<div class="kpi" style="--accent:{accent}"><div class="kpi-top">'
+                f'<span class="kpi-ic">{_opp_icon(icon)}</span><span class="kpi-label">{label}</span></div>'
+                f'<div class="kpi-val">{val}</div><div class="kpi-sub">{sub}</div></div>')
+    kpis_html = (
+        '<div class="op-kpis">'
+        + _kpi("#F59E0B", "wallet", "Valor em aberto", _fmt_brl(valor_aberto) if valor_aberto else "—", "Mapeada + Em execução")
+        + _kpi("#22C55E", "trophy", "Valor ganho", _fmt_brl(valor_ganho) if valor_ganho else "—", "Convertido no período")
+        + _kpi("#3B82F6", "target", "Conversão", f"{conv_rate}%", f"{n_ganha} ganhas · {n_perd} perdidas")
+        + _kpi("#EF4444", "exit", "Risco de saída", str(risco), "oportunidades em alerta")
+        + '</div>'
     )
 
-    toolbar = (
-        '<div class="opp-toolbar">'
-        '<div class="opp-chips">' + chips_html + '</div>'
-        '<div class="opp-tools">'
-        + time_select + ag_select +
-        '<select class="opp-select" onchange="setOppDays(this.value)" title="Período da busca">'
-        '<option value="7">Últimos 7 dias</option>'
-        '<option value="15">Últimos 15 dias</option>'
-        '<option value="30" selected>Últimos 30 dias</option>'
-        '<option value="60">Últimos 60 dias</option>'
-        '<option value="90">Últimos 90 dias</option>'
-        '</select>'
-        '<span id="opp-autosync" class="opp-autosync" style="display:none">🔄 atualizando status…</span>'
-        '<button class="opp-scan-btn" onclick="startOppScan()">🔍 Buscar oportunidades</button>'
+    # canal selector (preserves active filters)
+    canal_opts = f'<option value="{_qs(canal="")}">Todos os canais</option>'
+    for ch_num, ch_label in sorted(COMPANY_CHANNELS_MAP.items(), key=lambda x: x[1]):
+        selm = "selected" if canal == ch_num else ""
+        canal_opts += f'<option value="{_qs(canal=ch_num)}" {selm}>{html_mod.escape(ch_label)} ({ch_num[-4:]})</option>'
+    _back = f'/dashboard{("?canal=" + canal) if canal else ""}'
+    top_html = (
+        '<div class="op-top"><div>'
+        '<h1 class="op-title">Oportunidades</h1>'
+        '<p class="op-lede">Sinais comerciais que a IA encontrou nas conversas — quando o cliente menciona que vai aportar, '
+        'tem dinheiro em outra instituição, quer comprar um produto, teve um evento de liquidez, ou sinaliza risco de saída. '
+        'Arraste os cards entre as etapas conforme a negociação avança.</p>'
+        '</div><div class="op-top-right">'
+        f'<a class="op-brand" href="{_back}" title="Voltar ao painel"><img src="{ALTO_VALOR_LOGO}" alt="Alto Valor" /></a>'
+        f'<span class="op-pill">{_opp_icon("wallet")}<select onchange="location.href=this.value">{canal_opts}</select></span>'
+        '<span class="op-updated"><span class="op-dotlive"></span>IA ativa</span>'
         '</div></div>'
+    )
+
+    drawer_html = (
+        '<div class="op-overlay" id="opOverlay" onclick="closeDrawer()"></div>'
+        '<aside class="drawer" id="opDrawer">'
+        f'<div class="dw-head"><span class="cat" id="dwCat"></span>'
+        f'<button class="dw-close" onclick="closeDrawer()" aria-label="Fechar">{_opp_icon("x")}</button></div>'
+        '<div class="dw-body"><h2 class="dw-title" id="dwTitle"></h2>'
+        '<div class="dw-stat"><div><div class="lbl">Valor</div><div class="v" id="dwValor"></div></div>'
+        '<div><div class="lbl">Score IA</div><div class="v" id="dwScore"></div></div>'
+        '<div><div class="lbl">Etapa</div><div class="v" id="dwStage" style="font-size:14px"></div></div></div>'
+        f'<div class="dw-quote"><p id="dwQuote"></p><span class="ch">{_opp_icon("chat")}<span id="dwChan"></span></span></div>'
+        '<div class="dw-section-t">Cliente &amp; atendimento</div><div class="dw-grid">'
+        '<div class="dw-field"><div class="k">Cliente</div><div class="val" id="dwClient"></div></div>'
+        '<div class="dw-field"><div class="k">Telefone</div><div class="val mono" id="dwPhone"></div></div>'
+        '<div class="dw-field"><div class="k">Assessor</div><div class="val" id="dwAdvisor"></div></div>'
+        '<div class="dw-field"><div class="k">Último sinal</div><div class="val mono" id="dwDate"></div></div></div>'
+        '<div class="dw-section-t">Ação sugerida pela IA</div>'
+        f'<div class="dw-action"><div class="h">{_opp_icon("spark")}<span>Próximo passo</span></div><p id="dwAction"></p></div>'
+        '</div><div class="dw-foot">'
+        f'<button class="dw-btn primary" id="dwChatBtn">{_opp_icon("chat")}<span>Abrir conversa</span></button>'
+        f'<button class="dw-btn ghost" id="dwGrampoBtn" title="Copiar telefone / abrir Zenvia">{_opp_icon("arrow")}</button>'
+        '</div></aside>'
+    )
+
+    chat_html = (
+        '<div class="chat-wrap" id="chatWrap" onclick="closeChat()">'
+        '<div class="chat-modal" id="chatModal" onclick="event.stopPropagation()">'
+        '<div class="chat-head"><span class="chat-av" id="chatAv"></span>'
+        '<div class="chat-id"><div class="chat-name" id="chatName"></div>'
+        f'<div class="chat-meta">{_opp_icon("headset")}<span id="chatAdvisor"></span></div></div>'
+        f'<button class="dw-close" onclick="closeChat()" aria-label="Fechar">{_opp_icon("x")}</button></div>'
+        '<div class="chat-scroll" id="chatScroll"></div>'
+        '<div class="chat-foot">'
+        f'<button class="chat-zbtn" id="chatZ">{_opp_icon("chat")}<span>Responder na Zenvia</span></button>'
+        f'<button class="chat-detail" id="chatDetail" title="Ver detalhes">{_opp_icon("box")}</button>'
+        '</div></div></div>'
     )
 
     modal = (
         '<div id="opp-modal" class="opp-modal"><div class="opp-modal-box">'
-        '<div class="opp-modal-title">🔍 Buscando oportunidades</div>'
+        '<div class="opp-modal-title">Buscando oportunidades</div>'
         '<div id="opp-sub" class="opp-modal-sub">Iniciando…</div>'
         '<div class="opp-bar-track"><div id="opp-bar" class="opp-bar-fill"></div></div>'
         '<div id="opp-label" class="opp-modal-label">0 / ?</div>'
         '<div id="opp-found" class="opp-modal-found"></div>'
-        '<button id="opp-close-btn" class="opp-btn opp-btn-ghost" style="margin-top:14px">Cancelar</button>'
+        '<button id="opp-close-btn" class="op-search" style="margin-top:16px;width:100%;justify-content:center">Cancelar</button>'
         '</div></div>'
     )
 
     page = (
         '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
         '<title>Oportunidades — Alto Valor</title>'
-        + COMMON_CSS + _OPP_CSS +
-        '</head><body>'
-        + nav +
-        '<div class="container">'
-        '<p style="font-size:12px;color:#5a6a8a;margin:0 0 14px;max-width:700px;line-height:1.5">'
-        'Sinais comerciais que a IA encontrou nas conversas — quando o cliente menciona que vai aportar, '
-        'tem dinheiro em outra instituição, quer comprar um produto, teve um evento de liquidez, ou sinaliza risco de saída. '
-        'Arraste os cards entre as colunas conforme a negociação avança.'
-        '</p>'
-        + kpi_html + toolbar + board_html +
-        '</div>'
-        + modal + js_vars + _OPP_JS +
-        '</body></html>'
+        '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+        '<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">'
+        + _OPP_CSS +
+        '</head><body><div class="op-root"><div class="op-shell">'
+        + top_html + kpis_html
+        + '<div class="op-filters">' + chips_html + '</div>'
+        + '<div class="op-subfilters">' + subfilters + '</div>'
+        + board_html
+        + '</div>' + drawer_html + chat_html + modal + '</div>'
+        + js_vars + _OPP_JS
+        + '</body></html>'
     )
     return HTMLResponse(page)
 
