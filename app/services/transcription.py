@@ -98,12 +98,22 @@ def transcribe_url(db: Session, url: str, mime: str = "") -> str:
     if cached is not None:
         return cached
 
+    # SSRF guard: HTTPS only + exact host suffix on the Zenvia/S3/GCS CDNs, and
+    # do NOT follow redirects (blocks fetching cloud metadata / internal hosts).
+    from urllib.parse import urlparse as _urlparse
+    _allowed = ("zenvia.com", "zenviamobile.com.br", "amazonaws.com", "storage.googleapis.com")
+    _p = _urlparse(url)
+    _h = (_p.hostname or "").lower()
+    if _p.scheme != "https" or not any(_h == d or _h.endswith("." + d) for d in _allowed):
+        raise ValueError("URL de áudio não permitida")
+
     # Download audio
     try:
-        resp = httpx.get(url, follow_redirects=True, timeout=_DOWNLOAD_TIMEOUT)
+        resp = httpx.get(url, follow_redirects=False, timeout=_DOWNLOAD_TIMEOUT)
         resp.raise_for_status()
     except Exception as exc:
-        raise RuntimeError(f"Falha ao baixar áudio: {exc}") from exc
+        logger.warning("Audio download failed: %s", exc)
+        raise RuntimeError("Falha ao baixar o áudio") from exc
 
     audio_bytes = resp.content
     if len(audio_bytes) > _MAX_AUDIO_BYTES:
@@ -124,7 +134,7 @@ def transcribe_url(db: Session, url: str, mime: str = "") -> str:
         duration_s = int(result.duration) if hasattr(result, "duration") and result.duration else None
     except Exception as exc:
         logger.error("Whisper API error (%s): %s", provider, exc)
-        raise RuntimeError(f"Erro na API de transcrição: {exc}") from exc
+        raise RuntimeError("Erro na API de transcrição") from exc
 
     if not text:
         text = "[áudio sem fala detectada]"

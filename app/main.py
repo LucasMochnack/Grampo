@@ -35,6 +35,28 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    @app.middleware("http")
+    async def _security_headers(request, call_next):
+        resp = await call_next(request)
+        resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+        resp.headers.setdefault("X-Frame-Options", "DENY")
+        resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+        # Inline scripts/handlers are used throughout, so 'unsafe-inline' stays;
+        # the value here still adds object-src/base-uri/frame-ancestors hardening
+        # and constrains where assets/connections can come from.
+        resp.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' data: https://fonts.gstatic.com; "
+            "img-src 'self' data: https:; "
+            "media-src 'self' https:; "
+            "connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+        )
+        return resp
+
     app.include_router(health.router)
     app.include_router(webhook.router)
     app.include_router(events.router)

@@ -2137,14 +2137,14 @@ async def login_submit(request: Request, db: Session = Depends(get_db)):
     _record_login(db, who, ip, ua, True)
 
     resp = RedirectResponse("/dashboard", status_code=302)
-    resp.set_cookie(AUTH_COOKIE, _sign_token(token), httponly=True, max_age=86400 * 7)
+    resp.set_cookie(AUTH_COOKIE, _sign_token(token), httponly=True, secure=True, samesite="lax", max_age=86400 * 7)
     return resp
 
 
 @router.get("/dashboard/logout", include_in_schema=False)
 def logout():
     resp = RedirectResponse("/dashboard/login", status_code=302)
-    resp.delete_cookie(AUTH_COOKIE)
+    resp.delete_cookie(AUTH_COOKIE, samesite="lax", secure=True)
     return resp
 
 
@@ -2400,8 +2400,11 @@ async def dashboard_acessos_save(request: Request, db: Session = Depends(get_db)
 
 @router.post("/dashboard/upload-csv", include_in_schema=False)
 async def upload_csv(request: Request, db: Session = Depends(get_db)):
-    if not _check_auth(request):
+    access = _get_access(request, db)
+    if access is None:
         return _auth_redirect()
+    if access.get("role") != "admin":
+        return HTMLResponse("Forbidden", status_code=403)
     form = await request.form()
     csv_file = form.get("csv_file")
     if not csv_file:
@@ -3912,20 +3915,20 @@ async def media_proxy(request: Request):
     raw_url = request.query_params.get("url", "").strip()
     if not raw_url:
         return HTMLResponse("<h3>Missing url</h3>", status_code=400)
-    # Only allow Zenvia/S3 CDN URLs for security
-    _allowed_hosts = (
-        "zenvia.com", "zenviamobile.com.br", "s3.amazonaws.com",
-        "amazonaws.com", "zenvia-files", "storage.googleapis.com",
-        "cdn.zenvia", "files.zenvia",
-    )
+    # SSRF guard: HTTPS only + EXACT host suffix match on the Zenvia/S3/GCS CDNs
+    # (no substring match — blocks amazonaws.com.evil.com) and DO NOT follow
+    # redirects (blocks a CDN open-redirect → 169.254.169.254 metadata).
     from urllib.parse import urlparse as _urlparse
+    _allowed = ("zenvia.com", "zenviamobile.com.br", "amazonaws.com", "storage.googleapis.com")
     _parsed = _urlparse(raw_url)
-    if not any(h in (_parsed.netloc or "") for h in _allowed_hosts):
-        # Unknown host — just redirect, don't proxy
-        return RedirectResponse(raw_url)
+    _host = (_parsed.hostname or "").lower()
+    if _parsed.scheme != "https" or not any(_host == d or _host.endswith("." + d) for d in _allowed):
+        return HTMLResponse("<h3>URL de mídia não permitida</h3>", status_code=400)
     try:
-        async with _httpx.AsyncClient(follow_redirects=True, timeout=15) as client:
+        async with _httpx.AsyncClient(follow_redirects=False, timeout=15) as client:
             resp = await client.get(raw_url)
+        if 300 <= resp.status_code < 400:
+            return HTMLResponse("<h3>Redirecionamento de mídia bloqueado</h3>", status_code=400)
         content_type = resp.headers.get("content-type", "application/octet-stream").split(";")[0].strip()
         from fastapi.responses import Response as _Resp
         return _Resp(
@@ -3934,7 +3937,7 @@ async def media_proxy(request: Request):
             headers={"Content-Disposition": "inline", "Cache-Control": "private, max-age=3600"},
         )
     except Exception:
-        return RedirectResponse(raw_url)
+        return HTMLResponse("<h3>Falha ao carregar mídia</h3>", status_code=502)
 
 
 # ── Alert triage endpoints ───────────────────────────────────────────────────
@@ -4246,7 +4249,9 @@ def score_conv_endpoint(request: Request, body: dict = Body(default={}), db: Ses
         return JSONResponse(scored)
     except Exception as exc:
         db.close()
-        return JSONResponse({"error": str(exc)}, status_code=500)
+        import logging as _log
+        _log.getLogger(__name__).error("score-conv error: %s", exc)
+        return JSONResponse({"error": "Erro ao avaliar a conversa"}, status_code=500)
 
 
 @router.post("/dashboard/score-batch", include_in_schema=False)
@@ -4467,7 +4472,8 @@ def cron_score_daily(request: Request, db: Session = Depends(get_db)):
     """
     auth = request.headers.get("Authorization", "")
     token = auth.removeprefix("Bearer ").strip()
-    if not token or token != settings.DASHBOARD_PASSWORD:
+    _expected = settings.DASHBOARD_PASSWORD or ""
+    if not token or not _expected or not hmac.compare_digest(token, _expected):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
     canal = request.query_params.get("canal", "5519997733651")
