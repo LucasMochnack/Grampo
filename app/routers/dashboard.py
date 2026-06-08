@@ -5701,17 +5701,21 @@ def suggest_reply_endpoint(request: Request, body: dict = Body(default={}), db: 
         return JSONResponse({"error": "bad json"}, status_code=400)
 
     phone   = (body.get("phone") or "").strip()
-    canal   = (body.get("canal") or "5519997733651").strip()
+    # Empty canal = search ALL channels (don't force "Principal", which would
+    # miss conversations on other lines like Mesa RV / Expansão).
+    canal   = (body.get("canal") or "").strip()
     reason  = (body.get("reason") or "").strip()
 
     if not phone:
         return JSONResponse({"error": "missing phone"}, status_code=400)
 
-    # Fresh query to get conversation messages
+    # Fresh query to get conversation messages. Use a 30-day window (the Sem
+    # Resposta queue surfaces conversations up to ~14 days old, and a 7-day
+    # window was missing their history → "não foi possível carregar").
     from app.crud import get_events_since, get_agent_mappings
     from app.services.conversation_analysis import suggest_reply as _suggest_reply
 
-    cutoff_utc = (datetime.now(BRASILIA) - timedelta(days=7)).replace(
+    cutoff_utc = (datetime.now(BRASILIA) - timedelta(days=30)).replace(
         hour=0, minute=0, second=0, microsecond=0
     ).astimezone(timezone.utc)
 
