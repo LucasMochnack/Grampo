@@ -5063,7 +5063,7 @@ html,body{margin:0;padding:0}
 .col-name{font-size:14px;font-weight:600;letter-spacing:-0.01em}
 .col-count{margin-left:auto;font-family:var(--font-mono);font-size:11.5px;font-weight:600;color:var(--accent);background:color-mix(in oklab,var(--accent) 16%,transparent);padding:3px 9px;border-radius:999px}
 .col-total{margin-top:7px;font-family:var(--font-mono);font-size:12px;color:var(--accent)}
-.col-cards{padding:7px 12px 14px;display:flex;flex-direction:column;gap:11px;overflow-y:auto}
+.col-cards{flex:1;min-height:0;padding:7px 12px 14px;display:flex;flex-direction:column;gap:11px;overflow-y:auto}
 .col-cards.over{background:color-mix(in oklab,var(--brand) 8%,transparent);outline:2px dashed color-mix(in oklab,var(--brand) 40%,transparent);outline-offset:-6px}
 .col-empty{padding:24px 10px;text-align:center;color:var(--mute);font-size:12px}
 .card{position:relative;flex:0 0 auto;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-card);padding:14px 14px 14px 16px;cursor:pointer;transition:transform .16s,box-shadow .2s,border-color .2s;overflow:hidden}
