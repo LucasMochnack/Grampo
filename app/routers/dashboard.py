@@ -5066,7 +5066,7 @@ html,body{margin:0;padding:0}
 .col-cards{padding:7px 12px 14px;display:flex;flex-direction:column;gap:11px;overflow-y:auto}
 .col-cards.over{background:color-mix(in oklab,var(--brand) 8%,transparent);outline:2px dashed color-mix(in oklab,var(--brand) 40%,transparent);outline-offset:-6px}
 .col-empty{padding:24px 10px;text-align:center;color:var(--mute);font-size:12px}
-.card{position:relative;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-card);padding:14px 14px 14px 16px;cursor:pointer;transition:transform .16s,box-shadow .2s,border-color .2s;overflow:hidden}
+.card{position:relative;flex:0 0 auto;background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-card);padding:14px 14px 14px 16px;cursor:pointer;transition:transform .16s,box-shadow .2s,border-color .2s;overflow:hidden}
 .card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent)}
 .card:hover{transform:translateY(-3px);border-color:color-mix(in oklab,var(--accent) 45%,var(--border));box-shadow:var(--shadow-hover)}
 .card.dragging{opacity:.4}
