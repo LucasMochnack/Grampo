@@ -4982,8 +4982,34 @@ _OPP_CSS = """<style>
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:#2D2D33;border-radius:8px;border:2px solid transparent;background-clip:padding-box}
 html,body{margin:0;padding:0}
-.op-root{--bg:#09090B;--panel:#111113;--panel2:#0D0D0F;--col-bg:#0C0C0E;--col-border:#1C1C20;--border:#1F1F23;--border-2:#2D2D33;--text:#EDEDEF;--dim:#9B9BA4;--mute:#5E5E67;--brand:#22C55E;--brand-ink:#03130A;--c-green:#22C55E;--c-red:#EF4444;--radius:12px;--radius-card:10px;--radius-sm:8px;--font-ui:"Sora",system-ui,sans-serif;--font-mono:"DM Mono",ui-monospace,monospace;--font-quote:"Sora",sans-serif;--shadow-hover:0 8px 24px rgba(0,0,0,.5);min-height:100vh;background:var(--bg);color:var(--text);font-family:var(--font-ui);-webkit-font-smoothing:antialiased;position:relative}
+.op-root{--bg:#09090B;--panel:#111113;--panel2:#0D0D0F;--col-bg:#0C0C0E;--col-border:#1C1C20;--border:#1F1F23;--border-2:#2D2D33;--text:#EDEDEF;--dim:#9B9BA4;--mute:#5E5E67;--brand:#22C55E;--brand-ink:#03130A;--c-green:#22C55E;--c-red:#EF4444;--radius:12px;--radius-card:10px;--radius-sm:8px;--font-ui:"Sora",system-ui,sans-serif;--font-mono:"DM Mono",ui-monospace,monospace;--font-quote:"Sora",sans-serif;--shadow-hover:0 8px 24px rgba(0,0,0,.5);--sb-bg:#0C111B;--sb-border:#181F2C;min-height:100vh;background:var(--bg);color:var(--text);font-family:var(--font-ui);-webkit-font-smoothing:antialiased;position:relative;display:flex}
 .op-root::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;background-image:radial-gradient(circle at center,rgba(255,255,255,.025) 1px,transparent 1px);background-size:28px 28px;opacity:.6}
+.op-main{flex:1;min-width:0;position:relative;z-index:1}
+.op-sidebar{position:sticky;top:0;align-self:flex-start;flex-shrink:0;width:234px;height:100vh;z-index:2;display:flex;flex-direction:column;background:var(--sb-bg);border-right:1px solid var(--sb-border);padding:24px 0 18px}
+.sb-brand{display:flex;align-items:center;gap:10px;padding:0 18px}
+.sb-brand img{height:26px;width:auto;opacity:.95}
+.sb-logo{display:flex;align-items:center;gap:9px;min-width:0}
+.sb-mark{width:26px;height:26px;flex-shrink:0;color:var(--text)}
+.sb-word{font-size:15px;font-weight:700;letter-spacing:.04em;line-height:1;white-space:nowrap}
+.sb-word b{font-weight:800}.sb-word span{font-weight:400;opacity:.82}
+.sb-badge{margin-left:auto;width:30px;height:22px;border-radius:5px;display:grid;place-items:center;background:var(--panel);border:1px solid var(--border);color:var(--dim);font-family:var(--font-mono);font-size:9px;font-weight:600;letter-spacing:.04em}
+.sb-group-name{margin:14px 22px 0;font-size:10px;font-weight:600;letter-spacing:.26em;color:var(--mute);text-align:center}
+.sb-nav{flex:1;overflow-y:auto;padding:20px 14px 8px;scrollbar-width:thin;scrollbar-color:var(--border-2) transparent}
+.sb-nav::-webkit-scrollbar{width:6px}.sb-nav::-webkit-scrollbar-thumb{background:var(--border-2);border-radius:6px}
+.sb-sec{margin-bottom:20px}
+.sb-sec-h{padding:0 12px;margin-bottom:9px;font-size:10px;font-weight:700;letter-spacing:.18em;color:var(--mute)}
+.sb-item{width:100%;display:flex;align-items:center;gap:10px;height:38px;padding:0 13px;border:0;background:transparent;cursor:pointer;border-radius:9px;margin-bottom:2px;font-family:var(--font-ui);font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--dim);transition:.15s;text-align:left;text-decoration:none}
+.sb-item:hover{background:color-mix(in oklab,var(--text) 6%,transparent);color:var(--text)}
+.sb-item.on{background:var(--brand);color:var(--brand-ink);box-shadow:0 4px 16px color-mix(in oklab,var(--brand) 30%,transparent)}
+.sb-item .sb-ct{margin-left:auto;min-width:24px;height:21px;padding:0 7px;border-radius:999px;display:inline-flex;align-items:center;justify-content:center;background:var(--panel);color:var(--dim);font-family:var(--font-mono);font-size:10.5px;font-weight:600;letter-spacing:0;text-transform:none}
+.sb-item.on .sb-ct{background:color-mix(in oklab,var(--brand-ink) 18%,transparent);color:var(--brand-ink)}
+.sb-foot{padding:12px 18px 0;border-top:1px solid var(--sb-border);display:flex;align-items:center;gap:10px}
+.sb-foot .sb-avatar{width:32px;height:32px;border-radius:50%;flex-shrink:0;display:grid;place-items:center;background:color-mix(in oklab,var(--brand) 18%,transparent);color:var(--brand);font-family:var(--font-mono);font-size:12px;font-weight:600}
+.sb-foot .sb-who{min-width:0;display:flex;flex-direction:column;gap:1px}
+.sb-foot .sb-who .n{font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sb-foot .sb-who .r{font-size:10.5px;color:var(--mute)}
+.sb-foot .sb-who .r:hover{color:var(--dim)}
+@media(max-width:900px){.op-sidebar{display:none}}
 [data-accent="amber"]{--accent:#F59E0B}[data-accent="sky"]{--accent:#38BDF8}[data-accent="teal"]{--accent:#14B8A6}
 [data-accent="violet"]{--accent:#8B5CF6}[data-accent="pink"]{--accent:#EC4899}[data-accent="red"]{--accent:#EF4444}
 [data-accent="green"]{--accent:#22C55E}[data-accent="blue"]{--accent:#3B82F6}[data-accent="slate"]{--accent:#71717A}
@@ -5550,7 +5576,6 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         'tem dinheiro em outra instituição, quer comprar um produto, teve um evento de liquidez, ou sinaliza risco de saída. '
         'Arraste os cards entre as etapas conforme a negociação avança.</p>'
         '</div><div class="op-top-right">'
-        f'<a class="op-brand" href="{_back}" title="Voltar ao painel"><img src="{ALTO_VALOR_LOGO}" alt="Alto Valor" /></a>'
         f'<span class="op-pill">{_opp_icon("wallet")}<select onchange="location.href=this.value">{canal_opts}</select></span>'
         '<span class="op-updated"><span class="op-dotlive"></span>IA ativa</span>'
         '</div></div>'
@@ -5604,6 +5629,41 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         '</div></div>'
     )
 
+    # ── Sidebar (design handoff) — itens linkam às abas reais, preservando canal ──
+    _cq = ("?canal=" + canal) if canal else ""
+    _admin_sec = (
+        '<div class="sb-sec"><div class="sb-sec-h">Admin</div>'
+        '<a class="sb-item" href="/dashboard/acessos"><span>Acessos</span></a>'
+        f'<a class="sb-item" href="/dashboard/diagnostico{_cq}"><span>Diagnóstico</span></a>'
+        '</div>'
+    ) if is_admin else ""
+    sidebar_html = (
+        '<aside class="op-sidebar">'
+        f'<div class="sb-brand"><img src="{ALTO_VALOR_LOGO}" alt="Alto Valor" /></div>'
+        '<div class="sb-group-name">GRAMPO</div>'
+        '<nav class="sb-nav">'
+        '<div class="sb-sec"><div class="sb-sec-h">Monitoramento</div>'
+        f'<a class="sb-item" href="/dashboard/overview{_cq}"><span>Visão geral</span></a>'
+        f'<a class="sb-item" href="/dashboard{_cq}"><span>Conversas</span></a>'
+        f'<a class="sb-item" href="/dashboard/alertas{_cq}"><span>Alertas</span></a>'
+        f'<a class="sb-item" href="/dashboard/sem-resposta{_cq}"><span>Sem resposta</span></a>'
+        f'<a class="sb-item on" href="/dashboard/oportunidades{_cq}"><span>Oportunidades</span></a>'
+        f'<a class="sb-item" href="/dashboard/agentes{_cq}"><span>Agentes</span></a>'
+        '</div>'
+        '<div class="sb-sec"><div class="sb-sec-h">Análise</div>'
+        f'<a class="sb-item" href="/dashboard/temas{_cq}"><span>Temas</span></a>'
+        f'<a class="sb-item" href="/dashboard/avaliacao-agentes{_cq}"><span>Avaliação agentes</span></a>'
+        f'<a class="sb-item" href="/dashboard/evolucao{_cq}"><span>Evolução</span></a>'
+        f'<a class="sb-item" href="/dashboard/mensagens{_cq}"><span>Mensagens iniciais</span></a>'
+        '</div>'
+        + _admin_sec +
+        '</nav>'
+        '<div class="sb-foot"><span class="sb-avatar">AV</span>'
+        '<span class="sb-who"><span class="n">Gestor</span>'
+        '<a class="r" href="/dashboard/logout" style="text-decoration:none">Sair</a></span></div>'
+        '</aside>'
+    )
+
     page = (
         '<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -5611,12 +5671,16 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
         '<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">'
         + _OPP_CSS +
-        '</head><body><div class="op-root"><div class="op-shell">'
+        '</head><body><div class="op-root">'
+        + sidebar_html
+        + '<div class="op-main"><div class="op-shell">'
         + top_html + kpis_html
         + '<div class="op-filters">' + chips_html + '</div>'
         + '<div class="op-subfilters">' + subfilters + '</div>'
         + board_html
-        + '</div>' + drawer_html + chat_html + modal + '</div>'
+        + '</div></div>'
+        + drawer_html + chat_html + modal
+        + '</div>'
         + js_vars + _OPP_JS
         + '</body></html>'
     )
