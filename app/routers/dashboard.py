@@ -4620,10 +4620,15 @@ _OPP_KEYWORDS = (
     "no santander", "na caixa", "no nubank", "no inter", "no btg", "no c6",
     "resgat", "sacar", "saque", "retirar", "tirar o dinheiro", "levar o dinheiro",
     "transferir", "portabilidade", "trazer o dinheiro", "trazer meu",
-    "vender", "vendi", "vou vender", "venda do", "heranca", "fgts", "rescisao",
-    "bonus", "plr", "decimo terceiro", "13o", "premio", "indenizacao",
+    "vender", "vendi", "vou vender", "venda do", "venda da", "fechei a venda",
+    "imovel", "apartamento", "apto", "casa propria", "terreno", "fazenda", "sitio", "lote",
+    "heranca", "herdei", "inventario", "fgts", "rescisao", "demiti", "fui demitido",
+    "bonus", "plr", "decimo terceiro", "13o", "premio", "indenizacao", "acordo trabalhista",
+    "aposentad", "me aposentei", "vou me aposentar",
     "recebi", "vou receber", "vai cair", "caiu na conta", "recebimento",
     "comprar", "quero comprar", "tenho interesse", "interessado", "gostaria de investir",
+    "indicar", "indiquei", "indicacao", "meu filho", "minha filha", "minha esposa",
+    "meu marido", "meu socio", "meu irmao", "minha mae", "meu pai", "um amigo", "conhecido que",
     "previdencia", "cdb", "tesouro", "lci", "lca", "fundo", "fundos", "acoes",
     "dolar", "dolares", "cripto", "bitcoin", "coe", "debenture", "renda fixa",
     "mil reais", "milhao", "milhoes", "100 mil", "50 mil", "200 mil", "300 mil",
@@ -4691,6 +4696,49 @@ def _opp_text_has_signal(text: str) -> bool:
     return any(k in t for k in _OPP_KEYWORDS)
 
 
+def _opp_okey(phone: str, tipo: str, titulo: str) -> str:
+    """Identidade estável de uma oportunidade: não depende de last_event_id nem
+    de posição, então sobrevive a re-scans, e inclui um slug do título para não
+    colidir quando o mesmo cliente tem 2+ sinais do mesmo tipo. Usada tanto para
+    o pin de etapa quanto para o descarte, mantendo os dois consistentes."""
+    slug = _re.sub(r"[^a-z0-9]+", "-", _opp_norm(titulo)).strip("-")[:40]
+    return f"{phone}|{tipo}|{slug}"
+
+
+def _build_opp_transcript(msg_tuples: list, max_msgs: int = 48) -> str:
+    """Como _build_transcript, mas ancorado nos SINAIS: garante que as mensagens
+    do CLIENTE que casaram uma palavra-chave entrem no transcrito (com um pouco
+    de contexto), mesmo que sejam mais antigas que a janela recente — senão, em
+    conversas longas, o próprio sinal que selecionou o candidato ficaria de fora
+    das últimas mensagens e a IA analisaria um trecho sem ele."""
+    n = len(msg_tuples)
+    if n <= max_msgs:
+        sel = list(range(n))
+    else:
+        keep = set(range(n - max_msgs, n))          # janela recente
+        for i, (d, t, _ts) in enumerate(msg_tuples):  # + sinais + contexto
+            if (d or "").upper() == "IN" and _opp_text_has_signal(t or ""):
+                keep.add(i)
+                if i - 1 >= 0:
+                    keep.add(i - 1)
+                if i + 1 < n:
+                    keep.add(i + 1)
+        sel = sorted(keep)
+    lines, prev = [], None
+    for idx in sel:
+        d, txt, ts = msg_tuples[idx]
+        if prev is not None and idx != prev + 1:
+            lines.append("[…]")                      # marca trecho omitido
+        who = "CLIENTE" if (d or "").upper() == "IN" else "ASSESSOR"
+        ts_str = ts.strftime("%d/%m %H:%M") if ts else "?"
+        body_txt = (txt or "").strip().replace("\n", " ")
+        if len(body_txt) > 500:
+            body_txt = body_txt[:500] + "…"
+        lines.append(f"[{ts_str}] {who}: {body_txt}")
+        prev = idx
+    return "\n".join(lines)
+
+
 def _fmt_brl(v) -> str:
     try:
         n = float(v)
@@ -4705,8 +4753,10 @@ def _call_opp_llm(transcript: str) -> list:
     client = _anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
     resp = client.messages.create(
         model=settings.ANTHROPIC_MODEL,
-        max_tokens=1500,
-        system=_OPP_SYSTEM,
+        max_tokens=700,   # JSON de saída é curto (até 8 oportunidades)
+        # System é idêntico em toda chamada (~1k tokens) → cache efêmero corta
+        # o custo de input nas chamadas dentro da janela de cache.
+        system=[{"type": "text", "text": _OPP_SYSTEM, "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": f"Analise a conversa e extraia as oportunidades:\n\n{transcript}"}],
     )
     raw = "".join(b.text for b in resp.content if getattr(b, "type", "") == "text").strip()
@@ -4788,7 +4838,8 @@ def _save_dismissed_opps(db, s: set) -> None:
 
 def _get_opp_stages(db) -> dict:
     """Return {opp_key: stage} for the Kanban. Keys not present default to
-    'mapeada'. opp_key = phone|last_event_id|idx (same as the dismiss key)."""
+    'mapeada'. opp_key = phone|tipo|slug (the stable id from _opp_okey, the same
+    key used for the dismiss set — both survive re-scans)."""
     raw = get_setting(db, "opp_stages")
     if not raw:
         return {}
@@ -4828,69 +4879,72 @@ def opp_scan_endpoint(request: Request, body: dict = Body(default={}), db: Sessi
         db.close()
         return JSONResponse({"error": "ANTHROPIC_API_KEY não configurada"}, status_code=503)
 
-    from app.crud import get_events_since, get_agent_mappings, get_client_names
     from app.models import ConversationOpportunity as _CO
 
     cutoff_utc = (datetime.now(BRASILIA) - timedelta(days=days)).replace(
         hour=0, minute=0, second=0, microsecond=0
     ).astimezone(timezone.utc)
 
-    raw_evs = get_events_since(db, since=cutoff_utc, limit=120000)
-    raw_evs = _filter_events_by_channel(raw_evs, canal)
-    cam = get_agent_mappings(db)
-    cnm = get_client_names(db)
-
-    groups_orm, phone_learned = _group_events(raw_evs, cam)
     cp = _real_phone(canal) if canal else None
     _epoch = datetime.min.replace(tzinfo=timezone.utc)
 
-    candidates = []
-    for key, evs in groups_orm.items():
-        rp = _real_phone(key)
-        if cp and rp == cp:
-            continue
-        agent = (phone_learned.get(key) or cam.get(rp)
-                 or phone_learned.get(rp) or "Sem atendente")
-        if agent == "Sem atendente":
-            continue
-        sorted_evs = sorted(
-            [e for e in evs if (e.raw_payload or {}).get("type", "").upper()
-             not in ("MESSAGE_STATUS", "CONVERSATION_STATUS")],
-            key=lambda e: e.received_at or _epoch
-        )
-        if not sorted_evs:
-            continue
-        last_event_id = str(sorted_evs[-1].id)
-        last_msg_at = sorted_evs[-1].received_at
-        conv_id = ""
-        conv_canal = ""
-        msg_tuples = []
-        has_signal = False
-        for ev in sorted_evs:
-            _p = ev.raw_payload or {}
-            if not conv_id:
-                _cid = _extract_conversation_id(_p)
-                if _cid:
-                    conv_id = _cid
-            if not conv_canal:
-                _cc = _extract_channel(_p)
-                if _cc:
-                    conv_canal = _cc
-            _dir = _extract_direction(_p)
-            _txt = _extract_content_preview(_p, max_len=1000) or ""
-            _ts = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
-            if _txt:
-                msg_tuples.append((_dir, _txt, _ts))
-                if (_dir or "").upper() == "IN" and _opp_text_has_signal(_txt):
-                    has_signal = True
-        if not has_signal or not msg_tuples:
-            continue
-        client_name = cnm.get(rp, "") or rp
-        candidates.append((rp, last_event_id, conv_id, conv_canal or canal,
-                           agent, client_name, last_msg_at, msg_tuples))
+    # A lista de candidatos é idêntica entre todos os lotes da MESMA varredura
+    # (mesmo canal + janela). Construí-la a cada POST refaz o load+group de até
+    # 120k eventos por lote — O(n_lotes × n). Cacheamos por 60s para que a
+    # reconstrução pesada rode 1× por varredura e os lotes só fatiem.
+    _rounded = cutoff_utc.replace(second=0, microsecond=0).isoformat()
 
-    # Stable order: most recent activity first
-    candidates.sort(key=lambda c: c[6] or _epoch, reverse=True)
+    def _build_candidates():
+        _all, groups_orm, phone_learned, cam, cnm = _load_period_pipeline(
+            db, canal, cutoff_utc, 120000)
+        cands = []
+        for key, evs in groups_orm.items():
+            rp = _real_phone(key)
+            if cp and rp == cp:
+                continue
+            agent = (phone_learned.get(key) or cam.get(rp)
+                     or phone_learned.get(rp) or "Sem atendente")
+            if agent == "Sem atendente":
+                continue
+            sorted_evs = sorted(
+                [e for e in evs if (e.raw_payload or {}).get("type", "").upper()
+                 not in ("MESSAGE_STATUS", "CONVERSATION_STATUS")],
+                key=lambda e: e.received_at or _epoch
+            )
+            if not sorted_evs:
+                continue
+            last_event_id = str(sorted_evs[-1].id)
+            last_msg_at = sorted_evs[-1].received_at
+            conv_id = ""
+            conv_canal = ""
+            msg_tuples = []
+            has_signal = False
+            for ev in sorted_evs:
+                _p = ev.raw_payload or {}
+                if not conv_id:
+                    _cid = _extract_conversation_id(_p)
+                    if _cid:
+                        conv_id = _cid
+                if not conv_canal:
+                    _cc = _extract_channel(_p)
+                    if _cc:
+                        conv_canal = _cc
+                _dir = _extract_direction(_p)
+                _txt = _extract_content_preview(_p, max_len=1000) or ""
+                _ts = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
+                if _txt:
+                    msg_tuples.append((_dir, _txt, _ts))
+                    if (_dir or "").upper() == "IN" and _opp_text_has_signal(_txt):
+                        has_signal = True
+            if not has_signal or not msg_tuples:
+                continue
+            client_name = cnm.get(rp, "") or rp
+            cands.append((rp, last_event_id, conv_id, conv_canal or canal,
+                          agent, client_name, last_msg_at, msg_tuples))
+        cands.sort(key=lambda c: c[6] or _epoch, reverse=True)  # mais recente 1º
+        return cands
+
+    candidates = _cache.cached(("opp-candidates", canal, days, _rounded), 60.0, _build_candidates)
 
     total = len(candidates)
     slice_ = candidates[offset: offset + batch_size]
@@ -4905,7 +4959,7 @@ def opp_scan_endpoint(request: Request, body: dict = Body(default={}), db: Sessi
             scanned_this += 1
             continue
         try:
-            opps = _call_opp_llm(_build_transcript(msg_tuples))
+            opps = _call_opp_llm(_build_opp_transcript(msg_tuples))
             _upsert_opp(db, rp, last_event_id, conv_canal, conv_id,
                         client_name, agent, last_msg_at, opps)
             scanned_this += 1
@@ -4931,7 +4985,11 @@ def opp_scan_endpoint(request: Request, body: dict = Body(default={}), db: Sessi
 
 @router.post("/dashboard/dismiss-opp", include_in_schema=False)
 def dismiss_opp_endpoint(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
-    """Hide/unhide a single opportunity (false positive). Key = phone|event_id|idx."""
+    """Hide/unhide a single opportunity (false positive).
+
+    Key = phone|tipo|slug (the stable _opp_okey id) so a discarded false positive
+    stays discarded across re-scans, instead of reappearing under a new
+    last_event_id."""
     if not _check_auth(request):
         return JSONResponse({"error": "unauth"}, status_code=401)
     if not isinstance(body, dict):
@@ -4953,9 +5011,9 @@ def dismiss_opp_endpoint(request: Request, body: dict = Body(default={}), db: Se
 def opp_stage_endpoint(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
     """Pin an opportunity to a Kanban stage (manual override of the AI status).
 
-    Body: {okey, stage}. okey = phone|tipo (stable across re-scans). stage one
-    of the 4 stages pins it; stage="auto" removes the pin so the AI-inferred
-    status takes over again.
+    Body: {okey, stage}. okey = phone|tipo|slug (stable across re-scans, unique
+    per opportunity). stage one of the 4 stages pins it; stage="auto" removes the
+    pin so the AI-inferred status takes over again.
     """
     if not _check_auth(request):
         return JSONResponse({"error": "unauth"}, status_code=401)
@@ -5215,7 +5273,22 @@ async function startOppScan(){
     }catch(e){sub.textContent='Erro de rede: '+e.message;break;}
   }
 }
+var _oppPendingReload=false;
+function _oppOverlayOpen(){
+  return document.getElementById('chatWrap').classList.contains('open')
+      || document.getElementById('opDrawer').classList.contains('open')
+      || !!_oppDragOkey
+      || document.getElementById('opp-modal').classList.contains('open');
+}
+/* Só recarrega quando não há gaveta/chat/arraste/modal aberto — adiado senão. */
+function maybeReloadOpp(){if(_oppPendingReload && !_oppOverlayOpen())location.reload();}
 async function autoSyncOpp(){
+  /* throttle: no máx. 1 sync automático a cada 10 min por navegador, para não
+     re-varrer e re-renderizar a aba a cada F5/reabertura. */
+  try{var last=parseInt(localStorage.getItem('opp_last_sync')||'0',10);
+    if(Date.now()-last<600000)return;
+    localStorage.setItem('opp_last_sync',String(Date.now()));
+  }catch(e){}
   var ind=document.getElementById('opp-autosync');if(ind)ind.classList.add('show');
   var offset=0,calls=0,guard=0;
   while(guard++<200){
@@ -5226,7 +5299,7 @@ async function autoSyncOpp(){
     }catch(e){break;}
   }
   if(ind)ind.classList.remove('show');
-  if(calls>0){location.reload();}
+  if(calls>0){_oppPendingReload=true;maybeReloadOpp();}
 }
 function oppCopyPhone(phone,zurl){
   var d=String(phone||'').replace(/\\D/g,'');
@@ -5243,8 +5316,8 @@ function dismissOpp(card){
 /* ---- etapa: status automático (IA) + arrastar/dropdown p/ fixar ---- */
 var _oppDragOkey=null;
 function oppDragStart(ev,okey){_oppDragOkey=okey;try{ev.dataTransfer.effectAllowed='move';ev.dataTransfer.setData('text/plain',okey);}catch(e){}ev.currentTarget.classList.add('dragging');}
-function oppDragEnd(ev){ev.currentTarget.classList.remove('dragging');document.querySelectorAll('.col-cards.over').forEach(function(c){c.classList.remove('over');});}
-function _oppCardByOkey(okey){var f=null;document.querySelectorAll('.card').forEach(function(c){if(c.getAttribute('data-okey')===okey)f=c;});return f;}
+function oppDragEnd(ev){ev.currentTarget.classList.remove('dragging');document.querySelectorAll('.col-cards.over').forEach(function(c){c.classList.remove('over');});maybeReloadOpp();}
+function _oppCardByOkey(okey){var all=document.querySelectorAll('.card');for(var i=0;i<all.length;i++){if(all[i].getAttribute('data-okey')===okey)return all[i];}return null;}
 function _oppSetMode(card,pinned){var t=card.querySelector('.badge-mode');if(t){t.className='badge-mode '+(pinned?'pinned':'auto');t.textContent=pinned?'fixado':'auto';}}
 function _oppPlace(card,stage){var b=document.querySelector('.col-cards[data-stage="'+stage+'"]');if(b)b.appendChild(card);card.setAttribute('data-stage',stage);}
 function _oppPostStage(okey,stage){fetch('/dashboard/opp-stage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({okey:okey,stage:stage})}).catch(function(){});}
@@ -5285,7 +5358,7 @@ function openDrawer(card){
   document.getElementById('opOverlay').classList.add('open');
   document.getElementById('opDrawer').classList.add('open');
 }
-function closeDrawer(){document.getElementById('opOverlay').classList.remove('open');document.getElementById('opDrawer').classList.remove('open');}
+function closeDrawer(){document.getElementById('opOverlay').classList.remove('open');document.getElementById('opDrawer').classList.remove('open');maybeReloadOpp();}
 /* ---- conversa real no momento do mapeamento ---- */
 function openChat(card){
   var d=card.dataset;
@@ -5303,7 +5376,7 @@ function openChat(card){
   var url='/dashboard/conv-messages?phone='+encodeURIComponent(d.phone)+'&canal='+encodeURIComponent(d.canal)+'&full=1';
   fetch(url).then(function(r){return r.text();}).then(function(html){scroll.innerHTML=banner+html;scroll.scrollTop=scroll.scrollHeight;}).catch(function(){scroll.innerHTML=banner+'<div class="chat-loading">Erro ao carregar a conversa.</div>';});
 }
-function closeChat(){document.getElementById('chatWrap').classList.remove('open');}
+function closeChat(){document.getElementById('chatWrap').classList.remove('open');maybeReloadOpp();}
 /* ---- wire ---- */
 document.addEventListener('DOMContentLoaded',function(){
   document.querySelectorAll('.col-cards').forEach(function(body){
@@ -5322,9 +5395,23 @@ document.addEventListener('DOMContentLoaded',function(){
   document.querySelectorAll('.card').forEach(function(card){
     card.addEventListener('click',function(e){if(e.target.closest('.card-foot'))return;openDrawer(card);});
   });
-  window.addEventListener('keydown',function(e){if(e.key==='Escape'){if(document.getElementById('chatWrap').classList.contains('open'))closeChat();else closeDrawer();}});
+  window.addEventListener('keydown',function(e){
+    if(e.key!=='Escape')return;
+    var m=document.getElementById('opp-modal');
+    if(m&&m.classList.contains('open')){var b=document.getElementById('opp-close-btn');if(b)b.click();return;}
+    if(document.getElementById('chatWrap').classList.contains('open')){closeChat();return;}
+    if(document.getElementById('opDrawer').classList.contains('open')){closeDrawer();}
+  });
+  fitOppCols();window.addEventListener('resize',fitOppCols);
   if(window.OPP_HAS_DATA){autoSyncOpp();}
 });
+/* Ancora a altura das colunas no topo real do board (não no viewport) p/ as
+   colunas cheias não vazarem abaixo da dobra com duplo scroll. */
+function fitOppCols(){
+  var board=document.querySelector('.op-board');if(!board)return;
+  var h=Math.max(320,window.innerHeight-board.getBoundingClientRect().top-22);
+  document.querySelectorAll('.op-board .column').forEach(function(c){c.style.maxHeight=h+'px';});
+}
 </script>"""
 
 
@@ -5405,27 +5492,54 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
     tipo_f   = (request.query_params.get("tipo") or "").strip()
     agente_f = (request.query_params.get("agente") or "").strip()
     time_f   = (request.query_params.get("time") or "").strip()
+    try:
+        days_f = max(1, min(365, int(request.query_params.get("dias") or 30)))
+    except (TypeError, ValueError):
+        days_f = 30
 
     from app.models import ConversationOpportunity as _CO
-    q = db.query(_CO).filter(_CO.has_opp == 1, _CO.opp_version == _OPP_VERSION)
+    from sqlalchemy import func as _func
+    _now_br = datetime.now(BRASILIA)
+    # Janela "Últimos N dias" — agora filtra o board de verdade (antes só afetava
+    # a próxima varredura), via last_msg_at.
+    cutoff_board = (_now_br - timedelta(days=days_f)).replace(
+        hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+
+    q = db.query(_CO).filter(
+        _CO.has_opp == 1, _CO.opp_version == _OPP_VERSION,
+        _CO.last_msg_at >= cutoff_board)
     if canal:
         q = q.filter(_CO.canal == canal)
     rows = q.all()
     dismissed = _get_dismissed_opps(db)
     overrides = _get_opp_stages(db)
 
+    # Estado MAIS RECENTE de cada telefone, considerando TODAS as linhas (com ou
+    # sem oportunidade): se a conversa avançou e o re-scan mais novo concluiu que
+    # não há mais oportunidade (linha has_opp=0), a linha antiga has_opp=1 está
+    # OBSOLETA e não deve permanecer no board inflando o pipeline.
+    sup_q = db.query(_CO.phone, _func.max(_CO.last_msg_at)).filter(
+        _CO.opp_version == _OPP_VERSION)
+    if canal:
+        sup_q = sup_q.filter(_CO.canal == canal)
+    latest_overall = {p: mx for p, mx in sup_q.group_by(_CO.phone).all()}
+
     # A conversation is re-mined under a new last_event_id as it advances, so an
-    # older row can linger. Keep only the LATEST row per phone (the current
-    # state of the conversation) to avoid stale duplicates on the board.
+    # older row can linger. Keep only the LATEST has_opp=1 row per phone, and drop
+    # it entirely if a newer (no-opportunity) state has superseded it.
     latest = {}
     for r in rows:
         when = r.last_msg_at or r.detected_at
         prev = latest.get(r.phone)
         if prev is None or (when and (prev[1] is None or when > prev[1])):
             latest[r.phone] = (r, when)
-    rows_latest = [v[0] for v in latest.values()]
+    rows_latest = []
+    for r, _when in latest.values():
+        mx = latest_overall.get(r.phone)
+        if mx is not None and r.last_msg_at is not None and mx > r.last_msg_at:
+            continue   # superada por um estado mais novo sem oportunidade
+        rows_latest.append(r)
 
-    _now_br = datetime.now(BRASILIA)
     _BIZ_DAY_H = float(BIZ_DAY_END - BIZ_DAY_START) or 9.0   # 9h = 1 dia útil
     all_items = []
     for r in rows_latest:
@@ -5434,11 +5548,13 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         zurl = ZENVIA_CONV_URL_TEMPLATE.replace("{id}", r.conv_id) if (ZENVIA_CONV_URL_TEMPLATE and r.conv_id) else ""
         seg = _get_segment(r.agent or "") or "Outros"
         for idx, o in enumerate(r.opportunities or []):
-            key = f"{r.phone}|{r.last_event_id}|{idx}"
-            if key in dismissed:
-                continue
             tipo = o.get("tipo", "outro")
-            okey = f"{r.phone}|{tipo}"           # stable id (survives re-scans)
+            titulo = o.get("titulo", "")
+            # Identidade estável e única (sobrevive a re-scan, não colide entre
+            # 2 sinais do mesmo tipo). Mesma chave p/ descarte e p/ pin de etapa.
+            okey = _opp_okey(r.phone, tipo, titulo)
+            if okey in dismissed:
+                continue
             ai_status = o.get("status", "mapeada")
             if ai_status not in _OPP_STAGE_IDS:
                 ai_status = "mapeada"
@@ -5447,13 +5563,17 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
             stage = override if pinned else ai_status   # manual pin wins over IA
             # "Parada": sem atividade na conversa por > 1 dia útil, e ainda aberta.
             _bh = _biz_hours_between(r.last_msg_at, _now_br) if (r.last_msg_at and stage in ("mapeada", "execucao")) else 0.0
+            # Data exibida: a da IA, com fallback p/ a última mensagem real.
+            _data = (o.get("data") or "").strip()
+            if not _data and r.last_msg_at:
+                _data = r.last_msg_at.astimezone(BRASILIA).strftime("%d/%m")
             all_items.append({
-                "key": key, "okey": okey, "phone": r.phone, "conv_id": r.conv_id or "", "zurl": zurl,
+                "key": okey, "okey": okey, "phone": r.phone, "conv_id": r.conv_id or "", "zurl": zurl,
                 "cliente": r.client_name or r.phone, "agente": r.agent or "—",
-                "tipo": tipo, "titulo": o.get("titulo", ""),
+                "tipo": tipo, "titulo": titulo,
                 "descricao": o.get("descricao", ""), "trecho": o.get("trecho", ""),
                 "valor": o.get("valor"), "valor_texto": o.get("valor_texto", ""),
-                "data": o.get("data", ""), "confianca": o.get("confianca", 0),
+                "data": _data, "confianca": o.get("confianca", 0),
                 "last_msg_at": r.last_msg_at, "stage": stage,
                 "ai_status": ai_status, "pinned": pinned, "time": seg,
                 "canal": r.canal or canal,
@@ -5463,21 +5583,26 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
 
     agents = sorted({i["agente"] for i in all_items if i["agente"]})
     times = sorted({i["time"] for i in all_items if i["time"]})
+
+    # Base = recorte por TIME + ASSESSOR (NÃO por categoria). KPIs e contadores
+    # dos chips saem daqui, para os números não mentirem quando há um filtro de
+    # categoria ativo (antes, filtrar por "Aporte" zerava o KPI de Risco).
+    base = all_items
+    if time_f:
+        base = [i for i in base if i["time"] == time_f]
+    if agente_f:
+        base = [i for i in base if i["agente"] == agente_f]
+
     tipo_counts_all = {}
-    for i in all_items:
+    for i in base:
         tipo_counts_all[i["tipo"]] = tipo_counts_all.get(i["tipo"], 0) + 1
 
-    items = all_items
-    if time_f:
-        items = [i for i in items if i["time"] == time_f]
-    if tipo_f:
-        items = [i for i in items if i["tipo"] == tipo_f]
-    if agente_f:
-        items = [i for i in items if i["agente"] == agente_f]
+    # Board = base + filtro de categoria (chip)
+    items = [i for i in base if i["tipo"] == tipo_f] if tipo_f else list(base)
     _epoch = datetime.min.replace(tzinfo=timezone.utc)
     items.sort(key=lambda i: (i["last_msg_at"] or _epoch), reverse=True)
 
-    # Group into Kanban stages
+    # Group into Kanban stages (board)
     by_stage = {sid: [] for sid, *_ in _OPP_STAGES}
     for i in items:
         by_stage[i["stage"]].append(i)
@@ -5485,27 +5610,34 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
     def _sumval(lst):
         return sum(x["valor"] for x in lst if x["valor"])
 
+    # KPIs sobre a BASE (independem do filtro de categoria). Valor conta só
+    # CAPTAÇÃO — risco_saida é retenção e não entra em "em aberto"/"ganho".
+    # Conversão é só de captação. Risco conta só o que ainda é acionável.
+    def _sumcap(stage_id):
+        return sum(i["valor"] for i in base
+                   if i["stage"] == stage_id and i["valor"] and i["tipo"] != "risco_saida")
     total_opps = len(items)
-    valor_aberto = _sumval(by_stage["mapeada"]) + _sumval(by_stage["execucao"])
-    valor_ganho = _sumval(by_stage["ganha"])
-    n_ganha = len(by_stage["ganha"])
-    n_perd = len(by_stage["perdido"])
+    valor_aberto = _sumcap("mapeada") + _sumcap("execucao")
+    valor_ganho = _sumcap("ganha")
+    n_ganha = sum(1 for i in base if i["tipo"] != "risco_saida" and i["stage"] == "ganha")
+    n_perd = sum(1 for i in base if i["tipo"] != "risco_saida" and i["stage"] == "perdido")
     conv_rate = round(100 * n_ganha / (n_ganha + n_perd)) if (n_ganha + n_perd) else 0
-    risco = sum(1 for i in items if i["tipo"] == "risco_saida")
+    risco = sum(1 for i in base if i["tipo"] == "risco_saida" and i["stage"] in ("mapeada", "execucao"))
 
     from urllib.parse import urlencode
 
     def _qs(**over):
-        c = over.get("canal", canal); t = over.get("tipo", tipo_f); a = over.get("agente", agente_f); tm = over.get("time", time_f)
+        c = over.get("canal", canal); t = over.get("tipo", tipo_f); a = over.get("agente", agente_f); tm = over.get("time", time_f); dd = over.get("dias", days_f)
         d = {}
         if c: d["canal"] = c
         if tm: d["time"] = tm
         if t: d["tipo"] = t
         if a: d["agente"] = a
+        if dd and int(dd) != 30: d["dias"] = int(dd)
         return ("?" + urlencode(d)) if d else "?"
 
     # ── category filter chips (Grid) ──
-    chips = [f'<a href="{_qs(tipo="")}" class="chip {"on" if not tipo_f else ""}" data-accent="todas"><span>Todas</span><span class="chip-ct">{len(all_items)}</span></a>']
+    chips = [f'<a href="{_qs(tipo="")}" class="chip {"on" if not tipo_f else ""}" data-accent="todas"><span>Todas</span><span class="chip-ct">{len(base)}</span></a>']
     for tp, (label, hexc, icon_key) in _OPP_TIPOS.items():
         cnt = tipo_counts_all.get(tp, 0)
         if not cnt:
@@ -5522,12 +5654,12 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         f'<option value="{_qs(time=tm)}" {"selected" if time_f == tm else ""}>{html_mod.escape(tm)}</option>' for tm in times)
     ag_opts = f'<option value="{_qs(agente="")}">Todos os assessores</option>' + "".join(
         f'<option value="{_qs(agente=a)}" {"selected" if agente_f == a else ""}>{html_mod.escape(_short_agent_name(a))}</option>' for a in agents)
-    period_opts = "".join(f'<option value="{d}"{" selected" if d == 30 else ""}>Últimos {d} dias</option>' for d in (7, 15, 30, 60, 90))
+    period_opts = "".join(f'<option value="{_qs(dias=d)}"{" selected" if d == days_f else ""}>Últimos {d} dias</option>' for d in (7, 15, 30, 60, 90))
 
     subfilters = (
         _opsel(_opp_icon("team"), team_opts, bool(time_f))
         + _opsel(_opp_icon("headset"), ag_opts, bool(agente_f))
-        + f'<span class="op-select">{_opp_icon("cal")}<select onchange="setOppDays(this.value)">{period_opts}</select></span>'
+        + f'<span class="op-select{" on" if days_f != 30 else ""}">{_opp_icon("cal")}<select onchange="location.href=this.value">{period_opts}</select></span>'
         + f'<span id="opp-autosync" class="op-autosync">{_opp_icon("refresh")}<span>atualizando…</span></span>'
         + f'<button class="op-search" onclick="startOppScan()">{_opp_icon("search")}<span>Buscar oportunidades</span></button>'
     )
@@ -5558,6 +5690,7 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
 
     js_vars = (
         f'<script>window.OPP_CANAL={json.dumps(canal).replace("</", "<\\/")};'
+        f'window.OPP_DAYS={days_f};'
         f'window.OPP_HAS_DATA={"true" if all_items else "false"};</script>'
     )
 
@@ -5594,7 +5727,7 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
 
     drawer_html = (
         '<div class="op-overlay" id="opOverlay" onclick="closeDrawer()"></div>'
-        '<aside class="drawer" id="opDrawer">'
+        '<aside class="drawer" id="opDrawer" role="dialog" aria-modal="true" aria-labelledby="dwTitle" tabindex="-1">'
         f'<div class="dw-head"><span class="cat" id="dwCat"></span>'
         f'<button class="dw-close" onclick="closeDrawer()" aria-label="Fechar">{_opp_icon("x")}</button></div>'
         '<div class="dw-body"><h2 class="dw-title" id="dwTitle"></h2>'
@@ -5617,7 +5750,7 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
 
     chat_html = (
         '<div class="chat-wrap" id="chatWrap" onclick="closeChat()">'
-        '<div class="chat-modal" id="chatModal" onclick="event.stopPropagation()">'
+        '<div class="chat-modal" id="chatModal" role="dialog" aria-modal="true" aria-labelledby="chatName" tabindex="-1" onclick="event.stopPropagation()">'
         '<div class="chat-head"><span class="chat-av" id="chatAv"></span>'
         '<div class="chat-id"><div class="chat-name" id="chatName"></div>'
         f'<div class="chat-meta">{_opp_icon("headset")}<span id="chatAdvisor"></span></div></div>'
