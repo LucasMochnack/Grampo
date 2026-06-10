@@ -5083,6 +5083,7 @@ html,body{margin:0;padding:0}
 .card-meta svg{width:11px;height:11px;opacity:.8}
 .card-meta .mclient{color:var(--dim);font-weight:500;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .badge-mode{padding:2px 7px;border-radius:5px;font-family:var(--font-mono);font-size:9.5px;font-weight:600;cursor:pointer}
+.opp-stale{padding:2px 7px;border-radius:5px;font-family:var(--font-mono);font-size:9.5px;font-weight:700;background:color-mix(in oklab,var(--sc,#f59e0b) 18%,transparent);color:var(--sc,#f59e0b);white-space:nowrap}
 .badge-mode.auto{background:color-mix(in oklab,var(--c-green) 16%,transparent);color:var(--c-green)}
 .badge-mode.pinned{background:color-mix(in oklab,#F59E0B 18%,transparent);color:#F59E0B}
 .card-foot{margin-top:13px;padding-top:11px;border-top:1px solid var(--border);display:flex;gap:6px;align-items:center}
@@ -5356,6 +5357,11 @@ def _opp_card_html(i: dict) -> str:
         move_opts += f'<option value="{sid}"{" selected" if (pinned and stage == sid) else ""}>{slabel}</option>'
     mode = ('<span class="badge-mode pinned" title="Etapa fixada manualmente">fixado</span>'
             if pinned else '<span class="badge-mode auto" title="Etapa definida pela IA">auto</span>')
+    _sd = int(i.get("stalled_days") or 0)
+    stale_tag = (
+        f'<span class="opp-stale" style="--sc:{"#ef4444" if _sd >= 3 else "#f59e0b"}" '
+        f'title="Sem movimento na conversa há mais de 1 dia útil — vale um follow-up">⏱ parada {_sd}d</span>'
+    ) if i.get("stalled") else ""
     cat_badge = f'<span class="cat">{_opp_icon(icon_key)}<span>{e(label)}</span></span>'
     # data-* feed the drawer + chat modal (read client-side)
     attrs = (
@@ -5379,7 +5385,7 @@ def _opp_card_html(i: dict) -> str:
         f'<span class="score-n">{conf}%</span></div></div>'
         f'{quote_html}'
         f'<div class="card-meta"><span class="mi mclient">{_opp_icon("user")}<span>{cliente}</span></span>'
-        f'<span class="mi">{_opp_icon("headset")}<span>{advisor}</span></span>{date_html}{mode}</div>'
+        f'<span class="mi">{_opp_icon("headset")}<span>{advisor}</span></span>{date_html}{stale_tag}{mode}</div>'
         f'<div class="card-foot">'
         f'<button class="mode-pill" title="Abrir a conversa no momento do sinal" onclick="event.stopPropagation();openChat(this.closest(&#39;.card&#39;))">{_opp_icon("chat")}<span>Abrir conversa</span><span class="chev">{_opp_icon("arrow")}</span></button>'
         f'<select class="movesel" title="Etapa (Automático = IA decide)" onclick="event.stopPropagation()" onchange="moveOppSelect(this)">{move_opts}</select>'
@@ -5419,6 +5425,8 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
             latest[r.phone] = (r, when)
     rows_latest = [v[0] for v in latest.values()]
 
+    _now_br = datetime.now(BRASILIA)
+    _BIZ_DAY_H = float(BIZ_DAY_END - BIZ_DAY_START) or 9.0   # 9h = 1 dia útil
     all_items = []
     for r in rows_latest:
         if not _user_sees(access, r.agent or ""):
@@ -5437,6 +5445,8 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
             override = overrides.get(okey)
             pinned = override in _OPP_STAGE_IDS
             stage = override if pinned else ai_status   # manual pin wins over IA
+            # "Parada": sem atividade na conversa por > 1 dia útil, e ainda aberta.
+            _bh = _biz_hours_between(r.last_msg_at, _now_br) if (r.last_msg_at and stage in ("mapeada", "execucao")) else 0.0
             all_items.append({
                 "key": key, "okey": okey, "phone": r.phone, "conv_id": r.conv_id or "", "zurl": zurl,
                 "cliente": r.client_name or r.phone, "agente": r.agent or "—",
@@ -5447,6 +5457,7 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
                 "last_msg_at": r.last_msg_at, "stage": stage,
                 "ai_status": ai_status, "pinned": pinned, "time": seg,
                 "canal": r.canal or canal,
+                "stalled": _bh > _BIZ_DAY_H, "stalled_days": int(_bh // _BIZ_DAY_H),
             })
     db.close()
 
