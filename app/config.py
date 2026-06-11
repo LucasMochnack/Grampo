@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     # Same as interactive by choice (quality > cost). To cut spend ~3x, set
     # ANTHROPIC_MODEL_BULK=claude-haiku-4-5 in the environment — no deploy needed.
     ANTHROPIC_MODEL_BULK: str = "claude-sonnet-4-6"
+    # Weekly auto-score: runs the agent-evaluation scan inside the app, every
+    # Sunday at AUTO_SCORE_HOUR (Brasília). Recovers until Monday 06:59 if the
+    # app was down. Disable with AUTO_SCORE_ENABLED=0 (no deploy needed).
+    AUTO_SCORE_ENABLED: str = "1"
+    AUTO_SCORE_HOUR: int = 22                 # domingo, 22h Brasília
+    AUTO_SCORE_DAYS: int = 9                  # janela com folga; cache pula o resto
+    AUTO_SCORE_CANAL: str = "5519997733651"   # canal principal
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

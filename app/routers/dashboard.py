@@ -4462,29 +4462,18 @@ def score_agent_batch_endpoint(request: Request, body: dict = Body(default={}), 
     })
 
 
-@router.post("/dashboard/cron/score-daily", include_in_schema=False)
-def cron_score_daily(request: Request, db: Session = Depends(get_db)):
-    """Cron endpoint: score all conversations from the last 30 days in batches.
+def run_score_scan(db, canal: str = "5519997733651", days: int = 30) -> dict:
+    """Score every conversation in the window, server-side (no browser).
 
-    Protected by the DASHBOARD_PASSWORD token sent in the Authorization header
-    as 'Bearer <password>'. Designed to be called once a day without a browser
-    session. Processes all batches in one HTTP call (may take several minutes).
+    Skips conversations already scored for their current state (cache by
+    phone+last_event_id+version), so re-runs only pay for what changed.
+    Used by the cron endpoint and by the weekly auto-score scheduler.
     """
-    auth = request.headers.get("Authorization", "")
-    token = auth.removeprefix("Bearer ").strip()
-    _expected = settings.DASHBOARD_PASSWORD or ""
-    if not token or not _expected or not hmac.compare_digest(token, _expected):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-
-    canal = request.query_params.get("canal", "5519997733651")
-    days  = int(request.query_params.get("days", "30"))
-
-    from app.crud import get_events_since, get_agent_mappings, get_client_names
+    from app.crud import get_events_since, get_agent_mappings
     from app.models import ConversationScore as _CS
 
     if not settings.ANTHROPIC_API_KEY:
-        db.close()
-        return JSONResponse({"error": "ANTHROPIC_API_KEY not set"}, status_code=503)
+        return {"ok": False, "error": "ANTHROPIC_API_KEY not set"}
 
     cutoff_utc = (datetime.now(BRASILIA) - timedelta(days=days)).replace(
         hour=0, minute=0, second=0, microsecond=0
@@ -4493,7 +4482,6 @@ def cron_score_daily(request: Request, db: Session = Depends(get_db)):
     raw_evs = get_events_since(db, since=cutoff_utc, limit=80000)
     raw_evs = _filter_events_by_channel(raw_evs, canal)
     cam = get_agent_mappings(db)
-    cnm = get_client_names(db)
     groups_orm, phone_learned = _group_events(raw_evs, cam)
     cp  = _real_phone(canal)
     _epoch = datetime.min.replace(tzinfo=timezone.utc)
@@ -4536,17 +4524,40 @@ def cron_score_daily(request: Request, db: Session = Depends(get_db)):
             scored = _call_score_llm(_build_transcript(msg_tuples))
             _upsert_score(db, phone, last_event_id, canal, scored)
             total_scored += 1
-        except Exception as exc:
+        except Exception:
             total_errors += 1
 
-    db.close()
-    return JSONResponse({
+    return {
         "ok": True,
         "scored": total_scored,
         "skipped_cached": total_skipped,
         "errors": total_errors,
         "days": days,
-    })
+    }
+
+
+@router.post("/dashboard/cron/score-daily", include_in_schema=False)
+def cron_score_daily(request: Request, db: Session = Depends(get_db)):
+    """Cron endpoint: score all conversations from the last 30 days in batches.
+
+    Protected by the DASHBOARD_PASSWORD token sent in the Authorization header
+    as 'Bearer <password>'. Designed to be called once a day without a browser
+    session. Processes all batches in one HTTP call (may take several minutes).
+    """
+    auth = request.headers.get("Authorization", "")
+    token = auth.removeprefix("Bearer ").strip()
+    _expected = settings.DASHBOARD_PASSWORD or ""
+    if not token or not _expected or not hmac.compare_digest(token, _expected):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+
+    canal = request.query_params.get("canal", "5519997733651")
+    days  = int(request.query_params.get("days", "30"))
+
+    result = run_score_scan(db, canal=canal, days=days)
+    db.close()
+    if not result.get("ok"):
+        return JSONResponse(result, status_code=503)
+    return JSONResponse(result)
 
 
 # ══════════════ OPORTUNIDADES — sinais comerciais nas conversas ══════════════
@@ -9272,6 +9283,12 @@ def dashboard_diagnostico(request: Request, db: Session = Depends(get_db)):
     all_events, _cg, _cpl, client_agent_map, client_name_map = _load_period_pipeline(
         db, canal, cutoff_utc, 50000
     )
+    # Weekly auto-score status (markers persisted by app/services/auto_score.py)
+    _as_last_run = get_setting(db, "auto_score_last_run") or ""
+    try:
+        _as_last_result = json.loads(get_setting(db, "auto_score_last_result") or "{}")
+    except Exception:
+        _as_last_result = {}
     db.close()
 
     groups, phone_learned = _group_events(all_events, client_agent_map)
@@ -9359,6 +9376,28 @@ def dashboard_diagnostico(request: Request, db: Session = Depends(get_db)):
         _card("AGENTES DESCONHECIDOS", len(unknown_agents), "#f59e0b" if unknown_agents else "#0fa968")
     )
 
+    # ── Avaliação automática semanal (domingo à noite) ──────────────────────
+    _as_enabled = str(settings.AUTO_SCORE_ENABLED).strip().lower() not in ("0", "false", "no", "")
+    if not _as_enabled:
+        _as_status = '<span style="color:#f59e0b">desativada (AUTO_SCORE_ENABLED=0)</span>'
+    elif _as_last_result:
+        _as_status = (
+            f'última rodada: <b style="color:#e8ecf1">{html_mod.escape(_as_last_run)}</b> — '
+            f'<span style="color:#0fa968">{_as_last_result.get("scored", 0)} avaliadas</span> · '
+            f'{_as_last_result.get("skipped_cached", 0)} já em cache · '
+            f'<span style="color:{"#ef4444" if _as_last_result.get("errors") else "#5a6a8a"}">'
+            f'{_as_last_result.get("errors", 0)} erros</span>'
+        )
+    else:
+        _as_status = '<span style="color:#5a6a8a">ainda não rodou — primeira execução no próximo domingo</span>'
+    autoscore_html = (
+        '<div style="background:#0d1630;border:1px solid #1a2540;border-radius:10px;padding:14px 22px;margin-bottom:32px">'
+        '<div style="font-size:10px;color:#5a6a8a;letter-spacing:1px;font-weight:700;margin-bottom:6px">'
+        'AVALIAÇÃO AUTOMÁTICA DE AGENTES</div>'
+        f'<div style="font-size:12px;color:#8a96aa">Agendada todo <b style="color:#e8ecf1">domingo às '
+        f'{settings.AUTO_SCORE_HOUR}h</b> (Brasília) · janela de {settings.AUTO_SCORE_DAYS} dias · {_as_status}</div></div>'
+    )
+
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Diagnóstico</title>{COMMON_CSS}</head><body>
 {nav}
 <div style="max-width:1100px;margin:30px auto;padding:0 24px">
@@ -9368,6 +9407,8 @@ def dashboard_diagnostico(request: Request, db: Session = Depends(get_db)):
   </div>
 
   <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:32px">{cards_html}</div>
+
+  {autoscore_html}
 
   <!-- Sem atendente -->
   <div style="margin-bottom:32px">

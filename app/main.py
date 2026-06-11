@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import sys
 from contextlib import asynccontextmanager
@@ -6,6 +7,16 @@ from fastapi import FastAPI
 
 from app.database import create_tables
 from app.routers import events, health, webhook, dashboard
+from app.services.auto_score import weekly_score_loop
+
+# Scheduler logs to stdout so Railway captures the weekly-run reports.
+_autoscore_logger = logging.getLogger("auto_score")
+_autoscore_logger.setLevel(logging.INFO)
+if not _autoscore_logger.handlers:
+    _ah = logging.StreamHandler(sys.stdout)
+    _ah.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
+    _autoscore_logger.addHandler(_ah)
+    _autoscore_logger.propagate = False
 
 # Ensure webhook logger emits to stdout so Railway captures fallback payload
 # logs when the DB is unavailable. Without this, logger.error() messages may
@@ -23,7 +34,10 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         create_tables()
+        # Avaliação automática semanal (domingo à noite) — roda no próprio app.
+        scorer_task = asyncio.create_task(weekly_score_loop())
         yield
+        scorer_task.cancel()
 
     app = FastAPI(
         title="Grampo — Zenvia Webhook Service",
