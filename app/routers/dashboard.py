@@ -4104,7 +4104,7 @@ def _call_score_llm(transcript: str) -> dict:
     import anthropic as _anthropic, re as _re
     client = _anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
     resp = client.messages.create(
-        model=settings.ANTHROPIC_MODEL,
+        model=settings.ANTHROPIC_MODEL_BULK,
         max_tokens=600,
         system=_SCORE_SYSTEM,
         messages=[{"role": "user", "content": f"Avalie a conversa abaixo:\n\n{transcript}"}],
@@ -4752,7 +4752,7 @@ def _call_opp_llm(transcript: str) -> list:
     import anthropic as _anthropic, re as _re
     client = _anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
     resp = client.messages.create(
-        model=settings.ANTHROPIC_MODEL,
+        model=settings.ANTHROPIC_MODEL_BULK,
         max_tokens=700,   # JSON de saída é curto (até 8 oportunidades)
         # System é idêntico em toda chamada (~1k tokens) → cache efêmero corta
         # o custo de input nas chamadas dentro da janela de cache.

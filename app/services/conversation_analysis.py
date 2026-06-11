@@ -204,7 +204,7 @@ def analyze_conversation(
     try:
         client = anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
         resp = client.messages.create(
-            model=settings.ANTHROPIC_MODEL,
+            model=settings.ANTHROPIC_MODEL_BULK,
             max_tokens=400,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_prompt}],
