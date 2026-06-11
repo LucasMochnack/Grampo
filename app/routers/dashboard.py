@@ -8567,6 +8567,11 @@ body[data-density="compact"] .agents{gap:8px}
       </div>
       <div class="seg">__PERIOD_SEG__</div>
     </div>
+    <div style="display:flex;align-items:center;gap:10px;background:#0d1630;border:1px solid #1a2540;border-radius:10px;padding:10px 16px;margin-bottom:16px;font-size:12px;color:#8a96aa">
+      <span style="font-size:15px">&#129302;</span>
+      <span>As notas são geradas <b style="color:#e8ecf1">automaticamente todo domingo às 22h</b> — sem ação manual.</span>
+      <span style="margin-left:auto;font-family:monospace;font-size:11px;color:#5a6a8a">última avaliação: <b style="color:#0fa968">__LAST_SCORE__</b></span>
+    </div>
     <div class="calc" id="calcBox">
       <div class="calc-head">
         <span class="ico">i</span>Como a nota é calculada
@@ -8937,6 +8942,14 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
         ):
             event_dates[str(ev_id)] = recv
 
+    # Última avaliação REAL (max scored_at do canal) — não a hora da página.
+    from sqlalchemy import func as _sqfunc
+    _last_scored = db.query(_sqfunc.max(_CS.scored_at)).filter(_CS.canal == canal).scalar()
+    last_scored_str = (
+        _last_scored.astimezone(BRASILIA).strftime("%d/%m/%Y às %H:%M")
+        if _last_scored else "ainda não rodou"
+    )
+
     cam = get_agent_mappings(db)
     cnm = get_client_names(db)
     db.close()
@@ -9079,6 +9092,7 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
             .replace("__PERIOD_SEG__", period_seg)
             .replace("__DS_OPTIONS__", ds_options)
             .replace("__UPD_TIME__", html_mod.escape(meta["atualizado"]))
+            .replace("__LAST_SCORE__", html_mod.escape(last_scored_str))
             .replace("__DAYS__", str(days))
             .replace("__AGENTS_JSON__", agents_json)
             .replace("__META_JSON__", meta_json))
