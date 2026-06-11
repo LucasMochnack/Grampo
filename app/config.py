@@ -18,12 +18,12 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""          # Free Whisper via Groq (console.groq.com)
     OPENAI_API_KEY: str = ""        # Paid Whisper via OpenAI
     ANTHROPIC_API_KEY: str = ""     # Required for Claude-based "Sem Resposta" analysis
-    # Model id for interactive/quality-sensitive calls (suggestion de resposta).
+    # Model id for interactive/quality-sensitive calls (sugestão de resposta).
     ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
     # Model id for high-volume batch analysis (notas, oportunidades, Sem Resposta).
-    # Haiku 4.5 is ~3x cheaper than Sonnet ($1 vs $3 per 1M input tokens) and
-    # holds up well on classification/extraction. Override via env to revert.
-    ANTHROPIC_MODEL_BULK: str = "claude-haiku-4-5"
+    # Same as interactive by choice (quality > cost). To cut spend ~3x, set
+    # ANTHROPIC_MODEL_BULK=claude-haiku-4-5 in the environment — no deploy needed.
+    ANTHROPIC_MODEL_BULK: str = "claude-sonnet-4-6"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
