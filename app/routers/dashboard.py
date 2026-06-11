@@ -8578,7 +8578,40 @@ body[data-density="compact"] .agents{gap:8px}
         <span class="arr">&#9656;</span>
       </div>
       <div class="calc-body">
-        Cada conversa avaliada recebe uma nota de <code>0</code> a <code>10</code> combinando quatro dimensões: <b>responsividade</b> (tempo de resposta e follow-up), <b>resolução</b> (a necessidade do cliente foi atendida?), <b>clareza</b> (comunicação objetiva e sem ruído) e <b>cordialidade</b> (tom profissional e empático). A <b>média do agente</b> é ponderada pelo número de atendimentos no período. Disparos automáticos e mensagens puramente sociais são ignorados no cálculo.
+
+        <div style="font-size:10px;letter-spacing:1.2px;font-weight:700;color:var(--muted-2);margin:6px 0 8px">1 &middot; QUAIS CONVERSAS ENTRAM NA M&Eacute;DIA</div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+          <div style="flex:1;min-width:260px;background:#16c78410;border:1px solid #16c78430;border-radius:9px;padding:10px 14px">
+            <div style="font-size:11px;font-weight:700;color:#16c784;margin-bottom:5px">&#10003; ENTRAM</div>
+            <div style="font-size:12px;line-height:1.6"><b>Conversas de duas vias</b> (cliente e assessor interagiram) e <b>cliente que parou de responder</b> &mdash; neste caso a IA avalia s&oacute; o que o assessor fez; o sil&ecirc;ncio do cliente <b>nunca</b> penaliza.</div>
+          </div>
+          <div style="flex:1;min-width:260px;background:#0d1630;border:1px solid var(--line);border-radius:9px;padding:10px 14px">
+            <div style="font-size:11px;font-weight:700;color:var(--muted-2);margin-bottom:5px">&#8722; FICAM DE FORA (sem nota)</div>
+            <div style="font-size:12px;line-height:1.6"><b>Disparos/templates</b> sem resposta do cliente e <b>mensagens sociais</b> (sauda&ccedil;&otilde;es, agradecimentos). Aparecem no contador &ldquo;ignoradas&rdquo; do agente.</div>
+          </div>
+        </div>
+
+        <div style="font-size:10px;letter-spacing:1.2px;font-weight:700;color:var(--muted-2);margin:0 0 8px">2 &middot; A R&Eacute;GUA DA NOTA (fixa, de 0 a 10)</div>
+        <div style="display:flex;flex-direction:column;gap:4px;margin-bottom:16px;font-size:12px">
+          <div style="display:flex;gap:10px;align-items:baseline"><code style="flex:none;width:38px;text-align:center;color:#16c784;background:#16c78418">9&ndash;10</code><span><b>Excelente</b> &mdash; respondeu r&aacute;pido, com clareza e profundidade, foi proativo, cliente plenamente atendido.</span></div>
+          <div style="display:flex;gap:10px;align-items:baseline"><code style="flex:none;width:38px;text-align:center;color:#7dd87d;background:#7dd87d18">7&ndash;8</code><span><b>Bom</b> &mdash; atendeu a necessidade com qualidade; pequenas oportunidades de melhoria.</span></div>
+          <div style="display:flex;gap:10px;align-items:baseline"><code style="flex:none;width:38px;text-align:center;color:#eab308;background:#eab30818">5&ndash;6</code><span><b>Regular</b> &mdash; resolveu o essencial, mas com lacunas (demora, resposta incompleta, pouca proatividade).</span></div>
+          <div style="display:flex;gap:10px;align-items:baseline"><code style="flex:none;width:38px;text-align:center;color:#f97316;background:#f9731618">3&ndash;4</code><span><b>Ruim</b> &mdash; falhas claras: deixou d&uacute;vida sem resposta, foi vago, demorou por culpa pr&oacute;pria.</span></div>
+          <div style="display:flex;gap:10px;align-items:baseline"><code style="flex:none;width:38px;text-align:center;color:#ef4444;background:#ef444418">0&ndash;2</code><span><b>Cr&iacute;tico</b> &mdash; ignorou o cliente, deu informa&ccedil;&atilde;o errada, foi rude ou cometeu erro grave de conduta.</span></div>
+        </div>
+
+        <div style="font-size:10px;letter-spacing:1.2px;font-weight:700;color:var(--muted-2);margin:0 0 8px">3 &middot; O QUE A IA OLHA <span style="font-weight:400">(s&oacute; o que est&aacute; sob controle do assessor)</span></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;font-size:12px">
+          <span style="background:#0d1630;border:1px solid var(--line);border-radius:999px;padding:4px 12px">&#9201;&#65039; Tempo de resposta</span>
+          <span style="background:#0d1630;border:1px solid var(--line);border-radius:999px;padding:4px 12px">&#127919; Necessidade atendida</span>
+          <span style="background:#0d1630;border:1px solid var(--line);border-radius:999px;padding:4px 12px">&#128214; Clareza e corre&ccedil;&atilde;o t&eacute;cnica</span>
+          <span style="background:#0d1630;border:1px solid var(--line);border-radius:999px;padding:4px 12px">&#129309; Cordialidade e tom</span>
+          <span style="background:#0d1630;border:1px solid var(--line);border-radius:999px;padding:4px 12px">&#128161; Proatividade</span>
+        </div>
+
+        <div style="font-size:10px;letter-spacing:1.2px;font-weight:700;color:var(--muted-2);margin:0 0 8px">4 &middot; A M&Eacute;DIA DO AGENTE</div>
+        <div style="font-size:12px;line-height:1.65">&Eacute; a <b>m&eacute;dia simples</b> das notas das conversas avali&aacute;veis dele no per&iacute;odo selecionado (7/14/30 dias). Clique no card do agente para ver, conversa a conversa, os <b style="color:#16c784">pontos positivos</b>, os <b style="color:#ef4444">erros concretos</b> e as <b style="color:#5b9bff">sugest&otilde;es de melhoria</b> que a IA registrou. As notas s&atilde;o geradas automaticamente todo <b>domingo &agrave;s 22h</b>.</div>
+
       </div>
     </div>
     <div id="panorama"></div>
