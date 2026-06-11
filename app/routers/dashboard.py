@@ -2994,8 +2994,8 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
         <span id="list-count" style="font-size:10px;color:#5a6a8a;letter-spacing:1.2px;font-weight:700">{len(groups)} CONVERSAS · {_conv_label}{' (top 500)' if _conv_truncated else ''}</span>
         <div style="display:flex;gap:8px;align-items:center">
           <a href="/dashboard/export?canal={canal}&periodo={'hoje' if _periodo_conv == 'hoje' else '7dias' if _periodo_conv == '7dias' else '30dias'}" style="font-size:10px;color:#0fa968;font-weight:700;text-decoration:none;display:flex;align-items:center;gap:4px" title="Exportar lista de conversas">⬇ CSV</a>
-          <button onclick="startScoreBatch('{html_mod.escape(canal)}')" title="Avaliar todas as conversas desta semana com IA"
-            style="font-size:10px;color:#eab308;font-weight:700;background:transparent;border:none;cursor:pointer;padding:0;font-family:Montserrat,sans-serif">⭐ Avaliar semana</button>
+          <span title="As notas são geradas automaticamente todo domingo às 22h — sem ação manual"
+            style="font-size:10px;color:#5a6a8a;font-weight:700;font-family:Montserrat,sans-serif;cursor:default">⭐ avaliação automática (dom 22h)</span>
         </div>
       </div>
       <div style="display:flex;gap:5px;margin-bottom:8px">
@@ -4254,212 +4254,35 @@ def score_conv_endpoint(request: Request, body: dict = Body(default={}), db: Ses
         return JSONResponse({"error": "Erro ao avaliar a conversa"}, status_code=500)
 
 
+_BATCH_SCORING_DISABLED_MSG = (
+    "Avaliação em lote desativada — as notas são geradas automaticamente todo "
+    "domingo às 22h. Para reavaliar uma conversa específica, use o botão na "
+    "própria conversa."
+)
+
+
 @router.post("/dashboard/score-batch", include_in_schema=False)
 def score_batch_endpoint(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
-    """Score up to `batch_size` conversations in one request.
-
-    Body: { canal, offset, batch_size, days }
-    Returns: { done, total, next_offset, finished, scored_this_call, errors }
-
-    Intended to be called repeatedly (AJAX polling) until finished=true.
-    Already-scored conversations (same last_event_id + score_version) are
-    skipped instantly without an LLM call. Sync def → threadpool.
-    """
+    """DESATIVADO a pedido do gestor: o disparo manual em massa permitia a
+    qualquer usuário logado gerar custo de LLM imprevisível. A avaliação roda
+    exclusivamente pelo agendador semanal (app/services/auto_score.py) e pelo
+    endpoint de cron protegido por token. Re-avaliação individual continua em
+    /dashboard/score-conv (1 conversa, custo de centavos)."""
     if not _check_auth(request):
         return JSONResponse({"error": "unauth"}, status_code=401)
-    if not isinstance(body, dict):
-        return JSONResponse({"error": "bad json"}, status_code=400)
-
-    canal      = (body.get("canal") or "5519997733651").strip()
-    offset     = max(0, int(body.get("offset") or 0))
-    batch_size = max(1, min(20, int(body.get("batch_size") or 10)))
-    days       = max(1, min(30, int(body.get("days") or 7)))
-
-    if not settings.ANTHROPIC_API_KEY:
-        db.close()
-        return JSONResponse({"error": "ANTHROPIC_API_KEY não configurada"}, status_code=503)
-
-    from app.crud import get_events_since, get_agent_mappings, get_client_names
-    from app.models import ConversationScore as _CS
-
-    cutoff_utc = (datetime.now(BRASILIA) - timedelta(days=days)).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    ).astimezone(timezone.utc)
-
-    raw_evs = get_events_since(db, since=cutoff_utc, limit=60000)
-    raw_evs = _filter_events_by_channel(raw_evs, canal)
-    cam = get_agent_mappings(db)
-    cnm = get_client_names(db)
-
-    groups_orm, phone_learned = _group_events(raw_evs, cam)
-    cp = _real_phone(canal)
-
-    # Build candidate list: (phone, last_event_id, agent, client_name, msg_tuples)
-    _epoch = datetime.min.replace(tzinfo=timezone.utc)
-    candidates = []
-    for key, evs in groups_orm.items():
-        if _real_phone(key) == cp:
-            continue
-        phone = _real_phone(key)
-        agent = (phone_learned.get(key) or cam.get(phone)
-                 or phone_learned.get(phone) or "Sem atendente")
-        if agent == "Sem atendente":
-            continue
-        sorted_evs = sorted(
-            [e for e in evs if (e.raw_payload or {}).get("type", "").upper()
-             not in ("MESSAGE_STATUS", "CONVERSATION_STATUS")],
-            key=lambda e: e.received_at or _epoch
-        )
-        if not sorted_evs:
-            continue
-        last_event_id = str(sorted_evs[-1].id)
-        msg_tuples = []
-        for ev in sorted_evs:
-            _p   = ev.raw_payload or {}
-            _txt = _extract_content_preview(_p, max_len=1000) or ""
-            _ts  = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
-            if _txt:
-                msg_tuples.append((_extract_direction(_p), _txt, _ts))
-        if not msg_tuples:
-            continue
-        client_name = cnm.get(phone, "") or phone
-        candidates.append((phone, last_event_id, agent, client_name, msg_tuples))
-
-    total = len(candidates)
-    slice_ = candidates[offset: offset + batch_size]
-
-    scored_this = 0
-    errors = 0
-    for phone, last_event_id, agent, client_name, msg_tuples in slice_:
-        # Skip if already cached
-        cached = db.get(_CS, (phone, last_event_id))
-        if cached and cached.score_version == _SCORE_VERSION:
-            scored_this += 1
-            continue
-        try:
-            scored = _call_score_llm(_build_transcript(msg_tuples))
-            _upsert_score(db, phone, last_event_id, canal, scored)
-            scored_this += 1
-        except Exception:
-            errors += 1
-
-    next_offset = offset + batch_size
-    finished = next_offset >= total
     db.close()
-    return JSONResponse({
-        "done":             min(next_offset, total),
-        "total":            total,
-        "next_offset":      next_offset if not finished else total,
-        "finished":         finished,
-        "scored_this_call": scored_this,
-        "errors":           errors,
-    })
+    return JSONResponse({"error": _BATCH_SCORING_DISABLED_MSG}, status_code=410)
 
 
 @router.post("/dashboard/score-agent-batch", include_in_schema=False)
 def score_agent_batch_endpoint(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
-    """Score ALL conversations of a single agent across the whole DB history.
-
-    Body: { canal, agent, offset, batch_size }
-    Returns: { done, total, next_offset, finished, scored_this_call, errors, agent }
-
-    Same polling contract as /score-batch but filtered to one agent and with
-    no day window (covers the entire database). Sync def → threadpool.
-    """
+    """DESATIVADO — mesmo motivo de /dashboard/score-batch (este nem tinha
+    botão na UI; ficava exposto a chamadas diretas cobrindo o histórico
+    inteiro do banco)."""
     if not _check_auth(request):
         return JSONResponse({"error": "unauth"}, status_code=401)
-    if not isinstance(body, dict):
-        return JSONResponse({"error": "bad json"}, status_code=400)
-
-    canal      = (body.get("canal") or "5519997733651").strip()
-    agent_sel  = (body.get("agent") or "").strip()
-    offset     = max(0, int(body.get("offset") or 0))
-    batch_size = max(1, min(20, int(body.get("batch_size") or 10)))
-
-    if not agent_sel:
-        db.close()
-        return JSONResponse({"error": "missing agent"}, status_code=400)
-    if not settings.ANTHROPIC_API_KEY:
-        db.close()
-        return JSONResponse({"error": "ANTHROPIC_API_KEY não configurada"}, status_code=503)
-
-    # Permission: viewers can only score agents they're allowed to see
-    access = _get_access(request, db)
-    if not _user_sees(access, agent_sel):
-        db.close()
-        return JSONResponse({"error": "sem permissão para este agente"}, status_code=403)
-
-    from app.crud import get_events_since, get_agent_mappings, get_client_names
-    from app.models import ConversationScore as _CS
-
-    # Whole DB history
-    epoch = datetime(2020, 1, 1, tzinfo=timezone.utc)
-    raw_evs = get_events_since(db, since=epoch, limit=200000)
-    raw_evs = _filter_events_by_channel(raw_evs, canal)
-    cam = get_agent_mappings(db)
-    cnm = get_client_names(db)
-
-    groups_orm, phone_learned = _group_events(raw_evs, cam)
-    cp = _real_phone(canal)
-    _epoch = datetime.min.replace(tzinfo=timezone.utc)
-
-    candidates = []
-    for key, evs in groups_orm.items():
-        if _real_phone(key) == cp:
-            continue
-        phone = _real_phone(key)
-        agent = (phone_learned.get(key) or cam.get(phone)
-                 or phone_learned.get(phone) or "Sem atendente")
-        if agent != agent_sel:   # filter to the selected agent only
-            continue
-        sorted_evs = sorted(
-            [e for e in evs if (e.raw_payload or {}).get("type", "").upper()
-             not in ("MESSAGE_STATUS", "CONVERSATION_STATUS")],
-            key=lambda e: e.received_at or _epoch
-        )
-        if not sorted_evs:
-            continue
-        last_event_id = str(sorted_evs[-1].id)
-        msg_tuples = []
-        for ev in sorted_evs:
-            _p   = ev.raw_payload or {}
-            _txt = _extract_content_preview(_p, max_len=1000) or ""
-            _ts  = ev.received_at.astimezone(BRASILIA) if ev.received_at else None
-            if _txt:
-                msg_tuples.append((_extract_direction(_p), _txt, _ts))
-        if not msg_tuples:
-            continue
-        candidates.append((phone, last_event_id, msg_tuples))
-
-    total = len(candidates)
-    slice_ = candidates[offset: offset + batch_size]
-
-    scored_this = 0
-    errors = 0
-    for phone, last_event_id, msg_tuples in slice_:
-        cached = db.get(_CS, (phone, last_event_id))
-        if cached and cached.score_version == _SCORE_VERSION:
-            scored_this += 1
-            continue
-        try:
-            scored = _call_score_llm(_build_transcript(msg_tuples))
-            _upsert_score(db, phone, last_event_id, canal, scored)
-            scored_this += 1
-        except Exception:
-            errors += 1
-
-    next_offset = offset + batch_size
-    finished = next_offset >= total
     db.close()
-    return JSONResponse({
-        "done":             min(next_offset, total),
-        "total":            total,
-        "next_offset":      next_offset if not finished else total,
-        "finished":         finished,
-        "scored_this_call": scored_this,
-        "errors":           errors,
-        "agent":            agent_sel,
-    })
+    return JSONResponse({"error": _BATCH_SCORING_DISABLED_MSG}, status_code=410)
 
 
 def run_score_scan(db, canal: str = "5519997733651", days: int = 30) -> dict:
