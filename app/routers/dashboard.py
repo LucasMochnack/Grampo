@@ -12,7 +12,7 @@ import io
 import json
 import secrets
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote as _url_quote
 
 from fastapi import APIRouter, Body, Depends, Request
@@ -5898,6 +5898,91 @@ function toggleChat(id) {{
     return HTMLResponse(page)
 
 
+# ── Pautas (campanhas dirigidas) ─────────────────────────────────────────────
+# O gestor cadastra a pauta da semana ("Consórcio", "Renda Variável"...) e o
+# sistema mede, POR ASSESSOR, com quantos clientes ele levou o tema — olhando
+# apenas mensagens de SAÍDA (proatividade), sem custo de LLM (keyword match).
+
+def _get_pautas(db) -> list:
+    try:
+        data = json.loads(get_setting(db, "pautas") or "[]")
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_pautas(db, lst: list) -> None:
+    set_setting(db, "pautas", json.dumps(lst, ensure_ascii=False))
+
+
+def _pauta_match(text_norm: str, kws_norm: list) -> bool:
+    """True se alguma keyword (normalizada, sem acento) aparece no texto.
+    Palavras curtas exigem fronteira de palavra (evita 'rv' em 'cervva' etc.)."""
+    for kw in kws_norm:
+        if not kw:
+            continue
+        if " " in kw or len(kw) > 5:
+            if kw in text_norm:
+                return True
+        elif _re.search(r"(?<![a-z0-9])" + _re.escape(kw) + r"(?![a-z0-9])", text_norm):
+            return True
+    return False
+
+
+@router.post("/dashboard/pautas", include_in_schema=False)
+def pauta_create_endpoint(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
+    """Cria uma pauta. Admin-only. Body: {nome, keywords, inicio, fim, alvo}."""
+    access = _get_access(request, db)
+    if access is None:
+        return JSONResponse({"error": "unauth"}, status_code=401)
+    if (access or {}).get("role") != "admin":
+        return JSONResponse({"error": "restrito a administradores"}, status_code=403)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad json"}, status_code=400)
+
+    nome = (body.get("nome") or "").strip()[:80]
+    kws  = [k.strip().lower() for k in (body.get("keywords") or "").replace("\n", ",").split(",") if k.strip()][:40]
+    inicio = (body.get("inicio") or "").strip()
+    fim    = (body.get("fim") or "").strip()
+    alvo   = (body.get("alvo") or "").strip()[:40]
+    if not nome or not kws:
+        return JSONResponse({"error": "informe nome e ao menos 1 palavra-chave"}, status_code=400)
+    try:
+        d_ini = date.fromisoformat(inicio)
+        d_fim = date.fromisoformat(fim)
+    except (TypeError, ValueError):
+        return JSONResponse({"error": "datas inválidas"}, status_code=400)
+    if d_fim < d_ini:
+        return JSONResponse({"error": "fim antes do início"}, status_code=400)
+
+    import secrets as _secrets
+    pautas = _get_pautas(db)
+    pautas.append({
+        "id": _secrets.token_hex(5),
+        "nome": nome, "keywords": kws,
+        "inicio": d_ini.isoformat(), "fim": d_fim.isoformat(),
+        "alvo": alvo,
+        "criada_em": datetime.now(timezone.utc).isoformat(),
+    })
+    _save_pautas(db, pautas)
+    return JSONResponse({"ok": True})
+
+
+@router.post("/dashboard/pautas/excluir", include_in_schema=False)
+def pauta_delete_endpoint(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
+    access = _get_access(request, db)
+    if access is None:
+        return JSONResponse({"error": "unauth"}, status_code=401)
+    if (access or {}).get("role") != "admin":
+        return JSONResponse({"error": "restrito a administradores"}, status_code=403)
+    pid = (body.get("id") or "").strip() if isinstance(body, dict) else ""
+    if not pid:
+        return JSONResponse({"error": "missing id"}, status_code=400)
+    pautas = [p for p in _get_pautas(db) if p.get("id") != pid]
+    _save_pautas(db, pautas)
+    return JSONResponse({"ok": True})
+
+
 # ── Temas Dashboard ──────────────────────────────────────────────────────────
 
 @router.get("/dashboard/temas", response_class=HTMLResponse, include_in_schema=False)
@@ -5916,6 +6001,7 @@ def dashboard_temas(request: Request, db: Session = Depends(get_db)):
     all_events, _cg, _cpl, client_agent_map, client_name_map = _load_period_pipeline(
         db, canal, _temas_since, 25000
     )
+    _pautas_list = _get_pautas(db)
     db.close()  # release connection before heavy processing
 
     now_br = datetime.now(BRASILIA)
@@ -5927,6 +6013,215 @@ def dashboard_temas(request: Request, db: Session = Depends(get_db)):
     period_events = [ev for ev in all_events if ev.received_at and ev.received_at.astimezone(BRASILIA) >= period_start]
     groups, phone_learned = _group_events(period_events, client_agent_map)
     _cp = _real_phone(canal); groups = {k: v for k, v in groups.items() if _real_phone(k) != _cp}
+
+    # ── Pautas: aderência por assessor (mensagens de SAÍDA, janela da pauta) ──
+    from urllib.parse import quote as _uq
+    is_admin_t = (access or {}).get("role") == "admin"
+    pautas_html = ""
+    if _pautas_list or is_admin_t:
+        # O pipeline cacheado já devolve o agrupamento dos 30d (_cg/_cpl) — reusa.
+        groups_all = {k: v for k, v in (_cg or {}).items() if _real_phone(k) != _cp}
+        phone_learned_all = _cpl or {}
+        _today = now_br.date()
+        _all_known = set(AGENT_SEGMENT.keys()) | {
+            a for a in (set(client_agent_map.values()) | set(phone_learned_all.values()))
+            if a and a != "Sem atendente"
+        }
+
+        def _pauta_status(p):
+            try:
+                di, df = date.fromisoformat(p["inicio"]), date.fromisoformat(p["fim"])
+            except (KeyError, TypeError, ValueError):
+                return None
+            if _today < di:
+                return ("agendada", "#5b9bff", di, df)
+            if _today > df:
+                return ("encerrada", "#5a6a8a", di, df)
+            return ("ativa", "#0fa968", di, df)
+
+        _cards = []
+        _ranked = sorted(
+            (p for p in _pautas_list if _pauta_status(p)),
+            key=lambda p: ({"ativa": 0, "agendada": 1, "encerrada": 2}[_pauta_status(p)[0]], p.get("inicio", "")),
+        )[:10]
+
+        # Pré-extração 1x (compartilhada entre as pautas): para cada conversa,
+        # lista cronológica de (ts BR, direção, texto normalizado, trecho cru).
+        conv_cache: dict[str, list] = {}
+        agent_of: dict[str, str] = {}
+        if _ranked:
+            for gkey, evs in groups_all.items():
+                _ph = _real_phone(gkey)
+                agent_of[gkey] = (phone_learned_all.get(gkey) or client_agent_map.get(_ph)
+                                  or phone_learned_all.get(_ph) or "Sem atendente")
+                items = []
+                for ev in sorted((e for e in evs if e.received_at), key=lambda e: e.received_at):
+                    _p = ev.raw_payload or {}
+                    txt = _extract_content_preview(_p, max_len=2000) or ""
+                    if not txt:
+                        continue
+                    d_ = (_extract_direction(_p) or "").upper()
+                    if d_ not in ("OUT", "IN"):
+                        continue
+                    items.append((ev.received_at.astimezone(BRASILIA), d_, _opp_norm(txt), txt[:110]))
+                conv_cache[gkey] = items
+
+        for p in _ranked:
+            st, st_color, d_ini, d_fim = _pauta_status(p)
+            kws_norm = [_opp_norm(k) for k in (p.get("keywords") or [])]
+            alvo = (p.get("alvo") or "").strip()
+            win_start = max(
+                datetime(d_ini.year, d_ini.month, d_ini.day, tzinfo=BRASILIA),
+                now_br - timedelta(days=30),
+            )
+            win_end = min(datetime(d_fim.year, d_fim.month, d_fim.day, tzinfo=BRASILIA) + timedelta(days=1), now_br)
+            clamped = datetime(d_ini.year, d_ini.month, d_ini.day, tzinfo=BRASILIA) < now_br - timedelta(days=30)
+
+            covered: dict[str, set] = defaultdict(set)
+            ativos:  dict[str, set] = defaultdict(set)
+            drill: list = []
+            puxou = {"OUT": 0, "IN": 0}
+
+            for gkey, items in conv_cache.items():
+                ph = _real_phone(gkey)
+                agent = agent_of.get(gkey, "Sem atendente")
+                if agent == "Sem atendente" or not _user_sees(access, agent):
+                    continue
+                if alvo and _get_segment(agent) != alvo:
+                    continue
+                first_dir = None
+                any_in_window = False
+                for ts, d_, ntxt, snip in items:
+                    if not (win_start <= ts < win_end):
+                        continue
+                    any_in_window = True
+                    if not _pauta_match(ntxt, kws_norm):
+                        continue
+                    if first_dir is None:
+                        first_dir = d_
+                    if d_ == "OUT":
+                        if ph not in covered[agent]:
+                            covered[agent].add(ph)
+                            drill.append((client_name_map.get(ph, "") or ph, ph, agent, snip))
+                        break
+                if any_in_window:
+                    ativos[agent].add(ph)
+                if first_dir:
+                    puxou[first_dir] += 1
+
+            targets = sorted(
+                (a for a in _all_known if (not alvo or _get_segment(a) == alvo) and _user_sees(access, a)),
+                key=lambda a: (-len(covered.get(a, ())), _short_agent_name(a)),
+            )
+            n_com = sum(1 for a in targets if covered.get(a))
+            n_clientes = sum(len(s) for s in covered.values())
+
+            rows = []
+            sem_conversa = []
+            for a in targets:
+                n_cov, n_act = len(covered.get(a, ())), len(ativos.get(a, ()))
+                if n_act == 0 and n_cov == 0:
+                    sem_conversa.append(_short_agent_name(a))
+                    continue
+                pct = round(100 * n_cov / n_act) if n_act else 0
+                if n_cov == 0:
+                    label = '<span style="color:#ef4444;font-weight:700">ainda não abordou</span>'
+                else:
+                    label = f'<span style="color:#8a96aa">{n_cov} cliente{"s" if n_cov != 1 else ""} · {pct}% das conversas</span>'
+                rows.append(
+                    '<div style="display:flex;align-items:center;gap:10px;font-size:12px">'
+                    f'<span style="width:150px;flex:none;color:#c8d2e8">{html_mod.escape(_short_agent_name(a))}</span>'
+                    '<div style="flex:1;height:7px;background:#0b1120;border-radius:4px;overflow:hidden">'
+                    f'<div style="width:{min(pct,100)}%;height:100%;background:{"#0fa968" if pct >= 50 else "#eab308"}"></div></div>'
+                    f'<span style="width:190px;flex:none;text-align:right">{label}</span></div>'
+                )
+            tot_puxou = puxou["OUT"] + puxou["IN"]
+            puxou_html = (
+                f'<span style="font-size:11px;background:#0b1120;border:1px solid #1a2540;border-radius:999px;padding:3px 10px;color:#8a96aa">'
+                f'quem puxou o assunto: assessor {round(100*puxou["OUT"]/tot_puxou)}% · cliente {round(100*puxou["IN"]/tot_puxou)}%</span>'
+            ) if tot_puxou else ""
+            drill_html = ""
+            if drill:
+                _items = "".join(
+                    f'<div style="padding:5px 0;border-bottom:1px solid #131c33;font-size:12px">'
+                    f'<a href="/dashboard/conversa?phone={_uq(ph_, safe="")}&canal={_uq(canal, safe="")}" style="color:#0fa968;text-decoration:none;font-weight:600">{html_mod.escape(nm_)}</a>'
+                    f' <span style="color:#5a6a8a">· {html_mod.escape(_short_agent_name(ag_))}</span>'
+                    f'<div style="color:#8a96aa;margin-top:2px">&ldquo;{html_mod.escape(sn_)}&rdquo;</div></div>'
+                    for nm_, ph_, ag_, sn_ in drill[:60]
+                )
+                drill_html = (
+                    f'<details style="margin-top:10px"><summary style="cursor:pointer;font-size:11px;color:#5b9bff">'
+                    f'ver clientes abordados ({len(drill)})</summary><div style="margin-top:6px">{_items}</div></details>'
+                )
+            sem_html = (
+                f'<div style="font-size:11px;color:#5a6a8a;margin-top:8px">sem conversas na vigência: {html_mod.escape(", ".join(sem_conversa[:15]))}'
+                + (f" +{len(sem_conversa)-15}" if len(sem_conversa) > 15 else "") + "</div>"
+            ) if sem_conversa else ""
+            _pid = str(p.get("id") or "")
+            del_btn = (
+                f'<button onclick="pautaExcluir(\'{_pid}\')" title="Excluir pauta" '
+                'style="background:transparent;border:none;color:#5a6a8a;cursor:pointer;font-size:13px">&#10005;</button>'
+            ) if (is_admin_t and _re.fullmatch(r"[0-9a-f]{2,40}", _pid)) else ""
+            clamp_note = ' <span style="color:#5a6a8a">(análise: últimos 30 dias)</span>' if clamped else ""
+            _cards.append(
+                f'<div class="card" style="margin-bottom:14px{";opacity:.6" if st == "encerrada" else ""}">'
+                '<div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:2px">'
+                f'<span style="font-size:14px;font-weight:700;color:#e8ecf1">{html_mod.escape(p.get("nome", ""))}</span>'
+                f'<span style="font-size:10px;font-weight:700;letter-spacing:1px;color:{st_color};border:1px solid {st_color}55;border-radius:999px;padding:2px 9px">{st.upper()}</span>'
+                f'<span style="font-size:11px;color:#5a6a8a">{d_ini.strftime("%d/%m")} &ndash; {d_fim.strftime("%d/%m")} · alvo: {html_mod.escape(alvo) if alvo else "todas as mesas"}{clamp_note}</span>'
+                f'<span style="margin-left:auto;display:flex;gap:8px;align-items:center">{puxou_html}{del_btn}</span></div>'
+                f'<div style="font-size:12px;color:#8a96aa;margin-bottom:10px"><b style="color:#0fa968">{n_com}</b> de {len(targets)} assessores já levaram o tema · <b>{n_clientes}</b> clientes abordados</div>'
+                f'<div style="display:flex;flex-direction:column;gap:5px">{"".join(rows) or "<span style=\'font-size:12px;color:#5a6a8a\'>nenhum assessor com conversa na vigência</span>"}</div>'
+                f'{sem_html}{drill_html}</div>'
+            )
+
+        _form_html = ""
+        if is_admin_t:
+            _opts = '<option value="">Todas as mesas</option>' + "".join(
+                f'<option value="{html_mod.escape(s)}">{html_mod.escape(s)}</option>' for s in _all_segments()
+            )
+            _hoje = _today.isoformat()
+            _fim_default = (_today + timedelta(days=13)).isoformat()
+            _inp = "background:#0b1120;border:1px solid #1a2540;border-radius:6px;color:#e8ecf1;padding:7px 10px;font-size:12px"
+            _form_html = (
+                '<details style="margin-bottom:14px"><summary style="cursor:pointer;font-size:12px;color:#0fa968;font-weight:700">+ Nova pauta</summary>'
+                '<div class="card" style="margin-top:10px;display:flex;flex-direction:column;gap:8px">'
+                f'<input id="pt-nome" placeholder="Nome da pauta (ex.: Consórcio / aquisição de bens)" style="{_inp}">'
+                f'<input id="pt-kws" placeholder="Palavras-chave separadas por vírgula (ex.: consórcio, carta de crédito, contemplação)" style="{_inp}">'
+                '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+                f'<input id="pt-ini" type="date" value="{_hoje}" style="{_inp}">'
+                f'<input id="pt-fim" type="date" value="{_fim_default}" style="{_inp}">'
+                f'<select id="pt-alvo" style="{_inp}">{_opts}</select>'
+                '<button onclick="pautaCriar()" style="background:#0fa968;border:none;border-radius:6px;color:#04150c;font-weight:700;font-size:12px;padding:7px 16px;cursor:pointer">Criar pauta</button>'
+                '</div><div style="font-size:11px;color:#5a6a8a">A aderência conta apenas mensagens <b>enviadas pelo assessor</b> dentro da vigência (sem acento/maiúsculas não importam). Sem custo de IA.</div>'
+                '</div></details>'
+            )
+
+        _pauta_js = """<script>
+function pautaCriar(){
+  var b={nome:document.getElementById('pt-nome').value,keywords:document.getElementById('pt-kws').value,
+         inicio:document.getElementById('pt-ini').value,fim:document.getElementById('pt-fim').value,
+         alvo:document.getElementById('pt-alvo').value};
+  fetch('/dashboard/pautas',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})
+    .then(function(r){return r.json();}).then(function(d){if(d.ok){location.reload();}else{alert(d.error||'erro');}});
+}
+function pautaExcluir(id){
+  if(!confirm('Excluir esta pauta?'))return;
+  fetch('/dashboard/pautas/excluir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id})})
+    .then(function(){location.reload();});
+}
+</script>"""
+        _empty = (
+            '<p style="font-size:12px;color:#5a6a8a;margin:0 0 4px">Nenhuma pauta cadastrada. '
+            'Crie a primeira em <b>+ Nova pauta</b> — ex.: &ldquo;Consórcio&rdquo; ou &ldquo;Renda Variável&rdquo;.</p>'
+        ) if (is_admin_t and not _cards) else ""
+        pautas_html = (
+            '<div style="margin-bottom:24px">'
+            '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">'
+            '<span style="width:8px;height:8px;border-radius:50%;background:#d4af37;display:inline-block"></span>'
+            '<h2 style="margin:0;font-size:15px">Pautas — o time está levando o tema aos clientes?</h2></div>'
+            + _empty + _form_html + "".join(_cards) + _pauta_js + "</div>"
+        ) if (_cards or is_admin_t) else ""
 
     # ── Build topic × agent matrix ───────────────────────────────────────────
     # topic_data[topic_id][agent] = set of client phones that mentioned the topic
@@ -6134,6 +6429,8 @@ function toggleDrill(id) {{
     </div>
     <span style="color:#4a5a7a;font-size:12px">{_period_label}</span>
   </div>
+
+  {pautas_html}
 
   <div class="kpi-row">
     <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{sum(d[1] for d in chart_data)}</div><div class="label">Ocorrências totais</div></div>
