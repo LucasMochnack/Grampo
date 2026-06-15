@@ -4910,6 +4910,11 @@ html,body{margin:0;padding:0}
 .op-title{margin:0;font-size:27px;font-weight:700;letter-spacing:-0.025em;line-height:1.1}
 .op-lede{margin:11px 0 0;max-width:820px;font-size:13px;line-height:1.6;color:var(--dim)}
 .op-top-right{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.op-collapse{display:inline-flex;align-items:center;gap:6px;height:38px;padding:0 12px;background:var(--panel);border:1px solid var(--border);border-radius:8px;color:var(--dim);font-size:11.5px;font-weight:600;font-family:var(--font-ui);cursor:pointer;transition:.18s}
+.op-collapse:hover{color:var(--text);border-color:var(--border-2)}
+.op-collapse svg{width:13px;height:13px;transition:transform .2s}
+.op-shell.hdr-collapsed .op-collapse svg{transform:rotate(-90deg)}
+.op-shell.hdr-collapsed .op-lede,.op-shell.hdr-collapsed .op-kpis{display:none}
 .op-brand img{height:30px;width:auto;opacity:.92;display:block}
 .op-pill{display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 13px;background:var(--panel);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12.5px;font-weight:500;transition:.18s}
 .op-pill:hover{border-color:var(--border-2)}
@@ -5236,9 +5241,25 @@ document.addEventListener('DOMContentLoaded',function(){
     if(document.getElementById('chatWrap').classList.contains('open')){closeChat();return;}
     if(document.getElementById('opDrawer').classList.contains('open')){closeDrawer();}
   });
+  applyOppHeaderState();
   fitOppCols();window.addEventListener('resize',fitOppCols);
   if(window.OPP_HAS_DATA){autoSyncOpp();}
 });
+/* Cabeçalho recolhível (lede + KPIs). Estado por navegador — persiste o reload
+   do autoSync. */
+function applyOppHeaderState(){
+  var sh=document.getElementById('opShell');if(!sh)return;
+  var c=false;try{c=localStorage.getItem('opp_hdr_collapsed')==='1';}catch(e){}
+  sh.classList.toggle('hdr-collapsed',c);
+  var l=document.getElementById('opHdrLbl');if(l)l.textContent=c?'Expandir':'Recolher';
+}
+function toggleOppHeader(){
+  var sh=document.getElementById('opShell');if(!sh)return;
+  var c=sh.classList.toggle('hdr-collapsed');
+  try{localStorage.setItem('opp_hdr_collapsed',c?'1':'0');}catch(e){}
+  var l=document.getElementById('opHdrLbl');if(l)l.textContent=c?'Expandir':'Recolher';
+  fitOppCols();
+}
 /* Ancora a altura das colunas no topo real do board (não no viewport) p/ as
    colunas cheias não vazarem abaixo da dobra com duplo scroll. */
 function fitOppCols(){
@@ -5554,6 +5575,9 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         'tem dinheiro em outra instituição, quer comprar um produto, teve um evento de liquidez, ou sinaliza risco de saída. '
         'Arraste os cards entre as etapas conforme a negociação avança.</p>'
         '</div><div class="op-top-right">'
+        '<button class="op-collapse" onclick="toggleOppHeader()" title="Recolher / expandir cabeçalho">'
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>'
+        '<span id="opHdrLbl">Recolher</span></button>'
         f'<span class="op-pill">{_opp_icon("wallet")}<select onchange="location.href=this.value">{canal_opts}</select></span>'
         '<span class="op-updated"><span class="op-dotlive"></span>IA ativa</span>'
         '</div></div>'
@@ -5651,7 +5675,7 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         + _OPP_CSS +
         '</head><body><div class="op-root">'
         + sidebar_html
-        + '<div class="op-main"><div class="op-shell">'
+        + '<div class="op-main"><div class="op-shell" id="opShell">'
         + top_html + kpis_html
         + '<div class="op-filters">' + chips_html + '</div>'
         + '<div class="op-subfilters">' + subfilters + '</div>'
