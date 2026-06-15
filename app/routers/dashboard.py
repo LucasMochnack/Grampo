@@ -4042,6 +4042,10 @@ async def tratativa_sr_endpoint(request: Request, db: Session = Depends(get_db))
 
 
 _SCORE_VERSION = "v3"
+# Cobertura: a IA também diz QUAIS produtos o assessor ofereceu (mesma chamada).
+_COV_VERSION = "v1"
+_COV_CATALOG = "; ".join(f"{tid} — {label}" for tid, label, *_ in TOPIC_RULES)
+_COV_PRODUCT_IDS = {tid for tid, *_ in TOPIC_RULES}
 _SCORE_SYSTEM = """Você é avaliador sênior de qualidade de atendimento de uma assessoria de \
 investimentos (Alto Valor / XP). Avalie o desempenho do ASSESSOR numa conversa de WhatsApp \
 com um CLIENTE.
@@ -4084,7 +4088,12 @@ Ex: "Cotação de CDB", "Pedido de resgate", "Dúvida sobre rendimento", "Abertu
 Responda SOMENTE em JSON, sem texto adicional, sem markdown:
 {"tipo":"duas_vias","avaliavel":true,"nota":8,"motivo":"Cotação de CDB","resumo":"frase de 1-2 linhas","pontos_positivos":["..."],"erros":["..."],"pontos_melhoria":["..."]}
 
-Se não avaliável: {"tipo":"so_saida","avaliavel":false,"nota":null,"motivo":"Disparo","resumo":"motivo","pontos_positivos":[],"erros":[],"pontos_melhoria":[]}"""
+Se não avaliável: {"tipo":"so_saida","avaliavel":false,"nota":null,"motivo":"Disparo","resumo":"motivo","pontos_positivos":[],"erros":[],"pontos_melhoria":[]}""" + f"""
+
+═══════ PASSO 4 — PRODUTOS QUE O ASSESSOR OFERECEU ═══════
+Acrescente ao JSON o campo "produtos_oferecidos": lista de IDs dos produtos que o ASSESSOR (não o cliente) trouxe, sugeriu ou ofereceu DE VERDADE nesta conversa. NÃO inclua produto que apareceu só porque o CLIENTE perguntou, nem menção de passagem. Lista vazia [] se o assessor não ofereceu nenhum.
+Produtos disponíveis (id — nome): {_COV_CATALOG}
+Exemplo de JSON COMPLETO com o campo: {{"tipo":"duas_vias","avaliavel":true,"nota":8,"motivo":"Cotação de CDB","resumo":"...","pontos_positivos":["..."],"erros":[],"pontos_melhoria":["..."],"produtos_oferecidos":["renda_fixa"]}}"""
 
 
 def _build_transcript(msg_tuples: list) -> str:
@@ -4105,7 +4114,7 @@ def _call_score_llm(transcript: str) -> dict:
     client = _anthropic.Anthropic(api_key=settings.ANTHROPIC_API_KEY)
     resp = client.messages.create(
         model=settings.ANTHROPIC_MODEL_BULK,
-        max_tokens=600,
+        max_tokens=750,
         system=_SCORE_SYSTEM,
         messages=[{"role": "user", "content": f"Avalie a conversa abaixo:\n\n{transcript}"}],
     )
@@ -4136,7 +4145,26 @@ def _call_score_llm(transcript: str) -> dict:
         "pontos_positivos": [str(x)[:200] for x in (data.get("pontos_positivos") or [])[:5]],
         "erros":            [str(x)[:200] for x in (data.get("erros")            or [])[:5]],
         "pontos_melhoria":  [str(x)[:200] for x in (data.get("pontos_melhoria")  or [])[:5]],
+        "produtos":         [p for p in (data.get("produtos_oferecidos") or [])
+                             if isinstance(p, str) and p in _COV_PRODUCT_IDS][:14],
     }
+
+
+def _upsert_coverage(db: Session, phone: str, last_event_id: str, canal: str,
+                     agent: str, produtos) -> None:
+    """Persist which shelf products the advisor offered (Cobertura). Rides the
+    weekly score call — see ConversationCoverage."""
+    from app.models import ConversationCoverage as _CC
+    prods = [p for p in (produtos or []) if p in _COV_PRODUCT_IDS]
+    row = db.get(_CC, (phone, last_event_id))
+    now_utc = datetime.now(timezone.utc)
+    if row:
+        row.canal = canal; row.agent = agent; row.produtos = prods
+        row.cov_version = _COV_VERSION; row.scored_at = now_utc
+    else:
+        db.add(_CC(phone=phone, last_event_id=last_event_id, canal=canal,
+                   agent=agent, produtos=prods, cov_version=_COV_VERSION, scored_at=now_utc))
+    db.commit()
 
 
 def _upsert_score(db: Session, phone: str, last_event_id: str, canal: str, scored: dict) -> None:
@@ -4245,6 +4273,8 @@ def score_conv_endpoint(request: Request, body: dict = Body(default={}), db: Ses
         scored = _call_score_llm(_build_transcript(msg_tuples))
         if last_event_id:
             _upsert_score(db, phone, last_event_id, canal, scored)
+            _upsert_coverage(db, phone, last_event_id, canal,
+                             cam.get(phone) or "Sem atendente", scored.get("produtos"))
         db.close()
         return JSONResponse(scored)
     except Exception as exc:
@@ -4293,7 +4323,7 @@ def run_score_scan(db, canal: str = "5519997733651", days: int = 30) -> dict:
     Used by the cron endpoint and by the weekly auto-score scheduler.
     """
     from app.crud import get_events_since, get_agent_mappings
-    from app.models import ConversationScore as _CS
+    from app.models import ConversationScore as _CS, ConversationCoverage as _CC
 
     if not settings.ANTHROPIC_API_KEY:
         return {"ok": False, "error": "ANTHROPIC_API_KEY not set"}
@@ -4329,9 +4359,12 @@ def run_score_scan(db, canal: str = "5519997733651", days: int = 30) -> dict:
         if not sorted_evs:
             continue
         last_event_id = str(sorted_evs[-1].id)
-        # Skip if already cached
+        # Skip só quando JÁ temos nota E cobertura no estado atual.
         cached = db.get(_CS, (phone, last_event_id))
-        if cached and cached.score_version == _SCORE_VERSION:
+        score_ok = bool(cached and cached.score_version == _SCORE_VERSION)
+        cov = db.get(_CC, (phone, last_event_id))
+        cov_ok = bool(cov and cov.cov_version == _COV_VERSION)
+        if score_ok and cov_ok:
             total_skipped += 1
             continue
         msg_tuples = []
@@ -4344,8 +4377,11 @@ def run_score_scan(db, canal: str = "5519997733651", days: int = 30) -> dict:
         if not msg_tuples:
             continue
         try:
+            # Uma única chamada devolve nota + produtos ofertados (custo-neutro).
             scored = _call_score_llm(_build_transcript(msg_tuples))
-            _upsert_score(db, phone, last_event_id, canal, scored)
+            if not score_ok:
+                _upsert_score(db, phone, last_event_id, canal, scored)
+            _upsert_coverage(db, phone, last_event_id, canal, agent, scored.get("produtos"))
             total_scored += 1
         except Exception:
             total_errors += 1
@@ -6026,6 +6062,14 @@ def dashboard_temas(request: Request, db: Session = Depends(get_db)):
         db, canal, _temas_since, 25000
     )
     _pautas_list = _get_pautas(db)
+    # Cobertura verificada por IA (varredura de domingo). Chave (phone, last_event_id).
+    cov_by_key: dict = {}
+    try:
+        from app.models import ConversationCoverage as _CCq
+        for _r in db.query(_CCq).filter(_CCq.canal == canal, _CCq.cov_version == _COV_VERSION).all():
+            cov_by_key[(_r.phone, _r.last_event_id)] = set(_r.produtos or [])
+    except Exception:
+        cov_by_key = {}
     db.close()  # release connection before heavy processing
 
     now_br = datetime.now(BRASILIA)
@@ -6268,33 +6312,58 @@ function pautaExcluir(id){
                 return kw
         return None
 
+    _epoch_t = datetime.min.replace(tzinfo=timezone.utc)
+    n_conv_ia = 0
+    n_conv_kw = 0
     for client_num, evs in groups.items():
         ph = _real_phone(client_num)
         agent = phone_learned.get(client_num) or client_agent_map.get(ph) or phone_learned.get(ph) or "Sem atendente"
         if agent == "Sem atendente" or not _user_sees(access, agent):
             continue
         agent_clients[agent].add(ph)
-        out_parts = []
-        for ev in evs:
-            _p = ev.raw_payload or {}
-            if (_extract_direction(_p) or "").upper() != "OUT":
+        # last_event_id (não-status) p/ casar com a cobertura verificada por IA.
+        nonstatus = sorted(
+            (e for e in evs if (e.raw_payload or {}).get("type", "").upper()
+             not in ("MESSAGE_STATUS", "CONVERSATION_STATUS") and e.received_at),
+            key=lambda e: e.received_at,
+        )
+        leid = str(nonstatus[-1].id) if nonstatus else ""
+        ai_prods = cov_by_key.get((ph, leid)) if leid else None
+
+        if ai_prods is not None:
+            # IA é autoritativa para este estado da conversa.
+            n_conv_ia += 1
+            for tid in ai_prods:
+                if tid in _seen_topic_client and ph not in _seen_topic_client[tid]:
+                    topic_data[tid][agent].add(ph)
+                    _seen_topic_client[tid].add(ph)
+                    topic_clients[tid].append({
+                        "phone": ph, "name": client_name_map.get(ph, ""), "agent": agent, "kw": "✓ IA"
+                    })
+        else:
+            # Fallback por palavra-chave (até a varredura de domingo classificar).
+            out_parts = []
+            for ev in evs:
+                _p = ev.raw_payload or {}
+                if (_extract_direction(_p) or "").upper() != "OUT":
+                    continue
+                t = _extract_content_preview(_p, max_len=2000) or ""
+                if t:
+                    out_parts.append(t)
+            if not out_parts:
                 continue
-            t = _extract_content_preview(_p, max_len=2000) or ""
-            if t:
-                out_parts.append(t)
-        if not out_parts:
-            continue
-        out_norm = _opp_norm(" ".join(out_parts))
-        for tid, tlabel, tcolor, keywords in TOPIC_RULES:
-            if ph in _seen_topic_client[tid]:
-                continue
-            mk = _first_topic_kw(out_norm, topic_kws_norm[tid])
-            if mk:
-                topic_data[tid][agent].add(ph)
-                _seen_topic_client[tid].add(ph)
-                topic_clients[tid].append({
-                    "phone": ph, "name": client_name_map.get(ph, ""), "agent": agent, "kw": mk
-                })
+            n_conv_kw += 1
+            out_norm = _opp_norm(" ".join(out_parts))
+            for tid, tlabel, tcolor, keywords in TOPIC_RULES:
+                if ph in _seen_topic_client[tid]:
+                    continue
+                mk = _first_topic_kw(out_norm, topic_kws_norm[tid])
+                if mk:
+                    topic_data[tid][agent].add(ph)
+                    _seen_topic_client[tid].add(ph)
+                    topic_clients[tid].append({
+                        "phone": ph, "name": client_name_map.get(ph, ""), "agent": agent, "kw": mk
+                    })
 
     # ── Known agents list ────────────────────────────────────────────────────
     known_agents = [a for a in AGENT_SEGMENT]
@@ -6480,7 +6549,11 @@ function pautaExcluir(id){
         '<span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>'
         '<h2 style="margin:0;font-size:15px">Cobertura da prateleira — o que cada assessor está oferecendo</h2></div>'
         f'<p style="font-size:11px;color:#5a6a8a;margin:0 0 14px">Conta só quando o <b>assessor</b> leva o produto ao cliente · {_period_label.lower()} · '
-        f'do menos pro mais coberto. Clique no nome na matriz abaixo para ver as conversas.</p>'
+        f'do menos pro mais coberto. Clique no nome na matriz abaixo para ver as conversas.<br>'
+        + (f'<span style="color:#0fa968">✓ {n_conv_ia} conversas verificadas por IA</span>'
+           + (f' · {n_conv_kw} por palavra-chave (IA classifica no scan de domingo)' if n_conv_kw else '')
+           if n_conv_ia else f'Detecção por palavra-chave — a verificação por IA roda na varredura de domingo.')
+        + '</p>'
         + ("".join(cov_cards) + cov_more if cov_cards else '<p style="color:#4a5a7a;text-align:center;padding:20px">Nenhum assessor com conversa no período.</p>')
         + (
             '<div style="margin-top:16px;padding-top:14px;border-top:1px solid #1a2540">'

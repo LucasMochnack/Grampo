@@ -165,6 +165,36 @@ class ConversationScore(Base):
     )
 
 
+class ConversationCoverage(Base):
+    """Cached AI verdict of which shelf products the ADVISOR offered in a
+    conversation (coaching/"Cobertura" view in the Temas tab).
+
+    Keyed by (phone, last_event_id) like the other caches. Populated by the
+    weekly score scan — it rides the same LLM call that scores the conversation,
+    so it costs no extra API calls. `produtos` is a JSON list of topic ids
+    (from TOPIC_RULES) the advisor proactively brought up. Until a conversation
+    has a row here, the Temas tab falls back to keyword matching.
+    """
+    __tablename__ = "conversation_coverage"
+
+    phone         = Column(String(32), primary_key=True)
+    last_event_id = Column(String(64), primary_key=True)
+    canal         = Column(String(32), nullable=True)
+    agent         = Column(String(120), nullable=True)
+    produtos      = Column(JSON, nullable=True)            # list[str] topic ids
+    cov_version   = Column(String(16), nullable=False, default="v1")
+    scored_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_conv_cov_canal", "canal"),
+        Index("ix_conv_cov_scored_at", "scored_at"),
+    )
+
+
 class ConversationAnalysis(Base):
     """Cached LLM verdict for "Sem Resposta" detection.
 
