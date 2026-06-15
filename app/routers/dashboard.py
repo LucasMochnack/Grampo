@@ -6247,44 +6247,53 @@ function pautaExcluir(id){
             + _empty + _form_html + "".join(_cards) + _pauta_js + "</div>"
         ) if (_cards or is_admin_t) else ""
 
-    # ── Build topic × agent matrix ───────────────────────────────────────────
-    # topic_data[topic_id][agent] = set of client phones that mentioned the topic
+    # ── Build topic × agent matrix (COBERTURA: só mensagens do ASSESSOR) ──────
+    # topic_data[topic_id][agent] = clientes a quem o ASSESSOR ofereceu o tema.
+    # Conta apenas mensagens OUT — o objetivo é "o assessor levou o produto?",
+    # não "o cliente perguntou". Texto normalizado (sem acento) p/ casar bem.
+    topic_kws_norm = {tid: [_opp_norm(k) for k in kws] for tid, _tl, _tc, kws in TOPIC_RULES}
     topic_data: dict[str, dict[str, set]] = {tid: defaultdict(set) for tid, *_ in TOPIC_RULES}
-    # Also store sample clients for drill-down: topic_clients[topic_id] = [(phone, name, agent, snippet)]
     topic_clients: dict[str, list] = {tid: [] for tid, *_ in TOPIC_RULES}
     _seen_topic_client: dict[str, set] = {tid: set() for tid, *_ in TOPIC_RULES}
+    agent_clients: dict[str, set] = defaultdict(set)   # clientes atendidos no período
+
+    def _first_topic_kw(text_norm, kws_norm):
+        for kw in kws_norm:
+            if not kw:
+                continue
+            if " " in kw or len(kw) > 5:
+                if kw in text_norm:
+                    return kw
+            elif _re.search(r"(?<![a-z0-9])" + _re.escape(kw) + r"(?![a-z0-9])", text_norm):
+                return kw
+        return None
 
     for client_num, evs in groups.items():
         ph = _real_phone(client_num)
         agent = phone_learned.get(client_num) or client_agent_map.get(ph) or phone_learned.get(ph) or "Sem atendente"
-        if not _user_sees(access, agent):
+        if agent == "Sem atendente" or not _user_sees(access, agent):
             continue
-        # Collect all message texts for this conversation
-        full_text = " ".join(
-            (_extract_content_preview(ev.raw_payload or {}) or "")
-            for ev in evs
-        ).lower()
-        if not full_text.strip():
+        agent_clients[agent].add(ph)
+        out_parts = []
+        for ev in evs:
+            _p = ev.raw_payload or {}
+            if (_extract_direction(_p) or "").upper() != "OUT":
+                continue
+            t = _extract_content_preview(_p, max_len=2000) or ""
+            if t:
+                out_parts.append(t)
+        if not out_parts:
             continue
+        out_norm = _opp_norm(" ".join(out_parts))
         for tid, tlabel, tcolor, keywords in TOPIC_RULES:
-            matched_kw = None
-            for kw in keywords:
-                # Multi-word phrases: substring match is precise enough
-                # Single short words (≤5 chars): require word boundary to avoid
-                # false positives like "fundo" in "profundo", "cri" in "crise"
-                if " " in kw or len(kw) > 5:
-                    hit = kw in full_text
-                else:
-                    hit = bool(_re.search(r'(?<![a-záéíóúàãõâêîôûçña-z])' + _re.escape(kw) + r'(?![a-záéíóúàãõâêîôûçña-z])', full_text))
-                if hit:
-                    matched_kw = kw
-                    break
-            if matched_kw and ph not in _seen_topic_client[tid]:
+            if ph in _seen_topic_client[tid]:
+                continue
+            mk = _first_topic_kw(out_norm, topic_kws_norm[tid])
+            if mk:
                 topic_data[tid][agent].add(ph)
                 _seen_topic_client[tid].add(ph)
-                name = client_name_map.get(ph, "")
                 topic_clients[tid].append({
-                    "phone": ph, "name": name, "agent": agent, "kw": matched_kw
+                    "phone": ph, "name": client_name_map.get(ph, ""), "agent": agent, "kw": mk
                 })
 
     # ── Known agents list ────────────────────────────────────────────────────
@@ -6402,29 +6411,84 @@ function pautaExcluir(id){
     _d30_cls = "active" if dias == 30 else ""
     _period_label = "Hoje" if dias == 1 else f"Últimos {dias} dias"
 
-    # ── Chart data (sorted by count desc) ────────────────────────────────────
-    chart_data = sorted(
-        [(tlabel, len(_seen_topic_client[tid]), tcolor) for tid, tlabel, tcolor, _ in TOPIC_RULES if _seen_topic_client[tid]],
-        key=lambda x: x[1], reverse=True
+    # ── COBERTURA DA PRATELEIRA — score por assessor + lacunas do time ───────
+    shelf = [(tid, tlabel, tcolor) for tid, tlabel, tcolor, _ in TOPIC_RULES]
+    shelf_n = len(shelf) or 1
+
+    def _offered(a):
+        return [tid for tid, _tl, _tc in shelf if topic_data[tid].get(a)]
+
+    # Assessores ATIVOS no período (tiveram conversa), do pior pro melhor coberto.
+    cov_agents = sorted(
+        agent_clients.keys(),
+        key=lambda a: (len(_offered(a)), -len(agent_clients[a]), _short_agent_name(a)),
     )
-    _chart_max = chart_data[0][1] if chart_data else 1
-    # CSS horizontal bars (no canvas needed)
-    _bars_html = ""
-    for _tlabel, _v, _tcolor in chart_data:
-        _pct = round(_v / _chart_max * 100, 1) if _chart_max > 0 else 0
-        _bars_html += (
-            f'<div style="display:grid;grid-template-columns:160px 1fr 52px;align-items:center;gap:14px;padding:5px 0">'
-            f'<div style="display:flex;align-items:center;gap:8px;font-size:11.5px;color:#c0c8d8;font-weight:600">'
-            f'<span style="width:8px;height:8px;border-radius:50%;background:{_tcolor};flex-shrink:0"></span>'
-            f'{html_mod.escape(_tlabel)}</div>'
-            f'<div style="height:18px;background:#141e35;border-radius:3px;overflow:hidden">'
-            f'<div style="width:{_pct}%;height:100%;background:{_tcolor};opacity:.85;border-radius:3px 0 0 3px"></div></div>'
-            f'<div style="text-align:right;font-size:13px;font-weight:700;color:#0fa968;'
-            f'font-family:\'JetBrains Mono\',monospace">{_v}</div>'
-            f'</div>'
+    n_adv = len(cov_agents)
+    team_offer = {tid: sum(1 for a in cov_agents if topic_data[tid].get(a)) for tid, _tl, _tc in shelf}
+
+    def _cov_color(pct):
+        return "#ef4444" if pct < 30 else ("#eab308" if pct < 60 else "#0fa968")
+
+    cov_cards = []
+    for a in cov_agents[:25]:
+        offered = set(_offered(a))
+        n_off = len(offered)
+        pct = round(100 * n_off / shelf_n)
+        col = _cov_color(pct)
+        counts = sorted(((len(topic_data[tid].get(a, ())), tlabel) for tid, tlabel, _tc in shelf), reverse=True)
+        tot = sum(c for c, _ in counts)
+        conc = (f'concentra <b>{round(100*counts[0][0]/tot)}%</b> em {html_mod.escape(counts[0][1])} · '
+                if (tot and counts[0][0] and n_off <= 3) else "")
+        gaps = [tlabel for tid, tlabel, _tc in shelf if tid not in offered]
+        gaps_html = (f'<span style="color:#ef4444">{html_mod.escape(" · ".join(gaps[:8]))}'
+                     + (f' +{len(gaps)-8}' if len(gaps) > 8 else "") + '</span>') if gaps else '<span style="color:#0fa968">cobre a prateleira toda</span>'
+        cov_cards.append(
+            '<div class="card" style="margin-bottom:10px;padding:11px 14px">'
+            '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">'
+            f'<span style="width:150px;flex:none;font-size:13px;font-weight:600;color:#e8ecf1">{html_mod.escape(_short_agent_name(a))}</span>'
+            '<div style="flex:1;height:8px;background:#0b1120;border-radius:4px;overflow:hidden">'
+            f'<div style="width:{max(pct,3)}%;height:100%;background:{col}"></div></div>'
+            f'<span style="flex:none;font-size:13px;font-weight:700;color:{col}">{n_off}/{shelf_n} produtos</span>'
+            f'<span style="flex:none;font-size:11px;color:#5a6a8a">{len(agent_clients[a])} clientes</span></div>'
+            f'<div style="font-size:12px;color:#8a96aa">{conc}nunca ofereceu: {gaps_html}</div></div>'
         )
-    if not _bars_html:
-        _bars_html = '<p style="color:#4a5a7a;text-align:center;padding:20px">Nenhum tema identificado no período.</p>'
+    cov_more = f'<div style="font-size:11px;color:#5a6a8a;margin-top:4px">+ {n_adv-25} assessores</div>' if n_adv > 25 else ""
+
+    # Lacunas do time: produtos que poucos assessores oferecem.
+    gap_threshold = max(1, round(n_adv * 0.25))
+    team_gaps = sorted(((tid, tlabel, tcolor) for tid, tlabel, tcolor in shelf), key=lambda s: team_offer[s[0]])
+    _gap_rows = ""
+    for tid, tlabel, tcolor in team_gaps[:6]:
+        no = team_offer[tid]
+        pct = round(100 * no / n_adv) if n_adv else 0
+        gc = "#ef4444" if pct < 15 else ("#eab308" if pct < 35 else "#0fa968")
+        _gap_rows += (
+            '<div style="display:flex;align-items:center;gap:10px;font-size:13px;padding:3px 0">'
+            f'<span style="width:150px;flex:none">{html_mod.escape(tlabel)}</span>'
+            '<div style="flex:1;height:7px;background:#0b1120;border-radius:4px;overflow:hidden">'
+            f'<div style="width:{max(pct,2)}%;height:100%;background:{gc}"></div></div>'
+            f'<span style="width:150px;flex:none;text-align:right;color:#8a96aa">{no} de {n_adv} assessores</span></div>'
+        )
+
+    cov_avg = (sum(len(_offered(a)) for a in cov_agents) / n_adv) if n_adv else 0
+    n_neglected = sum(1 for tid, _tl, _tc in shelf if team_offer[tid] <= gap_threshold)
+    narrowest = cov_agents[0] if cov_agents else None
+
+    cobertura_html = (
+        '<div class="card" style="margin-bottom:20px">'
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">'
+        '<span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>'
+        '<h2 style="margin:0;font-size:15px">Cobertura da prateleira — o que cada assessor está oferecendo</h2></div>'
+        f'<p style="font-size:11px;color:#5a6a8a;margin:0 0 14px">Conta só quando o <b>assessor</b> leva o produto ao cliente · {_period_label.lower()} · '
+        f'do menos pro mais coberto. Clique no nome na matriz abaixo para ver as conversas.</p>'
+        + ("".join(cov_cards) + cov_more if cov_cards else '<p style="color:#4a5a7a;text-align:center;padding:20px">Nenhum assessor com conversa no período.</p>')
+        + (
+            '<div style="margin-top:16px;padding-top:14px;border-top:1px solid #1a2540">'
+            '<div style="font-size:13px;font-weight:600;color:#e8ecf1;margin-bottom:10px">⚠ Lacunas do time — produtos que quase ninguém oferece</div>'
+            + _gap_rows + '</div>' if (_gap_rows and n_adv) else ""
+        )
+        + '</div>'
+    )
 
     page = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Temas — Alto Valor</title>{COMMON_CSS}
@@ -6457,30 +6521,22 @@ function toggleDrill(id) {{
   {pautas_html}
 
   <div class="kpi-row">
-    <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{sum(d[1] for d in chart_data)}</div><div class="label">Ocorrências totais</div></div>
-    <div class="kpi" style="border-top:3px solid #0fa968"><div class="val">{len(chart_data)}</div><div class="label">Temas com dados</div></div>
-    <div class="kpi" style="border-top:3px solid {'#d4af37' if chart_data else '#1a2540'}"><div class="val" style="font-size:14px;color:#d4af37">{chart_data[0][0] if chart_data else '—'}</div><div class="label">Tema mais frequente</div></div>
+    <div class="kpi" style="border-top:3px solid {_cov_color(round(100*cov_avg/shelf_n)) if n_adv else '#1a2540'}"><div class="val">{cov_avg:.1f}<span style="font-size:15px;color:#5a6a8a"> / {shelf_n}</span></div><div class="label">Cobertura média por assessor</div></div>
+    <div class="kpi" style="border-top:3px solid {'#ef4444' if n_neglected else '#0fa968'}"><div class="val">{n_neglected}</div><div class="label">Produtos negligenciados pelo time</div></div>
+    <div class="kpi" style="border-top:3px solid #d4af37"><div class="val" style="font-size:14px;color:#d4af37">{html_mod.escape(_short_agent_name(narrowest)) if narrowest else '—'}</div><div class="label">Assessor mais estreito</div></div>
   </div>
 
-  <!-- Bar chart -->
-  <div class="card" style="margin-bottom:20px">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
-      <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
-      <h2 style="margin:0;font-size:15px">Ocorrências por tema</h2>
-      <span style="font-size:11px;color:#5a6a8a">clientes únicos · {_period_label.lower()}</span>
-    </div>
-    <div style="display:flex;flex-direction:column;gap:2px">{_bars_html}</div>
-  </div>
+  {cobertura_html}
 
-  <!-- Table -->
+  <!-- Matriz detalhada -->
   <div class="card">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
       <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
-      <h2 style="margin:0;font-size:15px">Heatmap — Temas × Agentes</h2>
-      <span style="font-size:11px;color:#5a6a8a">clientes únicos por tema</span>
+      <h2 style="margin:0;font-size:15px">Matriz — produtos oferecidos por assessor</h2>
+      <span style="font-size:11px;color:#5a6a8a">nº de clientes a quem o assessor ofereceu · {_period_label.lower()}</span>
     </div>
     <p style="font-size:11px;color:#4a5a7a;margin-bottom:16px">
-      Clique em uma linha para ver os clientes por tema.
+      Clique numa linha para ver os clientes por tema.
     </p>
     <div class="temas-scroll">
       <table>
