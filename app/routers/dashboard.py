@@ -442,7 +442,7 @@ def _parse_accesses_json(raw: str) -> list[dict]:
         pw = item.get("password")
         if not pw or not isinstance(pw, str):
             continue
-        role = item.get("role") if item.get("role") in ("admin", "viewer") else "viewer"
+        role = item.get("role") if item.get("role") in ("admin", "viewer", "gestor") else "viewer"
         agents = item.get("agents") or []
         if not isinstance(agents, list):
             agents = []
@@ -469,7 +469,7 @@ def _save_accesses(db: Session, accesses: list[dict]) -> None:
         pw = (a.get("password") or "").strip()
         if not pw:
             continue
-        role = a.get("role") if a.get("role") in ("admin", "viewer") else "viewer"
+        role = a.get("role") if a.get("role") in ("admin", "viewer", "gestor") else "viewer"
         agents = a.get("agents") or []
         if not isinstance(agents, list):
             agents = []
@@ -561,8 +561,8 @@ def _user_sees(access: dict | None, agent_name: str) -> bool:
     """Return True if the access is allowed to view the given agent."""
     if not access:
         return False
-    if access.get("role") == "admin":
-        return True
+    if access.get("role") in ("admin", "gestor"):
+        return True   # gestor vê todos os agentes, mas não acessa páginas de admin
     allowed = access.get("agents") or []
     if not allowed:
         return False
@@ -2322,13 +2322,16 @@ def dashboard_acessos(request: Request, db: Session = Depends(get_db)):
                     '</div>' +
                   '</div>' +
                   '<div><label>Papel</label><select onchange="accesses[' + i + '].role=this.value;render()">' +
-                    '<option value="viewer"' + (role==='viewer'?' selected':'') + '>Viewer</option>' +
+                    '<option value="viewer"' + (role==='viewer'?' selected':'') + '>Viewer (agentes específicos)</option>' +
+                    '<option value="gestor"' + (role==='gestor'?' selected':'') + '>Gestor (vê tudo, sem admin)</option>' +
                     '<option value="admin"' + (role==='admin'?' selected':'') + '>Admin</option>' +
                   '</select></div>' +
                   '<div style="display:flex;align-items:flex-end;justify-content:flex-end"><button type="button" class="btn-del" onclick="delRow(' + i + ')">Remover</button></div>' +
                 '</div>' +
                 (role === 'admin'
                     ? '<p style="font-size:11px;color:#c4b5fd;margin:0">Admin vê <strong>todos</strong> os agentes e pode gerenciar acessos.</p>'
+                    : role === 'gestor'
+                    ? '<p style="font-size:11px;color:#6ee7b7;margin:0">Gestor vê <strong>todos</strong> os agentes e todas as abas, mas <strong>não</strong> acessa as páginas de admin (Acessos, Diagnóstico).</p>'
                     : '<div><label>Agentes visíveis <span style="color:#4a5a7a;text-transform:none;letter-spacing:0;font-weight:500">(' + (a.agents ? a.agents.length : 0) + ' selecionados)</span></label><div class="agents-grid">' + agentsHtml + '</div></div>');
             list.appendChild(row);
         }});
