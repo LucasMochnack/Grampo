@@ -2582,6 +2582,7 @@ def _nav_html(active: str, extra: str = "", canal: str = "", unacked_alerts: int
   <div class="nav-group">
     <div class="nav-group-label">ANÁLISE</div>
     {_ni("temas", "Temas", f"/dashboard/temas{canal_qs}")}
+    {_ni("clientes", "Clientes", f"/dashboard/clientes{canal_qs}")}
     {_ni("avaliacao", "Avaliação Agentes", f"/dashboard/avaliacao-agentes{canal_qs}")}
     {_ni("evolucao", "Evolução", f"/dashboard/evolucao{canal_qs}")}
     {_ni("mensagens", "Mensagens iniciais", f"/dashboard/mensagens{canal_qs}")}
@@ -6627,6 +6628,224 @@ function toggleDrill(id) {{
 </body></html>"""
 
     return HTMLResponse(page)
+
+
+# ── Clientes — carteira por assessor com resumo do último atendimento ─────────
+
+def _clientes_data(db, access, canal: str, dias: int) -> list:
+    """Linhas (assessor × cliente) com o resumo do último atendimento.
+
+    Reaproveita o `resumo`/`motivo`/`nota` que a avaliação semanal já gerou
+    (sem custo de IA). Para clientes ainda não avaliados, cai num preview da
+    última mensagem. Uma linha por cliente, com a atividade mais recente do
+    período selecionado."""
+    from app.models import ConversationScore as _CS
+    cutoff30 = (datetime.now(BRASILIA) - timedelta(days=30)).replace(
+        hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    all_events, _cg, _cpl, cam, cnm = _load_period_pipeline(db, canal, cutoff30, 25000)
+    # Resumo mais recente por telefone (avaliação roda no domingo).
+    sc_window = (datetime.now(BRASILIA) - timedelta(days=45)).astimezone(timezone.utc)
+    sc_by_phone: dict = {}
+    for s in (db.query(_CS).filter(_CS.canal == canal, _CS.scored_at >= sc_window)
+              .order_by(_CS.scored_at.asc()).all()):
+        sc_by_phone[s.phone] = {
+            "resumo": (s.resumo or "").strip(),
+            "motivo": (s.motivo or "").strip(),
+            "nota": s.nota if (s.nota is not None and s.nota >= 0) else None,
+        }
+    db.close()
+
+    now_br = datetime.now(BRASILIA)
+    if dias == 1:
+        period_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
+    else:
+        period_start = (now_br - timedelta(days=dias - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    cp = _real_phone(canal)
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
+    rows = []
+    for client_num, evs in _cg.items():
+        ph = _real_phone(client_num)
+        if ph == cp:
+            continue
+        agent = _cpl.get(client_num) or cam.get(ph) or _cpl.get(ph) or "Sem atendente"
+        if agent == "Sem atendente" or not _user_sees(access, agent):
+            continue
+        evs_sorted = sorted((e for e in evs if e.received_at), key=lambda e: e.received_at)
+        last_ts = evs_sorted[-1].received_at if evs_sorted else None
+        if not last_ts or last_ts.astimezone(BRASILIA) < period_start:
+            continue
+        sc = sc_by_phone.get(ph) or {}
+        resumo = sc.get("resumo") or ""
+        if not resumo:
+            for e in reversed(evs_sorted):
+                t = _extract_content_preview(e.raw_payload or {}) or ""
+                if t and not t.startswith("["):
+                    resumo = "(sem resumo da IA) " + t[:140]
+                    break
+        rows.append({
+            "agente": agent,
+            "cliente": cnm.get(ph, "") or ph,
+            "telefone": ph,
+            "ultimo_dt": last_ts.astimezone(BRASILIA),
+            "ultimo_str": last_ts.astimezone(BRASILIA).strftime("%d/%m/%Y %H:%M"),
+            "motivo": sc.get("motivo") or "",
+            "resumo": resumo,
+            "nota": sc.get("nota"),
+        })
+    rows.sort(key=lambda r: (_short_agent_name(r["agente"]).lower(), -(r["ultimo_dt"] or _epoch.astimezone(BRASILIA)).timestamp()))
+    return rows
+
+
+@router.get("/dashboard/clientes", response_class=HTMLResponse, include_in_schema=False)
+def dashboard_clientes(request: Request, db: Session = Depends(get_db)):
+    access = _get_access(request, db)
+    if access is None:
+        return _auth_redirect()
+    canal = request.query_params.get("canal", "5519997733651")
+    _draw = request.query_params.get("dias", "7")
+    dias = int(_draw) if _draw.isdigit() and int(_draw) in (1, 7, 15, 30) else 7
+
+    rows = _clientes_data(db, access, canal, dias)
+    agents = sorted({r["agente"] for r in rows}, key=lambda a: _short_agent_name(a).lower())
+
+    _base = f"canal={canal}"
+    _seg = "".join(
+        f'<a href="?{_base}&dias={d}" class="{"active" if dias == d else ""}">{("Hoje" if d == 1 else str(d)+" dias")}</a>'
+        for d in (1, 7, 15, 30)
+    )
+    ag_opts = '<option value="">Todos os assessores</option>' + "".join(
+        f'<option value="{html_mod.escape(_short_agent_name(a))}">{html_mod.escape(_short_agent_name(a))}</option>' for a in agents)
+
+    body_rows = ""
+    for r in rows:
+        nota = r["nota"]
+        nota_html = (f'<span style="font-weight:700;color:{"#0fa968" if nota>=7 else "#eab308" if nota>=5 else "#ef4444"}">{nota}</span>'
+                     if nota is not None else '<span style="color:#3a4a6a">—</span>')
+        motivo_html = f'<span style="color:#c0c8d8">{html_mod.escape(r["motivo"])}</span>' if r["motivo"] else '<span style="color:#3a4a6a">—</span>'
+        body_rows += (
+            f'<tr data-agente="{html_mod.escape(_short_agent_name(r["agente"]))}">'
+            f'<td style="white-space:nowrap;font-weight:600;color:#e8ecf1">{html_mod.escape(_short_agent_name(r["agente"]))}</td>'
+            f'<td style="white-space:nowrap">{html_mod.escape(r["cliente"])}</td>'
+            f'<td style="white-space:nowrap;font-family:\'JetBrains Mono\',monospace;font-size:11px;color:#8a96aa">{r["ultimo_str"]}</td>'
+            f'<td>{motivo_html}</td>'
+            f'<td style="color:#c0c8d8;line-height:1.45">{html_mod.escape(r["resumo"])}</td>'
+            f'<td style="text-align:center">{nota_html}</td></tr>'
+        )
+    if not body_rows:
+        body_rows = '<tr><td colspan="6" style="text-align:center;color:#4a5a7a;padding:40px">Nenhum cliente com atividade no período.</td></tr>'
+
+    export_href = f"/dashboard/clientes/export?{_base}&dias={dias}"
+    page = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Clientes — Alto Valor</title>{COMMON_CSS}
+<style>
+  .cli-table th{{position:sticky;top:0;background:#0b1120;z-index:1}}
+  .cli-table td{{vertical-align:top}}
+</style>
+</head><body>
+{_nav_html("clientes", canal=canal, is_admin=(access or {}).get('role')=='admin', title="Clientes")}
+<div class="container">
+  <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;flex-wrap:wrap">
+    <div class="period-btns">{_seg}</div>
+    <span style="color:#4a5a7a;font-size:12px">{len(rows)} clientes · resumo do último atendimento</span>
+    <a href="{export_href}" style="margin-left:auto;background:#0fa968;color:#04150c;font-weight:700;font-size:12px;text-decoration:none;padding:8px 16px;border-radius:8px">&#11015; Exportar Excel</a>
+  </div>
+  <p style="font-size:11px;color:#5a6a8a;margin:0 0 14px">O resumo vem da avaliação automática de domingo. Clientes ainda não avaliados mostram um trecho da última mensagem.</p>
+
+  <div class="card" style="margin-bottom:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+    <input id="cli-q" oninput="cliFilter()" placeholder="Buscar cliente, assessor ou assunto..." style="flex:1;min-width:220px;background:#0b1120;border:1px solid #1a2540;border-radius:8px;color:#e8ecf1;padding:9px 12px;font-size:13px">
+    <select id="cli-ag" onchange="cliFilter()" style="background:#0b1120;border:1px solid #1a2540;border-radius:8px;color:#e8ecf1;padding:9px 12px;font-size:13px">{ag_opts}</select>
+  </div>
+
+  <div class="card">
+    <div class="temas-scroll" style="overflow-x:auto">
+      <table class="cli-table" style="width:100%">
+        <thead><tr>
+          <th style="min-width:130px">Assessor</th>
+          <th style="min-width:150px">Cliente</th>
+          <th style="min-width:120px">Último contato</th>
+          <th style="min-width:120px">Motivo</th>
+          <th style="min-width:280px">Resumo do atendimento</th>
+          <th style="text-align:center">Nota</th>
+        </tr></thead>
+        <tbody id="cli-body">{body_rows}</tbody>
+      </table>
+    </div>
+  </div>
+</div>
+<script>
+function cliFilter(){{
+  var q=(document.getElementById('cli-q').value||'').toLowerCase();
+  var ag=document.getElementById('cli-ag').value;
+  var n=0;
+  document.querySelectorAll('#cli-body tr').forEach(function(tr){{
+    if(!tr.dataset.agente){{return;}}
+    var okAg=!ag||tr.dataset.agente===ag;
+    var okQ=!q||tr.textContent.toLowerCase().indexOf(q)>=0;
+    var show=okAg&&okQ; tr.style.display=show?'':'none'; if(show)n++;
+  }});
+}}
+</script>
+</body></html>"""
+    return HTMLResponse(page)
+
+
+@router.get("/dashboard/clientes/export", include_in_schema=False)
+def dashboard_clientes_export(request: Request, db: Session = Depends(get_db)):
+    """Exporta a tabela de Clientes em .xlsx (fallback CSV se openpyxl faltar)."""
+    from fastapi.responses import StreamingResponse
+    access = _get_access(request, db)
+    if access is None:
+        return RedirectResponse("/dashboard/login", status_code=302)
+    canal = request.query_params.get("canal", "5519997733651")
+    _draw = request.query_params.get("dias", "7")
+    dias = int(_draw) if _draw.isdigit() and int(_draw) in (1, 7, 15, 30) else 7
+
+    rows = _clientes_data(db, access, canal, dias)
+    headers = ["Assessor", "Cliente", "Telefone", "Último contato", "Motivo", "Resumo do atendimento", "Nota"]
+    stamp = datetime.now(BRASILIA).strftime("%Y%m%d_%H%M")
+    fname = f"clientes_{dias}d_{stamp}"
+
+    def _r(r):
+        return [_short_agent_name(r["agente"]), r["cliente"], r["telefone"], r["ultimo_str"],
+                r["motivo"], r["resumo"], (r["nota"] if r["nota"] is not None else "")]
+
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, Alignment, PatternFill
+        from openpyxl.utils import get_column_letter
+        wb = Workbook(); ws = wb.active; ws.title = "Clientes"
+        ws.append(headers)
+        for r in rows:
+            ws.append(_r(r))
+        hdr_fill = PatternFill("solid", fgColor="0B1120")
+        for c in ws[1]:
+            c.font = Font(bold=True, color="FFFFFF"); c.fill = hdr_fill
+            c.alignment = Alignment(vertical="center")
+        ws.freeze_panes = "A2"
+        if rows:
+            ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(rows)+1}"
+        for i, w in enumerate([24, 26, 15, 17, 22, 70, 7], start=1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+        for row in ws.iter_rows(min_row=2, min_col=6, max_col=6):
+            row[0].alignment = Alignment(wrap_text=True, vertical="top")
+        buf = io.BytesIO(); wb.save(buf); buf.seek(0)
+        return StreamingResponse(
+            buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{fname}.xlsx"'})
+    except ImportError:
+        # Fallback CSV (UTF-8 BOM p/ Excel) caso openpyxl não esteja instalado.
+        def _csz(v):
+            s = str(v)
+            return ("'" + s) if s[:1] in ("=", "+", "-", "@") else s   # anti-injeção de fórmula
+        output = io.StringIO(); output.write("﻿")
+        writer = csv.writer(output, delimiter=";")
+        writer.writerow(headers)
+        for r in rows:
+            writer.writerow([_csz(x) for x in _r(r)])
+        output.seek(0)
+        return StreamingResponse(
+            iter([output.getvalue()]), media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{fname}.csv"'})
 
 
 # ── Alertas Dashboard ─────────────────────────────────────────────────────────

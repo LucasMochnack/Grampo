@@ -22,3 +22,6 @@ openai==1.82.0
 
 # Conversation analysis ("Sem Resposta" — Claude Sonnet 4.6)
 anthropic==0.105.2
+
+# Excel export (aba Clientes)
+openpyxl==3.1.5
