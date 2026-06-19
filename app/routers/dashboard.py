@@ -2579,6 +2579,7 @@ _PAGE_TITLES: dict[str, str] = {
     "mensagens":  "Mensagens Iniciais",
     "alertas":    "Alertas",
     "sem-resposta": "Sem Resposta",
+    "copiloto":   "Copiloto IA",
     "oportunidades": "Oportunidades",
     "temas":      "Temas",
     "evolucao":   "Evolução",
@@ -2627,6 +2628,7 @@ def _nav_html(active: str, extra: str = "", canal: str = "", unacked_alerts: int
     {_ni("conversas", "Conversas", f"/dashboard{canal_qs}", unacked_b)}
     <a href="/dashboard/alertas{canal_qs}" class="nav-item {'active' if active == 'alertas' else ''}">Alertas{acked_b_html}</a>
     {_ni("sem-resposta", "Sem Resposta", f"/dashboard/sem-resposta{canal_qs}")}
+    {_ni("copiloto", "Copiloto IA", f"/dashboard/copiloto{canal_qs}")}
     {_ni("oportunidades", "Oportunidades", f"/dashboard/oportunidades{canal_qs}")}
     {_ni("agentes", "Agentes", f"/dashboard/agentes{canal_qs}")}
   </div>
@@ -5821,11 +5823,17 @@ def suggest_reply_endpoint(request: Request, body: dict = Body(default={}), db: 
     # miss conversations on other lines like Mesa RV / Expansão).
     canal   = (body.get("canal") or "").strip()
     reason  = (body.get("reason") or "").strip()
+    last_event_id = (body.get("lastEventId") or "").strip()
 
     if not phone:
         return JSONResponse({"error": "missing phone"}, status_code=400)
 
     from app.services import llm_budget as _llm
+    # Cache hit (por telefone + último evento): devolve sem consumir o teto de IA.
+    if last_event_id:
+        _cached = _get_sugg_cache(db).get(f"{phone}|{last_event_id}")
+        if _cached:
+            return JSONResponse({"suggestion": _cached, "cached": True})
     if not _llm.try_consume(db):
         return JSONResponse({"suggestion": "Limite diário de IA atingido — tente novamente amanhã."})
 
@@ -5871,6 +5879,17 @@ def suggest_reply_endpoint(request: Request, body: dict = Body(default={}), db: 
         return JSONResponse({"suggestion": "Não foi possível carregar o histórico da conversa."})
 
     suggestion = _suggest_reply(msg_tuples, reason=reason)
+    # Cacheia p/ reuso gratuito (Copiloto reabre sem reprocessar). Sessão nova
+    # porque o db da request já foi fechado acima.
+    if last_event_id and suggestion and not suggestion.startswith(("Não foi", "Limite")):
+        from app.database import SessionLocal as _SL
+        _db2 = _SL()
+        try:
+            _c = _get_sugg_cache(_db2)
+            _c[f"{phone}|{last_event_id}"] = suggestion
+            _save_sugg_cache(_db2, _c)
+        finally:
+            _db2.close()
     return JSONResponse({"suggestion": suggestion})
 
 
@@ -7036,6 +7055,395 @@ def dashboard_clientes_export(request: Request, db: Session = Depends(get_db)):
         return StreamingResponse(
             iter([output.getvalue()]), media_type="text/csv; charset=utf-8",
             headers={"Content-Disposition": f'attachment; filename="{fname}.csv"'})
+
+
+# ── Copiloto IA — v1 do atendimento assistido por IA ─────────────────────────
+# Um grupo de clientes (telefones) definido pelo usuário é "atendido via
+# plataforma". Para cada conversa, a IA sugere uma resposta SOB DEMANDA, com
+# cache por (telefone, último evento) para não reprocessar nem estourar o teto
+# diário de IA. O assessor revisa, edita e envia pela Zenvia. Base do futuro
+# atendimento automático — nada é enviado sozinho nesta versão.
+
+_COPILOTO_PHONES_KEY = "copiloto_phones"
+_COPILOTO_SUGG_KEY   = "copiloto_sugg_cache"
+_COPILOTO_SUGG_MAX   = 800   # limita o tamanho do cache de sugestões
+
+
+def _normalize_phone_digits(raw: str) -> str:
+    """Só dígitos; garante o código do país (55) para casar com o formato dos
+    eventos (ex.: '5511991468874')."""
+    import re as _re
+    d = _re.sub(r"\D", "", raw or "")
+    if not d:
+        return ""
+    if not d.startswith("55") and len(d) in (10, 11):
+        d = "55" + d
+    return d
+
+
+def _parse_phone_list(text: str) -> list[str]:
+    """Lê um bloco colado (um cliente por linha; aceita 'Nome - 5511...' ou
+    '(11) 99999-9999'). Devolve telefones normalizados, sem duplicar, em ordem."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for line in (text or "").splitlines():
+        d = _normalize_phone_digits(line)
+        if len(d) >= 12 and d not in seen:   # 55 + 10/11 dígitos
+            seen.add(d)
+            out.append(d)
+    return out
+
+
+def _fmt_phone_br(p: str) -> str:
+    import re as _re
+    d = _re.sub(r"\D", "", p or "")
+    if d.startswith("55"):
+        d = d[2:]
+    if len(d) == 11:
+        return f"({d[:2]}) {d[2:7]}-{d[7:]}"
+    if len(d) == 10:
+        return f"({d[:2]}) {d[2:6]}-{d[6:]}"
+    return p
+
+
+def _get_copiloto_phones(db) -> list[str]:
+    import json as _json
+    from app.crud import get_setting
+    raw = get_setting(db, _COPILOTO_PHONES_KEY)
+    if not raw:
+        return []
+    try:
+        v = _json.loads(raw)
+        return [str(x) for x in v] if isinstance(v, list) else []
+    except Exception:
+        return []
+
+
+def _save_copiloto_phones(db, phones: list[str]) -> None:
+    import json as _json
+    from app.crud import set_setting
+    set_setting(db, _COPILOTO_PHONES_KEY, _json.dumps(phones))
+
+
+def _get_sugg_cache(db) -> dict:
+    import json as _json
+    from app.crud import get_setting
+    raw = get_setting(db, _COPILOTO_SUGG_KEY)
+    if not raw:
+        return {}
+    try:
+        v = _json.loads(raw)
+        return v if isinstance(v, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_sugg_cache(db, cache: dict) -> None:
+    import json as _json
+    from app.crud import set_setting
+    if len(cache) > _COPILOTO_SUGG_MAX:   # mantém as entradas mais recentes
+        cache = dict(list(cache.items())[-_COPILOTO_SUGG_MAX:])
+    set_setting(db, _COPILOTO_SUGG_KEY, _json.dumps(cache, ensure_ascii=False))
+
+
+def _copiloto_data(db, access, phones: list[str], sugg_cache: dict):
+    """Devolve (conversas, telefones_sem_conversa) para o grupo gerenciado.
+
+    Faz uma query fresca (extrai tudo p/ dicts antes de fechar a sessão, evitando
+    DetachedInstanceError) e escopa por _user_sees. Conversas com o cliente
+    aguardando resposta (última msg IN) vêm primeiro."""
+    import re as _re
+    if not phones:
+        return [], []
+    managed = set(phones)
+    managed_suffix = {p[-11:] for p in phones if len(p) >= 11}
+
+    from app.crud import get_events_since, get_agent_mappings, get_client_names
+    cutoff_utc = (datetime.now(BRASILIA) - timedelta(days=30)).replace(
+        hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    raw_evs = get_events_since(db, since=cutoff_utc, limit=60000)
+    raw_evs = _filter_events_by_channel(raw_evs, "")   # todos os canais
+    cam = get_agent_mappings(db)
+    cnm = get_client_names(db)
+    groups_orm, phone_learned = _group_events(raw_evs, cam)
+    _epoch = datetime.min.replace(tzinfo=timezone.utc)
+
+    found: set[str] = set()
+    convos: list[dict] = []
+    for key, evs in groups_orm.items():
+        phone = _real_phone(key)
+        pd = _re.sub(r"\D", "", phone)
+        if not (pd in managed or pd[-11:] in managed_suffix):
+            continue
+        msg_evs = [e for e in evs if (e.raw_payload or {}).get("type", "").upper()
+                   not in ("MESSAGE_STATUS", "CONVERSATION_STATUS")]
+        if not msg_evs:
+            continue
+        msg_evs.sort(key=lambda e: e.received_at or _epoch)
+        last_ev = msg_evs[-1]
+        if not last_ev.received_at:
+            continue
+        agent = (phone_learned.get(key) or cam.get(phone)
+                 or phone_learned.get(phone) or "Sem atendente")
+        if not _user_sees(access, agent):
+            continue
+        last_dir = _extract_direction(last_ev.raw_payload or {})
+        last_text = _extract_content_preview(last_ev.raw_payload or {}, max_len=400) or ""
+        conv_id = ""
+        contact_name = ""
+        for ev in msg_evs:
+            _p = ev.raw_payload or {}
+            _cid = (_p.get("conversation") or {}).get("id") or ""
+            if _cid:
+                conv_id = _cid
+            if not contact_name:
+                _cn = _extract_contact_name(_p)
+                if _cn:
+                    contact_name = _cn
+        last_event_id = str(last_ev.id)
+        found.add(pd if pd in managed else next((p for p in phones if p[-11:] == pd[-11:]), pd))
+        convos.append({
+            "phone":         phone,
+            "agent":         agent,
+            "client_name":   cnm.get(phone, "") or contact_name or _fmt_phone_br(phone),
+            "last_text":     last_text,
+            "last_dir":      last_dir,
+            "last_ts":       last_ev.received_at.astimezone(BRASILIA),
+            "last_ts_str":   last_ev.received_at.astimezone(BRASILIA).strftime("%d/%m %H:%M"),
+            "last_event_id": last_event_id,
+            "conv_id":       conv_id,
+            "waiting":       last_dir == "IN",
+            "suggestion":    sugg_cache.get(f"{phone}|{last_event_id}", ""),
+        })
+    db.close()
+    missing = [p for p in phones if p not in found]
+    convos.sort(key=lambda c: (0 if c["waiting"] else 1, -c["last_ts"].timestamp()))
+    return convos, missing
+
+
+_COP_CSS = """
+.cop-hero{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:12px}
+.cop-beta{font-size:10px;font-weight:800;letter-spacing:.1em;background:rgba(91,155,255,.18);color:#8fb6ff;padding:2px 8px;border-radius:999px;vertical-align:middle;margin-left:8px}
+.cop-card{background:#0f1629;border:1px solid #1a2540;border-radius:12px;padding:15px 17px;margin-bottom:12px}
+.cop-card.cop-pending{border-left:3px solid #f2b007}
+.cop-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px}
+.cop-name{font-weight:700;color:#e8ecf1;font-size:14px}
+.cop-meta{font-size:11px;color:#8a96aa}
+.cop-badge{font-size:10px;font-weight:700;padding:2px 8px;border-radius:999px;letter-spacing:.03em}
+.cop-badge.wait{background:rgba(242,176,7,.15);color:#f2b007}
+.cop-badge.ok{background:rgba(15,169,104,.15);color:#0fa968}
+.cop-msg{background:#0b1120;border:1px solid #131c33;border-radius:8px;padding:9px 12px;font-size:12.5px;color:#c0c8d8;line-height:1.45;margin-bottom:10px}
+.cop-msg .who{font-weight:700;color:#8a96aa;margin-right:6px}
+.cop-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.cop-btn{background:#0fa968;color:#04150c;font-weight:700;font-size:12px;border:none;border-radius:8px;padding:8px 14px;cursor:pointer}
+.cop-btn.ghost{background:#16203a;color:#c8d2e8;border:1px solid #243152}
+.cop-btn[disabled]{opacity:.55;cursor:default}
+.cop-sugg{width:100%;min-height:84px;margin-top:10px;background:#0b1120;border:1px solid #243152;border-radius:8px;color:#e8ecf1;padding:10px 12px;font-size:13px;line-height:1.5;font-family:inherit;resize:vertical}
+.cop-sw{gap:8px;margin-top:8px;align-items:center}
+.cop-zenvia{background:#16203a;color:#5b9bff;text-decoration:none;font-weight:600;font-size:12px;padding:8px 14px;border-radius:8px;border:1px solid #243152}
+.cop-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:#0fa968;color:#04150c;font-weight:700;font-size:13px;padding:10px 18px;border-radius:10px;opacity:0;transition:all .25s;z-index:9999;pointer-events:none}
+.cop-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+"""
+
+_COP_JS = """
+function copToast(msg){
+  var t=document.getElementById('copToast');
+  if(!t){ t=document.createElement('div'); t.id='copToast'; t.className='cop-toast'; document.body.appendChild(t); }
+  t.textContent=msg; t.classList.add('show');
+  clearTimeout(t._h); t._h=setTimeout(function(){ t.classList.remove('show'); },2800);
+}
+async function copGerar(i){
+  var card=document.getElementById('cop-'+i); if(!card) return '';
+  var ta=document.getElementById('sugg-'+i), btn=document.getElementById('btn-'+i), sw=document.getElementById('sw-'+i);
+  var prev=btn?btn.textContent:'';
+  if(btn){ btn.disabled=true; btn.textContent='Gerando…'; }
+  try{
+    var r=await fetch('/dashboard/suggest-reply',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({phone:card.dataset.phone, canal:'', reason:card.dataset.reason||'', lastEventId:card.dataset.eid})});
+    var d=await r.json();
+    var s=d.suggestion||(d.error?('⚠ '+d.error):'(sem sugestão)');
+    if(ta){ ta.value=s; ta.style.display='block'; }
+    if(sw){ sw.style.display='flex'; }
+    card.classList.add('cop-has');
+    if(btn) btn.textContent='↻ Regerar';
+    return s;
+  }catch(e){
+    if(ta){ ta.value='Erro ao gerar sugestão.'; ta.style.display='block'; }
+    if(btn) btn.textContent=prev||'✨ Sugerir resposta';
+    return '';
+  }finally{ if(btn) btn.disabled=false; }
+}
+function copCopiar(i){
+  var ta=document.getElementById('sugg-'+i); if(!ta) return;
+  ta.focus(); ta.select();
+  if(navigator.clipboard){ navigator.clipboard.writeText(ta.value).catch(function(){}); }
+  copToast('✅ Resposta copiada — cole na Zenvia');
+}
+async function copGerarTodas(){
+  var btn=document.getElementById('copAll');
+  var todo=[].slice.call(document.querySelectorAll('.cop-card.cop-pending')).filter(function(c){ return !c.classList.contains('cop-has'); });
+  if(!todo.length){ copToast('Nada pendente para gerar.'); return; }
+  if(btn) btn.disabled=true;
+  var done=0;
+  for(var k=0;k<todo.length;k++){
+    if(btn) btn.textContent='Gerando '+(done+1)+'/'+todo.length+'…';
+    var s=await copGerar(todo[k].dataset.idx);
+    done++;
+    if(s && s.indexOf('Limite diário')>=0){ copToast('Teto diário de IA atingido — parei aqui.'); break; }
+  }
+  if(btn){ btn.disabled=false; btn.textContent='✨ Sugerir para todas as pendentes'; }
+  copToast('Sugestões geradas: '+done);
+}
+function copToggleGrupo(){
+  var g=document.getElementById('copGrupo'); if(!g) return;
+  g.style.display=(g.style.display==='none'||!g.style.display)?'block':'none';
+}
+async function copSalvarGrupo(){
+  var t=document.getElementById('copGrupoText'); if(!t) return;
+  var b=document.getElementById('copSalvar'); if(b){ b.disabled=true; b.textContent='Salvando…'; }
+  try{
+    var r=await fetch('/dashboard/copiloto/group',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phones:t.value})});
+    if(r.ok){ location.reload(); return; }
+    copToast(r.status===403?'Sem permissão para editar o grupo.':'Erro ao salvar.');
+  }catch(e){ copToast('Erro ao salvar.'); }
+  if(b){ b.disabled=false; b.textContent='Salvar grupo'; }
+}
+"""
+
+
+@router.get("/dashboard/copiloto", response_class=HTMLResponse, include_in_schema=False)
+def dashboard_copiloto(request: Request, db: Session = Depends(get_db)):
+    access = _get_access(request, db)
+    if access is None:
+        return _auth_redirect()
+    canal = _req_canal(request)
+    is_admin = (access or {}).get("role") == "admin"
+    can_edit = (access or {}).get("role") in ("admin", "gestor")
+
+    phones = _get_copiloto_phones(db)
+    sugg_cache = _get_sugg_cache(db)
+    convos, missing = _copiloto_data(db, access, phones, sugg_cache)
+    n_wait = sum(1 for c in convos if c["waiting"])
+
+    # ── Cartão do grupo (sempre presente; editor só p/ admin/gestor) ─────────
+    miss_note = f" · {len(missing)} sem conversa nos últimos 30 dias" if missing else ""
+    grupo_text = "\n".join(phones)
+    if can_edit:
+        editor = (
+            '<div id="copGrupo" style="display:none;margin-top:12px">'
+            '<p class="cop-meta" style="margin:0 0 6px">Um telefone por linha (com DDD). Aceita &quot;Nome - 5511...&quot; ou &quot;(11) 99999-9999&quot;.</p>'
+            f'<textarea id="copGrupoText" style="width:100%;min-height:120px;background:#0b1120;border:1px solid #243152;border-radius:8px;color:#e8ecf1;padding:10px;font-size:13px;font-family:\'JetBrains Mono\',monospace">{html_mod.escape(grupo_text)}</textarea>'
+            '<button class="cop-btn" id="copSalvar" style="margin-top:8px" onclick="copSalvarGrupo()">Salvar grupo</button>'
+            '</div>'
+        )
+        edit_btn = '<button class="cop-btn ghost" style="margin-left:auto" onclick="copToggleGrupo()">Editar grupo</button>'
+    else:
+        editor = ""
+        edit_btn = '<span class="cop-meta" style="margin-left:auto">Grupo definido por um admin</span>'
+
+    grupo_card = (
+        '<div class="card" style="margin-bottom:14px">'
+        '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+        '<strong style="color:#e8ecf1;font-size:13px">Grupo atendido via plataforma</strong>'
+        f'<span class="cop-meta">{len(phones)} cliente(s){miss_note}</span>'
+        f'{edit_btn}</div>{editor}</div>'
+    )
+
+    # ── Corpo ────────────────────────────────────────────────────────────────
+    if not phones:
+        body_main = (
+            '<div class="card" style="text-align:center;padding:42px 24px">'
+            '<div style="font-size:34px;margin-bottom:8px">🤖</div>'
+            '<h2 style="font-size:16px;color:#e8ecf1;margin:0 0 6px">Nenhum cliente no grupo ainda</h2>'
+            '<p class="cop-meta" style="max-width:460px;margin:0 auto 16px">Defina o grupo de clientes que será atendido via plataforma. Cole os telefones (um por linha) e a IA passa a sugerir respostas para as conversas deles.</p>'
+            + ('<button class="cop-btn" onclick="copToggleGrupo()">Definir grupo de clientes</button>'
+               if can_edit else '<span class="cop-meta">Peça a um admin para definir o grupo.</span>')
+            + '</div>'
+        )
+    elif not convos:
+        body_main = (
+            '<div class="card" style="text-align:center;padding:40px 24px;color:#8a96aa">'
+            'Nenhuma conversa encontrada para os telefones do grupo nos últimos 30 dias.</div>'
+        )
+    else:
+        controls = (
+            '<div style="display:flex;align-items:center;gap:12px;margin:2px 0 14px;flex-wrap:wrap">'
+            f'<span class="cop-meta">{n_wait} aguardando resposta · {len(convos)} conversas no grupo</span>'
+            + ('<button class="cop-btn" id="copAll" style="margin-left:auto" onclick="copGerarTodas()">✨ Sugerir para todas as pendentes</button>'
+               if n_wait else '')
+            + '</div>'
+        )
+        cards = ""
+        for i, c in enumerate(convos):
+            who = "Cliente" if c["last_dir"] == "IN" else "Você"
+            badge = ('<span class="cop-badge wait">aguardando resposta</span>' if c["waiting"]
+                     else '<span class="cop-badge ok">respondido</span>')
+            zurl = _zenvia_url(c["conv_id"], c["client_name"] or c["phone"])
+            zlink = (f'<a class="cop-zenvia" href="{html_mod.escape(zurl)}" target="_blank" rel="noopener">💬 Abrir na Zenvia</a>'
+                     if zurl else "")
+            sugg = c["suggestion"]
+            ta_disp = "block" if sugg else "none"
+            sw_disp = "flex" if sugg else "none"
+            has_cls = "cop-has" if sugg else ""
+            pend_cls = "cop-pending" if c["waiting"] else ""
+            btn_label = "↻ Regerar" if sugg else "✨ Sugerir resposta"
+            cards += (
+                f'<div class="cop-card {pend_cls} {has_cls}" id="cop-{i}" data-idx="{i}" '
+                f'data-phone="{html_mod.escape(c["phone"])}" data-eid="{html_mod.escape(c["last_event_id"])}" '
+                f'data-reason="{html_mod.escape(c["last_text"][:300])}">'
+                '<div class="cop-head">'
+                f'<span class="cop-name">{html_mod.escape(c["client_name"])}</span>{badge}'
+                f'<span class="cop-meta">{html_mod.escape(_short_agent_name(c["agent"]))} · {c["last_ts_str"]}</span>'
+                f'<span class="cop-meta" style="margin-left:auto;font-family:\'JetBrains Mono\',monospace">{html_mod.escape(_fmt_phone_br(c["phone"]))}</span>'
+                '</div>'
+                f'<div class="cop-msg"><span class="who">{who}:</span>{html_mod.escape(c["last_text"] or "—")}</div>'
+                f'<div class="cop-actions"><button class="cop-btn" id="btn-{i}" onclick="copGerar({i})">{btn_label}</button></div>'
+                f'<textarea class="cop-sugg" id="sugg-{i}" style="display:{ta_disp}" placeholder="A sugestão da IA aparece aqui — edite antes de enviar.">{html_mod.escape(sugg)}</textarea>'
+                f'<div class="cop-sw" id="sw-{i}" style="display:{sw_disp}"><button class="cop-btn ghost" onclick="copCopiar({i})">⧉ Copiar</button>{zlink}</div>'
+                '</div>'
+            )
+        body_main = controls + cards
+
+    info_banner = (
+        '<div style="background:rgba(91,155,255,.08);border:1px solid rgba(91,155,255,.25);border-radius:10px;padding:12px 16px;margin-bottom:14px;font-size:12px;color:#a9bbe0;line-height:1.5">'
+        '<strong style="color:#cfe0ff">Como funciona (v1):</strong> a IA lê o histórico e sugere uma resposta <strong>sob demanda</strong> (clique em &quot;Sugerir&quot;). A sugestão fica salva e não reprocessa, respeitando o teto diário de IA. Você revisa, edita e envia pela Zenvia. Nada é enviado automaticamente ainda.'
+        '</div>'
+    )
+
+    page = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Copiloto IA — Alto Valor</title>{COMMON_CSS}
+<style>{_COP_CSS}</style>
+</head><body>
+{_nav_html("copiloto", canal=canal, is_admin=is_admin, title="Copiloto IA")}
+<div class="container">
+  <div class="cop-hero">
+    <div>
+      <h1 style="margin:0;font-size:20px;color:#e8ecf1">Copiloto IA<span class="cop-beta">v1</span></h1>
+      <p style="margin:4px 0 0;font-size:12px;color:#8a96aa">A IA sugere a resposta para o cliente; você revisa, edita e envia. Base do atendimento automático.</p>
+    </div>
+  </div>
+  {info_banner}
+  {grupo_card}
+  {body_main}
+</div>
+<script>{_COP_JS}</script>
+</body></html>"""
+    return HTMLResponse(page)
+
+
+@router.post("/dashboard/copiloto/group", include_in_schema=False)
+def copiloto_save_group(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
+    """Salva a lista de telefones do grupo atendido via plataforma (admin/gestor)."""
+    access = _get_access(request, db)
+    if access is None:
+        return JSONResponse({"error": "unauth"}, status_code=401)
+    if access.get("role") not in ("admin", "gestor"):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    phones = _parse_phone_list(body.get("phones") or "")
+    _save_copiloto_phones(db, phones)
+    return JSONResponse({"ok": True, "count": len(phones)})
 
 
 # ── Alertas Dashboard ─────────────────────────────────────────────────────────
