@@ -1,7 +1,7 @@
 import hmac
 from typing import Generator
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import Depends, Header, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -35,18 +35,26 @@ def sanitize_headers(headers: dict[str, str]) -> dict[str, str]:
 def verify_webhook_token(
     x_zenvia_token: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
+    token: str | None = Query(default=None),
 ) -> None:
     """
-    Validates the webhook bearer token sent by Zenvia.
+    Validates the webhook token sent by Zenvia.
+
+    The token may be supplied three ways (in priority order):
+      1. header  X-Zenvia-Token: <token>
+      2. header  Authorization: Bearer <token>
+      3. query   ?token=<token>   (easiest to configure in Zenvia — just append
+         it to the webhook URL. Note: a query token shows up in access logs,
+         so the headers above are slightly cleaner when Zenvia allows them.)
 
     When WEBHOOK_SECRET_TOKEN is empty (default), validation is disabled —
-    this is intentional for local development.  Set the env var in production.
+    this is intentional for local development. Set the env var in production.
     """
     expected = settings.WEBHOOK_SECRET_TOKEN
     if not expected:
         return
 
-    received = x_zenvia_token or authorization
+    received = x_zenvia_token or authorization or token
     if not received:
         raise HTTPException(status_code=401, detail="Missing webhook authentication token")
 
