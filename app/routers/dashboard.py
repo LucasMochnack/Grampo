@@ -65,23 +65,27 @@ HOUR_START, HOUR_END = 6, 19
 # param is REQUIRED — without it Zenvia opens the inbox with no group selected
 # ("Selecione um grupo") and shows nothing.
 #
-# IMPORTANT: the path id ALONE does NOT open the conversation on a cold load —
-# Zenvia's single-page app ignores it and lands on the inbox. The conversation
-# only opens when a "&search=" term is also present (Zenvia's app runs the
-# inbox search, finds the contact, and opens it). So we ALWAYS append the
-# client's name/phone as the search term via _zenvia_url() below — that mirrors
-# exactly the URL Zenvia itself produces when you search the inbox by hand.
+# IMPORTANT — Zenvia has NO real URL deep-link to a conversation. The
+# conversation.id in the path is only STATE-REFLECTION: it appears in the
+# address bar while you're already inside the conversation, but loading the URL
+# cold does NOT open it (the SPA lands on the inbox / search list). Confirmed in
+# prod against two real conversations. The best achievable via URL is to append
+# "&search=<client name>": Zenvia runs the inbox search and lands on the list
+# already FILTERED to the exact client — one click on the result opens the
+# conversation. So _zenvia_url() always appends the search term; that mirrors
+# the URL Zenvia produces when you search the inbox by hand. There is no URL
+# that opens the conversation pane directly on a cold load.
 # Leave the template empty to omit the Zenvia link entirely.
 ZENVIA_CONV_URL_TEMPLATE = "https://app.zenvia.com/sales-chat/inbox/all/{id}?g=69a88feecfe7701db3cb102f"
 
 
 def _zenvia_url(conv_id: str, search: str = "") -> str:
-    """Build a Zenvia deep-link that actually OPENS the conversation.
+    """Build the best-effort Zenvia link for a conversation.
 
-    The conversation.id in the path is necessary but not sufficient: Zenvia's
-    SPA only surfaces a specific conversation when the "&search=" query param is
-    present (the contact name or phone). We append it so the link lands on the
-    conversation instead of the bare inbox.
+    Zenvia has no true URL deep-link to a conversation (the path id is just
+    state-reflection — see the note on ZENVIA_CONV_URL_TEMPLATE). Appending
+    "&search=<client name>" is the best achievable: it lands on the inbox
+    already filtered to the exact client, one click away from the conversation.
     """
     if not (ZENVIA_CONV_URL_TEMPLATE and conv_id):
         return ""
