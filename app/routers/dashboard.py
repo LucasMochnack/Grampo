@@ -6439,9 +6439,10 @@ function pautaExcluir(id){
         return [tid for tid, _tl, _tc in shelf if topic_data[tid].get(a)]
 
     # Assessores ATIVOS no período (tiveram conversa), do pior pro melhor coberto.
+    # Ranking do MAIS pro MENOS coberto (melhor no topo); empata por nº de clientes.
     cov_agents = sorted(
         agent_clients.keys(),
-        key=lambda a: (len(_offered(a)), -len(agent_clients[a]), _short_agent_name(a)),
+        key=lambda a: (-len(_offered(a)), -len(agent_clients[a]), _short_agent_name(a)),
     )
     n_adv = len(cov_agents)
     team_offer = {tid: sum(1 for a in cov_agents if topic_data[tid].get(a)) for tid, _tl, _tc in shelf}
@@ -6452,7 +6453,8 @@ function pautaExcluir(id){
     cov_avg = (sum(len(_offered(a)) for a in cov_agents) / n_adv) if n_adv else 0
     gap_threshold = max(1, round(n_adv * 0.25))
     n_neglected = sum(1 for tid, _tl, _tc in shelf if team_offer[tid] <= gap_threshold)
-    narrowest = cov_agents[0] if cov_agents else None
+    # "Mais estreito" = menor cobertura (independe da ordem do ranking).
+    narrowest = min(cov_agents, key=lambda a: (len(_offered(a)), -len(agent_clients[a]))) if cov_agents else None
     is_admin_v2 = (access or {}).get("role") == "admin"
 
     # ── helpers v2 ───────────────────────────────────────────────────────────
@@ -6691,7 +6693,7 @@ function pautaExcluir(id){
         '<div class="v2card" style="overflow:hidden;">'
         '<div style="padding:18px 20px 14px;border-bottom:1px solid rgba(255,255,255,0.06);">'
         '<div style="display:flex;align-items:center;gap:9px;"><span style="width:7px;height:7px;border-radius:50%;background:#22c66e;"></span><h2 class="spaced" style="font-weight:600;font-size:15px;margin:0;">Cobertura da prateleira</h2></div>'
-        f'<div style="font-size:11.5px;color:#6a7589;margin-top:5px;">do menos pro mais coberto · {_period_label.lower()}</div></div>'
+        f'<div style="font-size:11.5px;color:#6a7589;margin-top:5px;">do mais pro menos coberto · {_period_label.lower()}</div></div>'
         f'<div style="max-height:660px;overflow-y:auto;padding:8px;">{list_html}</div></div>'
         f'<div class="v2card" style="padding:26px 28px;position:sticky;top:18px;">{panels_html}'
         f'<div style="font-size:11px;color:#5b6577;margin-top:20px;border-top:1px solid rgba(255,255,255,0.06);padding-top:12px;">Conta só quando o <b style="color:#9aa3b8;">assessor</b> leva o produto ao cliente. {_src_note}</div>'
