@@ -6104,6 +6104,16 @@ def dashboard_temas(request: Request, db: Session = Depends(get_db)):
             cov_by_key[(_r.phone, _r.last_event_id)] = set(_r.produtos or [])
     except Exception:
         cov_by_key = {}
+    # Resumo mais recente por telefone (para "conversas recentes" no detalhe v2).
+    resumo_by_phone: dict = {}
+    try:
+        from app.models import ConversationScore as _CSq
+        _sc_window = (now_br_tmp := datetime.now(BRASILIA) - timedelta(days=45)).astimezone(timezone.utc)
+        for _s in (db.query(_CSq).filter(_CSq.canal == canal, _CSq.scored_at >= _sc_window)
+                   .order_by(_CSq.scored_at.asc()).all()):
+            resumo_by_phone[_s.phone] = (_s.resumo or "").strip()
+    except Exception:
+        resumo_by_phone = {}
     db.close()  # release connection before heavy processing
 
     now_br = datetime.now(BRASILIA)
@@ -6349,6 +6359,7 @@ function pautaExcluir(id){
     _epoch_t = datetime.min.replace(tzinfo=timezone.utc)
     n_conv_ia = 0
     n_conv_kw = 0
+    last_ts_by_phone: dict = {}   # última atividade por cliente (p/ "conversas recentes")
     for client_num, evs in groups.items():
         ph = _real_phone(client_num)
         agent = phone_learned.get(client_num) or client_agent_map.get(ph) or phone_learned.get(ph) or "Sem atendente"
@@ -6362,6 +6373,8 @@ function pautaExcluir(id){
             key=lambda e: e.received_at,
         )
         leid = str(nonstatus[-1].id) if nonstatus else ""
+        if nonstatus:
+            last_ts_by_phone[ph] = nonstatus[-1].received_at
         ai_prods = cov_by_key.get((ph, leid)) if leid else None
 
         if ai_prods is not None:
@@ -6412,106 +6425,10 @@ function pautaExcluir(id){
     # Filter out agents with zero activity across all topics
     active_agents = [ag for ag in all_agents if any(topic_data[tid].get(ag) for tid in topic_data)]
 
-    # ── Build HTML table (rows = agentes, colunas = temas) ───────────────────
+    # Temas v2: o detalhe (master-detail) substitui a tabela/heatmap antiga.
     active_topics = [(tid, tlabel, tcolor, kws) for tid, tlabel, tcolor, kws in TOPIC_RULES if _seen_topic_client[tid]]
-
-    # Global max for color intensity
     _mx = max((len(_seen_topic_client[tid]) for tid, *_ in active_topics), default=1)
-
-    topic_headers = "".join(
-        f'<th style="text-align:center;min-width:90px;font-size:10px;padding:6px 4px;white-space:nowrap">'
-        f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{tcolor};margin-right:4px;vertical-align:middle"></span>'
-        f'{tlabel}</th>'
-        for tid, tlabel, tcolor, _ in active_topics
-    )
-    topic_headers += '<th style="text-align:center;min-width:60px;font-size:10px;padding:6px 4px;color:#0fa968">TOTAL</th>'
-
-    rows_html = ""
-    for ag in active_agents:
-        seg = _get_segment(ag)
-        seg_color = SEGMENT_COLORS.get(seg, "#1a2540")
-        dot = f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:{seg_color};margin-right:6px;vertical-align:middle"></span>'
-        cells = ""
-        row_total = 0
-        for tid, tlabel, tcolor, keywords in active_topics:
-            v = len(topic_data[tid].get(ag, set()))
-            row_total += v
-            if v == 0:
-                cells += '<td style="text-align:center;color:#1a2540;font-size:13px;border:1px solid #0f1629">—</td>'
-            else:
-                intensity = min(v / max(_mx, 1), 1.0)
-                _r = int(10 + intensity * 5)
-                _g = int(40 + intensity * 129)
-                _b = int(20 + intensity * 84)
-                _a = 0.25 + intensity * 0.65
-                cell_bg = f"rgba({_r},{_g},{_b},{_a:.2f})"
-                # Build drill-down clients for this agent+topic
-                clients_here = [c for c in topic_clients[tid] if c["agent"].lower() == ag.lower()]
-                tip = ", ".join(c["name"] or c["phone"] for c in clients_here[:8])
-                cells += f'<td style="text-align:center;background:{cell_bg};font-size:13px;font-weight:700;color:#fff;border:1px solid #0f1629;cursor:default" title="{html_mod.escape(tip)}">{v}</td>'
-        cells += f'<td style="text-align:center;font-weight:800;font-size:14px;color:#0fa968;background:#0f1629;border:1px solid #1a2540">{row_total}</td>'
-
-        drill_id = f"drill_ag_{ag.replace(' ','_').replace('/','_')}"
-        rows_html += f"""
-        <tr style="cursor:pointer" onclick="toggleDrill('{drill_id}')">
-            <td style="border-left:3px solid {seg_color};padding-left:10px;white-space:nowrap;font-size:12px;font-weight:600;background:#0b1120">{dot}{_short_agent_name(ag)}</td>
-            {cells}
-        </tr>
-        <tr id="{drill_id}" style="display:none">
-            <td colspan="{1 + len(active_topics) + 1}" style="padding:0;border:none;background:#0a0f1a">
-                <div style="padding:12px 20px">
-                    <div style="font-size:11px;color:#5a6a8a;margin-bottom:10px;font-weight:600">TEMAS — {html_mod.escape(_short_agent_name(ag)).upper()}</div>
-                    <div style="display:flex;flex-wrap:wrap;gap:10px">
-                        {"".join(
-                            f'<div style="background:#111a2e;border:1px solid #1a2540;border-radius:8px;padding:8px 14px;min-width:140px">'
-                            f'<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">'
-                            f'<span style="width:8px;height:8px;border-radius:50%;background:{tcolor};display:inline-block"></span>'
-                            f'<span style="font-size:11px;font-weight:700;color:#e8ecf1">{tlabel}</span>'
-                            f'</div>'
-                            f'<div style="display:flex;flex-direction:column;gap:2px">'
-                            + "".join(
-                                f'<span style="font-size:11px;color:#0fa968">{html_mod.escape(c["name"] or c["phone"])}'
-                                f'<span style="color:#3a4a6a;font-size:9px"> · {html_mod.escape(c["kw"])}</span></span>'
-                                for c in topic_clients[tid] if c["agent"].lower() == ag.lower()
-                            ) +
-                            f'</div></div>'
-                            for tid, tlabel, tcolor, _ in active_topics
-                            if any(c["agent"].lower() == ag.lower() for c in topic_clients[tid])
-                        )}
-                    </div>
-                </div>
-            </td>
-        </tr>"""
-
-    if not rows_html:
-        rows_html = '<tr><td colspan="20" style="text-align:center;color:#4a5a7a;padding:40px">Nenhum tema identificado no período.</td></tr>'
-    else:
-        # ── Total row (sum per topic column) ──────────────────────────────────
-        total_cells = ""
-        grand_total = 0
-        for tid, tlabel, tcolor, _ in active_topics:
-            v = len(_seen_topic_client[tid])
-            grand_total += v
-            intensity = min(v / max(_mx, 1), 1.0)
-            _r = int(10 + intensity * 5)
-            _g = int(40 + intensity * 129)
-            _b = int(20 + intensity * 84)
-            _a = 0.3 + intensity * 0.7
-            cell_bg = f"rgba({_r},{_g},{_b},{_a:.2f})"
-            total_cells += f'<td style="text-align:center;background:{cell_bg};font-size:14px;font-weight:800;color:#fff;border:1px solid #0f1629">{v}</td>'
-        total_cells += f'<td style="text-align:center;font-weight:800;font-size:15px;color:#0fa968;background:#0f1629;border:1px solid #1a2540">{grand_total}</td>'
-        rows_html += f"""
-        <tr style="border-top:2px solid #1a2540">
-            <td style="padding:10px 12px;font-size:12px;font-weight:800;color:#e8ecf1;background:#0b1120;letter-spacing:.5px;text-transform:uppercase">TOTAL</td>
-            {total_cells}
-        </tr>"""
-
-    # Period buttons
     _base_qs = f"canal={canal}"
-    _d1_cls = "active" if dias == 1 else ""
-    _d7_cls = "active" if dias == 7 else ""
-    _d15_cls = "active" if dias == 15 else ""
-    _d30_cls = "active" if dias == 30 else ""
     _period_label = "Hoje" if dias == 1 else f"Últimos {dias} dias"
 
     # ── COBERTURA DA PRATELEIRA — score por assessor + lacunas do time ───────
@@ -6532,133 +6449,323 @@ function pautaExcluir(id){
     def _cov_color(pct):
         return "#ef4444" if pct < 30 else ("#eab308" if pct < 60 else "#0fa968")
 
-    cov_cards = []
-    for a in cov_agents[:25]:
-        offered = set(_offered(a))
-        n_off = len(offered)
-        pct = round(100 * n_off / shelf_n)
-        col = _cov_color(pct)
-        counts = sorted(((len(topic_data[tid].get(a, ())), tlabel) for tid, tlabel, _tc in shelf), reverse=True)
-        tot = sum(c for c, _ in counts)
-        conc = (f'concentra <b>{round(100*counts[0][0]/tot)}%</b> em {html_mod.escape(counts[0][1])} · '
-                if (tot and counts[0][0] and n_off <= 3) else "")
-        gaps = [tlabel for tid, tlabel, _tc in shelf if tid not in offered]
-        gaps_html = (f'<span style="color:#ef4444">{html_mod.escape(" · ".join(gaps[:8]))}'
-                     + (f' +{len(gaps)-8}' if len(gaps) > 8 else "") + '</span>') if gaps else '<span style="color:#0fa968">cobre a prateleira toda</span>'
-        cov_cards.append(
-            '<div class="card" style="margin-bottom:10px;padding:11px 14px">'
-            '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">'
-            f'<span style="width:150px;flex:none;font-size:13px;font-weight:600;color:#e8ecf1">{html_mod.escape(_short_agent_name(a))}</span>'
-            '<div style="flex:1;height:8px;background:#0b1120;border-radius:4px;overflow:hidden">'
-            f'<div style="width:{max(pct,3)}%;height:100%;background:{col}"></div></div>'
-            f'<span style="flex:none;font-size:13px;font-weight:700;color:{col}">{n_off}/{shelf_n} produtos</span>'
-            f'<span style="flex:none;font-size:11px;color:#5a6a8a">{len(agent_clients[a])} clientes</span></div>'
-            f'<div style="font-size:12px;color:#8a96aa">{conc}nunca ofereceu: {gaps_html}</div></div>'
-        )
-    cov_more = f'<div style="font-size:11px;color:#5a6a8a;margin-top:4px">+ {n_adv-25} assessores</div>' if n_adv > 25 else ""
-
-    # Lacunas do time: produtos que poucos assessores oferecem.
-    gap_threshold = max(1, round(n_adv * 0.25))
-    team_gaps = sorted(((tid, tlabel, tcolor) for tid, tlabel, tcolor in shelf), key=lambda s: team_offer[s[0]])
-    _gap_rows = ""
-    for tid, tlabel, tcolor in team_gaps[:6]:
-        no = team_offer[tid]
-        pct = round(100 * no / n_adv) if n_adv else 0
-        gc = "#ef4444" if pct < 15 else ("#eab308" if pct < 35 else "#0fa968")
-        _gap_rows += (
-            '<div style="display:flex;align-items:center;gap:10px;font-size:13px;padding:3px 0">'
-            f'<span style="width:150px;flex:none">{html_mod.escape(tlabel)}</span>'
-            '<div style="flex:1;height:7px;background:#0b1120;border-radius:4px;overflow:hidden">'
-            f'<div style="width:{max(pct,2)}%;height:100%;background:{gc}"></div></div>'
-            f'<span style="width:150px;flex:none;text-align:right;color:#8a96aa">{no} de {n_adv} assessores</span></div>'
-        )
-
     cov_avg = (sum(len(_offered(a)) for a in cov_agents) / n_adv) if n_adv else 0
+    gap_threshold = max(1, round(n_adv * 0.25))
     n_neglected = sum(1 for tid, _tl, _tc in shelf if team_offer[tid] <= gap_threshold)
     narrowest = cov_agents[0] if cov_agents else None
+    is_admin_v2 = (access or {}).get("role") == "admin"
 
-    cobertura_html = (
-        '<div class="card" style="margin-bottom:20px">'
-        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">'
-        '<span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>'
-        '<h2 style="margin:0;font-size:15px">Cobertura da prateleira — o que cada assessor está oferecendo</h2></div>'
-        f'<p style="font-size:11px;color:#5a6a8a;margin:0 0 14px">Conta só quando o <b>assessor</b> leva o produto ao cliente · {_period_label.lower()} · '
-        f'do menos pro mais coberto. Clique no nome na matriz abaixo para ver as conversas.<br>'
-        + (f'<span style="color:#0fa968">✓ {n_conv_ia} conversas verificadas por IA</span>'
-           + (f' · {n_conv_kw} por palavra-chave (IA classifica no scan de domingo)' if n_conv_kw else '')
-           if n_conv_ia else f'Detecção por palavra-chave — a verificação por IA roda na varredura de domingo.')
-        + '</p>'
-        + ("".join(cov_cards) + cov_more if cov_cards else '<p style="color:#4a5a7a;text-align:center;padding:20px">Nenhum assessor com conversa no período.</p>')
-        + (
-            '<div style="margin-top:16px;padding-top:14px;border-top:1px solid #1a2540">'
-            '<div style="font-size:13px;font-weight:600;color:#e8ecf1;margin-bottom:10px">⚠ Lacunas do time — produtos que quase ninguém oferece</div>'
-            + _gap_rows + '</div>' if (_gap_rows and n_adv) else ""
+    # ── helpers v2 ───────────────────────────────────────────────────────────
+    def _v2_status(p):
+        if p >= 70:
+            return ("Amplo", "#22c66e", "rgba(34,198,110,0.12)", "rgba(34,198,110,0.35)")
+        if p >= 45:
+            return ("Moderado", "#f2b007", "rgba(242,176,7,0.12)", "rgba(242,176,7,0.35)")
+        return ("Estreito", "#ef5a6a", "rgba(239,90,106,0.12)", "rgba(239,90,106,0.35)")
+
+    def _v2_rel(ts):
+        if not ts:
+            return ""
+        s = (now_br - ts.astimezone(BRASILIA)).total_seconds()
+        if s < 3600:
+            return f"há {max(1, int(s // 60))} min"
+        if s < 86400:
+            return f"há {int(s // 3600)}h"
+        d = int(s // 86400)
+        return "ontem" if d == 1 else f"há {d} dias"
+
+    # clientes/conversas por assessor (a partir do drill já calculado)
+    convos_by_agent: dict = defaultdict(list)
+    for _tid, _tl, _tc in shelf:
+        for _c in topic_clients[_tid]:
+            convos_by_agent[(_c["agent"] or "").lower()].append((_tid, _tl, _tc, _c["phone"], _c["name"]))
+
+    JM = "'JetBrains Mono'"   # evita escapar aspas no f-string
+
+    list_rows = []
+    panels = []
+    for idx, a in enumerate(cov_agents):
+        aid = (_re.sub(r"[^a-z0-9]+", "-", _opp_norm(a)).strip("-") or "a") + f"-{idx}"
+        offered = _offered(a)
+        n_off = len(offered)
+        pct = round(100 * n_off / shelf_n)
+        slabel, scol, sbg, sbord = _v2_status(pct)
+        clients = len(agent_clients[a])
+        cli_lbl = f"{clients} cliente" + ("s" if clients != 1 else "")
+        sel = (idx == 0)
+        nm = html_mod.escape(_short_agent_name(a))
+
+        list_rows.append(
+            f'<div class="advrow" data-id="{aid}" data-selbar="{scol}" onclick="selAdv(\'{aid}\')" '
+            f'style="display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:12px;padding:11px 12px;border-radius:10px;'
+            f'border-left:3px solid {scol if sel else "transparent"};background:{"rgba(34,198,110,0.1)" if sel else "transparent"};margin-bottom:3px;">'
+            f'<span style="width:8px;height:8px;border-radius:3px;background:{scol};flex:none;"></span>'
+            f'<div style="min-width:0;"><div class="advname" style="font-size:13.5px;font-weight:600;color:{"#ffffff" if sel else "#d2d8e4"};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{nm}</div>'
+            f'<div style="height:5px;border-radius:3px;background:#161d2e;overflow:hidden;margin-top:6px;"><div style="height:100%;border-radius:3px;width:{pct}%;background:{scol};"></div></div></div>'
+            f'<div style="text-align:right;white-space:nowrap;"><div style="font-family:{JM};font-weight:700;font-size:12.5px;color:{scol};">{n_off}/{shelf_n}</div>'
+            f'<div style="font-size:10.5px;color:#6a7589;font-family:{JM};margin-top:2px;">{cli_lbl}</div></div></div>'
         )
-        + '</div>'
+
+        # breakdown (produtos que oferece) + mais/menos + nunca ofereceu
+        bd = sorted(((len(topic_data[tid].get(a, ())), tid, tl, tc) for tid, tl, tc in shelf if topic_data[tid].get(a)), reverse=True)
+        bd_tot = sum(c for c, *_ in bd)
+        maxv = bd[0][0] if bd else 1
+        conc = ""
+        if bd and n_off <= 3 and bd_tot:
+            conc = f'<div style="font-size:12.5px;color:#9aa3b8;margin-top:6px;display:inline-block;background:rgba(255,255,255,0.04);border-radius:7px;padding:5px 11px;">concentra {round(100*bd[0][0]/bd_tot)}% em {html_mod.escape(bd[0][2])}</div>'
+        bd_html = "".join(
+            f'<div style="display:grid;grid-template-columns:104px 1fr 24px;align-items:center;gap:10px;">'
+            f'<span style="font-size:12px;color:#b8c0d0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{html_mod.escape(tl)}</span>'
+            f'<div style="height:7px;border-radius:4px;background:#161d2e;overflow:hidden;"><div style="height:100%;border-radius:4px;width:{round(c/maxv*100)}%;background:{tc};"></div></div>'
+            f'<span style="font-family:{JM};font-size:12px;font-weight:600;color:#e8edf5;text-align:right;">{c}</span></div>'
+            for c, tid, tl, tc in bd
+        ) or '<div style="font-size:12.5px;color:#6a7589;font-style:italic;">Nenhum produto levado ao cliente neste período.</div>'
+
+        gaps = [tl for tid, tl, tc in shelf if tid not in set(offered)]
+        if gaps:
+            chips = "".join(
+                f'<span style="font-size:11.5px;font-weight:500;color:#ff8a94;background:rgba(239,90,106,0.1);border:1px solid rgba(239,90,106,0.25);border-radius:6px;padding:3px 9px;">{html_mod.escape(g)}</span>'
+                for g in gaps[:9]
+            )
+            if len(gaps) > 9:
+                chips += f'<span style="font-size:11.5px;font-weight:500;color:#6a7589;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:6px;padding:3px 9px;">+{len(gaps)-9}</span>'
+        else:
+            chips = '<span style="font-size:12px;font-weight:500;color:#3ddc84;">Cobre toda a prateleira ✓</span>'
+
+        # mais/menos oferece
+        pair = ""
+        if len(bd) >= 2:
+            top, bot = bd[0], bd[-1]
+            pair = (
+                '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:22px;">'
+                f'<div style="background:rgba(34,198,110,0.08);border:1px solid rgba(34,198,110,0.22);border-radius:11px;padding:14px 16px;"><div style="font-size:10px;font-weight:700;letter-spacing:0.14em;color:#3ddc84;text-transform:uppercase;margin-bottom:8px;">▲ Mais oferece</div><div style="font-size:16px;font-weight:600;color:#e8edf5;line-height:1.15;">{html_mod.escape(top[2])}</div><div style="font-size:12px;color:#8893a8;font-family:{JM};margin-top:4px;">{top[0]} cliente{"s" if top[0]!=1 else ""}</div></div>'
+                f'<div style="background:rgba(242,176,7,0.07);border:1px solid rgba(242,176,7,0.22);border-radius:11px;padding:14px 16px;"><div style="font-size:10px;font-weight:700;letter-spacing:0.14em;color:#f2b007;text-transform:uppercase;margin-bottom:8px;">▼ Menos oferece</div><div style="font-size:16px;font-weight:600;color:#e8edf5;line-height:1.15;">{html_mod.escape(bot[2])}</div><div style="font-size:12px;color:#8893a8;font-family:{JM};margin-top:4px;">{bot[0]} cliente{"s" if bot[0]!=1 else ""}</div></div>'
+                '</div>'
+            )
+        elif len(bd) == 1:
+            top = bd[0]
+            pair = (f'<div style="background:rgba(34,198,110,0.08);border:1px solid rgba(34,198,110,0.22);border-radius:11px;padding:14px 16px;margin-top:22px;"><div style="font-size:10px;font-weight:700;letter-spacing:0.14em;color:#3ddc84;text-transform:uppercase;margin-bottom:8px;">Oferece só</div><div style="font-size:16px;font-weight:600;color:#e8edf5;">{html_mod.escape(top[2])} · <span style="color:#8893a8;font-family:{JM};font-size:13px;">{top[0]} cliente{"s" if top[0]!=1 else ""}</span></div></div>')
+
+        # conversas recentes (reais)
+        cv = sorted(convos_by_agent.get(a.lower(), []), key=lambda x: last_ts_by_phone.get(x[3]) or _epoch_t, reverse=True)[:4]
+        convos_html = "".join(
+            f'<div style="display:flex;gap:11px;align-items:flex-start;background:#0e1422;border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:11px 13px;">'
+            f'<span style="width:6px;height:6px;border-radius:50%;background:{tc};margin-top:6px;flex:none;"></span>'
+            f'<div style="flex:1;min-width:0;"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:3px;">'
+            f'<span style="font-size:12.5px;font-weight:600;color:#e8edf5;">{html_mod.escape(name or phone)}</span>'
+            f'<span style="font-size:10.5px;font-weight:600;color:{tc};background:rgba(255,255,255,0.05);border-radius:5px;padding:2px 7px;">{html_mod.escape(tl)}</span>'
+            f'<span style="font-size:11px;color:#5b6577;margin-left:auto;font-family:{JM};">{_v2_rel(last_ts_by_phone.get(phone))}</span></div>'
+            + (f'<div style="font-size:12.5px;color:#9aa3b8;line-height:1.45;">{html_mod.escape((resumo_by_phone.get(phone) or "")[:120])}</div>' if resumo_by_phone.get(phone) else "")
+            + '</div></div>'
+            for tid, tl, tc, phone, name in cv
+        ) or '<div style="font-size:12.5px;color:#6a7589;font-style:italic;">Sem conversas com produto identificado no período.</div>'
+
+        ring_deg = round(n_off / shelf_n * 360)
+        panels.append(
+            f'<div class="advdetail{" on" if sel else ""}" id="adv-{aid}">'
+            '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:24px;">'
+            f'<div><div style="display:flex;align-items:center;gap:11px;"><h2 class="spaced" style="font-weight:700;font-size:24px;margin:0;letter-spacing:-0.01em;">{nm}</h2>'
+            f'<span style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:{scol};background:{sbg};border:1px solid {sbord};border-radius:7px;padding:4px 10px;">{slabel}</span></div>'
+            f'<div style="font-size:13px;color:#8893a8;margin-top:7px;">{cli_lbl} atendido{"s" if clients!=1 else ""} no período · {n_off}/{shelf_n} produtos cobertos</div>{conc}</div>'
+            f'<div style="position:relative;width:96px;height:96px;flex:none;border-radius:50%;background:conic-gradient({scol} {ring_deg}deg, #1a2336 0);display:flex;align-items:center;justify-content:center;">'
+            f'<div style="position:absolute;inset:9px;border-radius:50%;background:#0b101c;display:flex;flex-direction:column;align-items:center;justify-content:center;"><span style="font-family:{JM};font-weight:700;font-size:24px;color:{scol};line-height:1;">{n_off}</span><span style="font-size:10px;color:#6a7589;font-family:{JM};margin-top:2px;">de {shelf_n}</span></div></div></div>'
+            + pair +
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:30px;margin-top:24px;">'
+            '<div><div class="spaced" style="font-size:11px;font-weight:600;letter-spacing:0.16em;color:#7a8499;text-transform:uppercase;margin-bottom:14px;">Produtos que oferece</div>'
+            f'<div style="display:flex;flex-direction:column;gap:11px;">{bd_html}</div>'
+            '<div class="spaced" style="font-size:11px;font-weight:600;letter-spacing:0.16em;color:#7a8499;text-transform:uppercase;margin:22px 0 11px;">Nunca ofereceu</div>'
+            f'<div style="display:flex;flex-wrap:wrap;gap:7px;">{chips}</div></div>'
+            '<div><div class="spaced" style="font-size:11px;font-weight:600;letter-spacing:0.16em;color:#7a8499;text-transform:uppercase;margin-bottom:14px;">Conversas recentes</div>'
+            f'<div style="display:flex;flex-direction:column;gap:9px;">{convos_html}</div></div>'
+            '</div></div>'
+        )
+
+    list_html = "".join(list_rows) or '<div style="font-size:12.5px;color:#6a7589;padding:24px;text-align:center;">Nenhum assessor com conversa no período.</div>'
+    panels_html = "".join(panels) or '<div style="font-size:13px;color:#6a7589;">Sem dados no período.</div>'
+
+    # ── Lacunas do time ──────────────────────────────────────────────────────
+    team_gaps = sorted(((tid, tl, tc) for tid, tl, tc in shelf), key=lambda s: team_offer[s[0]])
+    gap_rows = ""
+    for tid, tl, tc in team_gaps[:6]:
+        no = team_offer[tid]
+        gp = round(100 * no / n_adv) if n_adv else 0
+        gcol = "#ef5a6a" if no <= 3 else ("#f2b007" if no <= 5 else "#22c66e")
+        gap_rows += (
+            '<div style="display:grid;grid-template-columns:180px 1fr 150px;align-items:center;gap:18px;">'
+            f'<span style="font-size:13.5px;font-weight:500;color:#d2d8e4;">{html_mod.escape(tl)}</span>'
+            f'<div style="height:10px;border-radius:5px;background:#161d2e;overflow:hidden;"><div style="height:100%;border-radius:5px;width:{max(gp,2)}%;background:{gcol};"></div></div>'
+            f'<span style="font-size:12.5px;color:#8893a8;text-align:right;font-family:{JM};"><span style="color:{gcol};font-weight:600;">{no}</span> de {n_adv} assessores</span></div>'
+        )
+
+    # ── Matriz (assessor × produto) ──────────────────────────────────────────
+    col_max = {tid: max((len(topic_data[tid].get(a, ())) for a in cov_agents), default=0) or 1 for tid, *_ in active_topics}
+    mh = "".join(
+        f'<th style="padding:0 4px 12px;font-size:10px;font-weight:600;letter-spacing:0.06em;color:#7a8499;text-transform:uppercase;text-align:center;white-space:nowrap;" class="spaced"><span style="display:inline-flex;align-items:center;gap:5px;"><span style="width:7px;height:7px;border-radius:50%;background:{tc};"></span>{html_mod.escape(tl)}</span></th>'
+        for tid, tl, tc, _ in active_topics
+    )
+    matrix_adv = sorted(cov_agents, key=lambda a: -sum(len(topic_data[tid].get(a, ())) for tid, *_ in active_topics))
+    mrows = ""
+    for a in matrix_adv:
+        dotc = _v2_status(round(100 * len(_offered(a)) / shelf_n))[1]
+        cells = ""
+        for tid, tl, tc, _ in active_topics:
+            v = len(topic_data[tid].get(a, ()))
+            if v:
+                alpha = 0.08 + (v / col_max[tid]) * 0.2
+                cells += f'<td style="text-align:center;padding:9px 4px;"><span style="display:inline-block;min-width:34px;padding:5px 0;border-radius:7px;font-family:{JM};font-size:13px;font-weight:600;color:#e8edf5;background:rgba(34,198,110,{alpha:.3f});">{v}</span></td>'
+            else:
+                cells += f'<td style="text-align:center;padding:9px 4px;"><span style="font-family:{JM};font-size:13px;color:#3f4861;">—</span></td>'
+        mrows += (
+            '<tr style="border-top:1px solid rgba(255,255,255,0.05);">'
+            f'<td style="padding:11px 14px 11px 6px;font-size:13px;font-weight:500;white-space:nowrap;position:sticky;left:0;background:#0b101c;"><span style="display:inline-flex;align-items:center;gap:8px;"><span style="width:6px;height:6px;border-radius:50%;background:{dotc};"></span>{html_mod.escape(_short_agent_name(a))}</span></td>{cells}</tr>'
+        )
+    mtot = "".join(
+        f'<td style="text-align:center;padding:14px 4px 4px;"><span style="display:inline-block;min-width:38px;padding:6px 0;border-radius:7px;font-family:{JM};font-size:14px;font-weight:700;color:#3ddc84;background:rgba(34,198,110,0.14);">{len(_seen_topic_client[tid])}</span></td>'
+        for tid, tl, tc, _ in active_topics
     )
 
-    page = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>Temas — Alto Valor</title>{COMMON_CSS}
-<style>
-  .temas-scroll {{ overflow-x: auto; }}
-  .temas-scroll::-webkit-scrollbar {{ height: 4px; }}
-  .temas-scroll::-webkit-scrollbar-track {{ background: #0b1120; border-radius: 2px; }}
-  .temas-scroll::-webkit-scrollbar-thumb {{ background: #1a2540; border-radius: 2px; }}
-  .temas-scroll::-webkit-scrollbar-thumb:hover {{ background: #0fa968; }}
-</style>
-<script>
-function toggleDrill(id) {{
-    var el = document.getElementById(id);
-    el.style.display = (el.style.display === 'none' || el.style.display === '') ? 'table-row' : 'none';
-}}
-</script>
-</head><body>
-{_nav_html("temas", canal=canal, is_admin=(access or {}).get('role')=='admin', title="Temas")}
-<div class="container">
-  <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
-    <div class="period-btns">
-      <a href="?{_base_qs}&dias=1" class="{_d1_cls}">Hoje</a>
-      <a href="?{_base_qs}&dias=7" class="{_d7_cls}">7 dias</a>
-      <a href="?{_base_qs}&dias=15" class="{_d15_cls}">15 dias</a>
-      <a href="?{_base_qs}&dias=30" class="{_d30_cls}">30 dias</a>
-    </div>
-    <span style="color:#4a5a7a;font-size:12px">{_period_label}</span>
-  </div>
+    # ── Período tabs + canal selector + sidebar ──────────────────────────────
+    period_tabs = "".join(
+        f'<a href="?{_base_qs}&dias={d}" style="text-decoration:none;padding:6px 14px;border-radius:8px;font-size:12.5px;font-weight:600;'
+        f'border:1px solid {"rgba(34,198,110,0.4)" if d==dias else "rgba(255,255,255,0.08)"};background:{"rgba(34,198,110,0.14)" if d==dias else "#0e1422"};'
+        f'color:{"#3ddc84" if d==dias else "#9aa3b8"};">{lbl}</a>'
+        for d, lbl in [(1, "Hoje"), (7, "7 dias"), (15, "15 dias"), (30, "30 dias")]
+    )
+    canal_opts = ""
+    for ch_num, ch_label in sorted(COMPANY_CHANNELS_MAP.items(), key=lambda x: x[1]):
+        _selm = " selected" if canal == ch_num else ""
+        canal_opts += f'<option value="{ch_num}"{_selm}>{html_mod.escape(ch_label)} ({ch_num[-4:]})</option>'
 
-  {pautas_html}
+    def _v2nav(label, href, active=False):
+        if active:
+            return (f'<a href="{href}" style="text-decoration:none;padding:9px 12px;border-radius:8px;font-size:13px;font-weight:600;color:#062012;'
+                    'background:linear-gradient(135deg,#22c66e,#16a85c);display:flex;align-items:center;gap:9px;box-shadow:0 4px 14px rgba(34,198,110,0.28);">'
+                    f'<span style="width:5px;height:5px;border-radius:50%;background:#062012;"></span>{label}</a>')
+        return f'<a href="{href}" class="v2nav" style="text-decoration:none;padding:8px 12px;border-radius:8px;font-size:13px;font-weight:500;color:#9aa3b8;display:block;">{label}</a>'
 
-  <div class="kpi-row">
-    <div class="kpi" style="border-top:3px solid {_cov_color(round(100*cov_avg/shelf_n)) if n_adv else '#1a2540'}"><div class="val">{cov_avg:.1f}<span style="font-size:15px;color:#5a6a8a"> / {shelf_n}</span></div><div class="label">Cobertura média por assessor</div></div>
-    <div class="kpi" style="border-top:3px solid {'#ef4444' if n_neglected else '#0fa968'}"><div class="val">{n_neglected}</div><div class="label">Produtos negligenciados pelo time</div></div>
-    <div class="kpi" style="border-top:3px solid #d4af37"><div class="val" style="font-size:14px;color:#d4af37">{html_mod.escape(_short_agent_name(narrowest)) if narrowest else '—'}</div><div class="label">Assessor mais estreito</div></div>
-  </div>
+    _cq = f"?canal={canal}"
+    admin_nav = ""
+    if is_admin_v2:
+        admin_nav = (
+            '<div class="spaced" style="font-size:9.5px;font-weight:600;letter-spacing:0.22em;color:#4a5369;padding:0 6px 10px;">ADMIN</div>'
+            '<nav style="display:flex;flex-direction:column;gap:1px;">'
+            + _v2nav("Acessos", "/dashboard/acessos")
+            + _v2nav("Diagnóstico", "/dashboard/diagnostico" + _cq) + '</nav>'
+        )
+    sidebar_html = (
+        '<aside style="width:248px;flex:none;background:#0a0e1a;border-right:1px solid rgba(255,255,255,0.06);display:flex;flex-direction:column;padding:26px 18px;position:sticky;top:0;height:100vh;overflow-y:auto;">'
+        '<div style="display:flex;align-items:center;gap:11px;padding:0 6px 4px;">'
+        '<div style="width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#22c66e,#0e8a4a);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:18px;color:#06140c;" class="spaced">A</div>'
+        '<div style="line-height:1.05;"><div class="spaced" style="font-weight:700;font-size:14px;letter-spacing:0.04em;">ALTOVALOR</div><div style="font-size:9.5px;letter-spacing:0.32em;color:#6a7589;">INVESTIDORES</div></div></div>'
+        '<div class="spaced" style="font-weight:600;font-size:10px;letter-spacing:0.4em;color:#3f4861;padding:14px 6px 22px;">GRAMPO</div>'
+        '<div class="spaced" style="font-size:9.5px;font-weight:600;letter-spacing:0.22em;color:#4a5369;padding:0 6px 10px;">MONITORAMENTO</div>'
+        '<nav style="display:flex;flex-direction:column;gap:1px;margin-bottom:22px;">'
+        + _v2nav("Visão geral", "/dashboard/overview" + _cq) + _v2nav("Conversas", "/dashboard" + _cq)
+        + _v2nav("Alertas", "/dashboard/alertas" + _cq) + _v2nav("Sem resposta", "/dashboard/sem-resposta" + _cq)
+        + _v2nav("Oportunidades", "/dashboard/oportunidades" + _cq) + _v2nav("Agentes", "/dashboard/agentes" + _cq) + '</nav>'
+        '<div class="spaced" style="font-size:9.5px;font-weight:600;letter-spacing:0.22em;color:#4a5369;padding:0 6px 10px;">ANÁLISE</div>'
+        '<nav style="display:flex;flex-direction:column;gap:1px;margin-bottom:22px;">'
+        + _v2nav("Temas", "/dashboard/temas" + _cq, active=True) + _v2nav("Clientes", "/dashboard/clientes" + _cq)
+        + _v2nav("Avaliação agentes", "/dashboard/avaliacao-agentes" + _cq) + _v2nav("Evolução", "/dashboard/evolucao" + _cq)
+        + _v2nav("Mensagens iniciais", "/dashboard/mensagens" + _cq) + '</nav>'
+        + admin_nav +
+        '<div style="margin-top:auto;display:flex;align-items:center;gap:11px;padding:12px 8px 0;border-top:1px solid rgba(255,255,255,0.06);">'
+        '<div class="spaced" style="width:32px;height:32px;border-radius:50%;background:#13301f;border:1px solid #1f6b40;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#3ddc84;">AV</div>'
+        '<div style="line-height:1.15;"><div style="font-size:13px;font-weight:600;">Gestor</div><a href="/dashboard/logout" style="font-size:11px;color:#6a7589;text-decoration:none;">Sair</a></div></div></aside>'
+    )
 
-  {cobertura_html}
+    _avg_col = _v2_status(round(100 * cov_avg / shelf_n))[1] if n_adv else "#3ddc84"
+    metrics_html = (
+        '<div style="display:flex;align-items:stretch;background:#0e1422;border:1px solid rgba(255,255,255,0.07);border-radius:14px;overflow:hidden;margin-bottom:16px;flex-wrap:wrap;">'
+        f'<div style="flex:1;min-width:170px;padding:18px 24px;border-right:1px solid rgba(255,255,255,0.06);border-top:3px solid #22c66e;"><div style="display:flex;align-items:baseline;gap:5px;"><span style="font-family:{JM};font-weight:700;font-size:30px;color:{_avg_col};">{cov_avg:.1f}</span><span style="font-family:{JM};font-size:14px;color:#5b6577;">/ {shelf_n}</span></div><div class="spaced" style="font-size:10.5px;font-weight:600;letter-spacing:0.12em;color:#8893a8;text-transform:uppercase;margin-top:5px;">Cobertura média / assessor</div></div>'
+        f'<div style="flex:1;min-width:170px;padding:18px 24px;border-right:1px solid rgba(255,255,255,0.06);border-top:3px solid #ef5a6a;"><div style="font-family:{JM};font-weight:700;font-size:30px;color:#ff7b87;">{n_neglected}</div><div class="spaced" style="font-size:10.5px;font-weight:600;letter-spacing:0.12em;color:#8893a8;text-transform:uppercase;margin-top:5px;">Produtos negligenciados</div></div>'
+        f'<div style="flex:1.3;min-width:190px;padding:18px 24px;border-right:1px solid rgba(255,255,255,0.06);border-top:3px solid #f2b007;"><div class="spaced" style="font-weight:700;font-size:20px;color:#f2b007;line-height:1.15;">{html_mod.escape(_short_agent_name(narrowest)) if narrowest else "—"}</div><div class="spaced" style="font-size:10.5px;font-weight:600;letter-spacing:0.12em;color:#8893a8;text-transform:uppercase;margin-top:6px;">Assessor mais estreito</div></div>'
+        f'<div style="flex:1.2;min-width:170px;padding:18px 24px;border-top:3px solid #38bdf8;"><div style="font-family:{JM};font-weight:700;font-size:30px;color:#7ccef5;">{n_conv_ia}</div><div class="spaced" style="font-size:10.5px;font-weight:600;letter-spacing:0.12em;color:#8893a8;text-transform:uppercase;margin-top:5px;">Conversas verificadas · IA</div></div>'
+        '</div>'
+    )
 
-  <!-- Matriz detalhada -->
-  <div class="card">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
-      <span style="width:8px;height:8px;border-radius:50%;background:#0fa968;display:inline-block"></span>
-      <h2 style="margin:0;font-size:15px">Matriz — produtos oferecidos por assessor</h2>
-      <span style="font-size:11px;color:#5a6a8a">nº de clientes a quem o assessor ofereceu · {_period_label.lower()}</span>
-    </div>
-    <p style="font-size:11px;color:#4a5a7a;margin-bottom:16px">
-      Clique numa linha para ver os clientes por tema.
-    </p>
-    <div class="temas-scroll">
-      <table>
-        <thead>
-          <tr>
-            <th style="min-width:180px">Agente</th>
-            {topic_headers}
-          </tr>
-        </thead>
-        <tbody>{rows_html}</tbody>
-      </table>
-    </div>
-  </div>
-</div>
-</body></html>"""
+    _src_note = (f'<span style="color:#3ddc84;">✓ {n_conv_ia} conversas verificadas por IA</span>'
+                 + (f' · {n_conv_kw} por palavra-chave' if n_conv_kw else '')) if n_conv_ia else 'Detecção por palavra-chave — a IA classifica na varredura de domingo.'
+    split_html = (
+        '<div style="display:grid;grid-template-columns:368px 1fr;gap:16px;margin-bottom:16px;align-items:start;">'
+        '<div class="v2card" style="overflow:hidden;">'
+        '<div style="padding:18px 20px 14px;border-bottom:1px solid rgba(255,255,255,0.06);">'
+        '<div style="display:flex;align-items:center;gap:9px;"><span style="width:7px;height:7px;border-radius:50%;background:#22c66e;"></span><h2 class="spaced" style="font-weight:600;font-size:15px;margin:0;">Cobertura da prateleira</h2></div>'
+        f'<div style="font-size:11.5px;color:#6a7589;margin-top:5px;">do menos pro mais coberto · {_period_label.lower()}</div></div>'
+        f'<div style="max-height:660px;overflow-y:auto;padding:8px;">{list_html}</div></div>'
+        f'<div class="v2card" style="padding:26px 28px;position:sticky;top:18px;">{panels_html}'
+        f'<div style="font-size:11px;color:#5b6577;margin-top:20px;border-top:1px solid rgba(255,255,255,0.06);padding-top:12px;">Conta só quando o <b style="color:#9aa3b8;">assessor</b> leva o produto ao cliente. {_src_note}</div>'
+        '</div></div>'
+    )
+
+    lacunas_html = (
+        '<div class="v2card" style="padding:24px 26px;margin-bottom:16px;">'
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;"><span style="font-size:15px;">⚠️</span><h2 class="spaced" style="font-weight:600;font-size:18px;margin:0;">Lacunas do time</h2><span style="font-size:14px;color:#6a7589;font-weight:400;">produtos que quase ninguém oferece</span></div>'
+        f'<div style="display:flex;flex-direction:column;gap:11px;margin-top:20px;">{gap_rows}</div></div>'
+    ) if (gap_rows and n_adv) else ""
+
+    matriz_html = (
+        '<div class="v2card" style="padding:24px 26px;margin-bottom:16px;">'
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;"><span style="width:7px;height:7px;border-radius:50%;background:#22c66e;"></span><h2 class="spaced" style="font-weight:600;font-size:18px;margin:0;">Matriz — produtos oferecidos por assessor</h2><span style="font-size:14px;color:#6a7589;font-weight:400;">nº de clientes a quem ofereceu</span></div>'
+        '<div style="overflow-x:auto;margin-top:18px;"><table style="border-collapse:collapse;width:100%;min-width:760px;"><thead><tr>'
+        '<th class="spaced" style="text-align:left;padding:0 14px 12px 6px;font-size:10.5px;font-weight:600;letter-spacing:0.14em;color:#5b6577;text-transform:uppercase;position:sticky;left:0;background:#0b101c;">Agente</th>'
+        + mh + '</tr></thead><tbody>' + mrows
+        + '<tr style="border-top:2px solid rgba(34,198,110,0.3);"><td class="spaced" style="padding:14px 14px 4px 6px;font-size:12px;font-weight:700;letter-spacing:0.1em;color:#e8edf5;position:sticky;left:0;background:#0b101c;">TOTAL</td>'
+        + mtot + '</tr></tbody></table></div></div>'
+    )
+
+    pautas_block = (f'<div style="margin-top:8px;">{pautas_html}</div>' if pautas_html else "")
+
+    V2CSS = """<style>
+*{box-sizing:border-box;}html,body{margin:0;padding:0;}
+body{background:#070a12;font-family:'Plus Jakarta Sans',sans-serif;-webkit-font-smoothing:antialiased;color:#e8edf5;}
+::-webkit-scrollbar{width:9px;height:9px;}::-webkit-scrollbar-thumb{background:#1c2436;border-radius:6px;border:2px solid #070a12;}::-webkit-scrollbar-track{background:transparent;}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+.spaced{font-family:'Space Grotesk',sans-serif;}
+.v2nav:hover{background:rgba(255,255,255,0.04)!important;color:#e8edf5!important;}
+.v2card{background:#0b101c;border:1px solid rgba(255,255,255,0.07);border-radius:16px;}
+.card{background:#0b101c;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:14px 18px;}
+.advrow:hover{background:rgba(255,255,255,0.03);}
+.advdetail{display:none;}.advdetail.on{display:block;animation:fadeIn .25s ease;}
+</style>"""
+    V2JS = """<script>
+function selAdv(id){
+  document.querySelectorAll('.advdetail').forEach(function(d){d.classList.remove('on');});
+  var el=document.getElementById('adv-'+id); if(el)el.classList.add('on');
+  document.querySelectorAll('.advrow').forEach(function(r){
+    var on=r.getAttribute('data-id')===id, bar=r.getAttribute('data-selbar');
+    r.style.background=on?'rgba(34,198,110,0.1)':'transparent';
+    r.style.borderLeftColor=on?bar:'transparent';
+    var nm=r.querySelector('.advname'); if(nm)nm.style.color=on?'#ffffff':'#d2d8e4';
+  });
+}
+</script>"""
+
+    topbar_html = (
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:22px;flex-wrap:wrap;">'
+        '<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;">'
+        '<h1 class="spaced" style="font-weight:700;font-size:30px;letter-spacing:-0.01em;margin:0;">Temas</h1>'
+        f'<div style="display:flex;align-items:center;gap:7px;">{period_tabs}</div></div>'
+        '<div style="display:flex;align-items:center;gap:14px;">'
+        f'<span style="display:inline-flex;align-items:center;gap:7px;background:#0e1422;border:1px solid rgba(255,255,255,0.08);border-radius:9px;padding:4px 8px;"><select onchange="location.href=\'/dashboard/temas?canal=\'+this.value+\'&dias={dias}\'" style="background:transparent;border:none;color:#e8edf5;font-size:13px;font-weight:600;cursor:pointer;">{canal_opts}</select></span>'
+        f'<div style="font-size:11.5px;color:#6a7589;font-family:{JM};">Atualizado {now_br.strftime("%H:%M")}</div>'
+        '<a href="javascript:location.reload()" style="width:34px;height:34px;border-radius:9px;background:#0e1422;border:1px solid rgba(255,255,255,0.08);display:flex;align-items:center;justify-content:center;color:#9aa3b8;text-decoration:none;font-size:15px;">↻</a>'
+        '</div></div>'
+    )
+
+    page = (
+        "<!DOCTYPE html><html lang=\"pt-BR\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        "<title>Temas — Alto Valor</title>"
+        "<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\"><link rel=\"preconnect\" href=\"https://fonts.gstatic.com\" crossorigin>"
+        "<link href=\"https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap\" rel=\"stylesheet\">"
+        + V2CSS +
+        "</head><body><div style=\"display:flex;min-height:100vh;background:#070a12;color:#e8edf5;\">"
+        + sidebar_html
+        + "<main style=\"flex:1;min-width:0;padding:30px 36px 56px;max-width:1360px;\">"
+        + topbar_html + metrics_html + split_html + lacunas_html + matriz_html + pautas_block
+        + "</main></div>" + V2JS + "</body></html>"
+    )
 
     return HTMLResponse(page)
 
