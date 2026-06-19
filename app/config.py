@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     AUTO_SCORE_HOUR: int = 22                 # domingo, 22h Brasília
     AUTO_SCORE_DAYS: int = 9                  # janela com folga; cache pula o resto
     AUTO_SCORE_CANAL: str = "5519997733651"   # canal principal
+    # Endpoint HTTP /dashboard/cron/score-daily DESATIVADO por padrão: a
+    # avaliação roda pelo agendador interno de domingo (AUTO_SCORE_*). Um cron
+    # externo batendo nesse endpoint todo dia (days=30) era o que estourava o
+    # custo. Reative com CRON_SCORE_ENABLED=1 se algum dia precisar.
+    CRON_SCORE_ENABLED: str = "0"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

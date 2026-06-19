@@ -4413,6 +4413,14 @@ def cron_score_daily(request: Request, db: Session = Depends(get_db)):
     if not token or not _expected or not hmac.compare_digest(token, _expected):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
 
+    # Desativado por padrão: a avaliação roda pelo agendador interno de domingo.
+    # Isto neutraliza qualquer cron externo diário que ainda esteja batendo aqui
+    # (era a causa do estouro de custo). Reative com CRON_SCORE_ENABLED=1.
+    if str(settings.CRON_SCORE_ENABLED).strip().lower() in ("0", "false", "no", ""):
+        db.close()
+        return JSONResponse({"ok": True, "disabled": True, "scored": 0,
+                             "msg": "cron desativado — avaliação roda no agendador de domingo"})
+
     canal = request.query_params.get("canal", "5519997733651")
     days  = int(request.query_params.get("days", "30"))
 
