@@ -60,12 +60,37 @@ COMPANY_CHANNELS = set(COMPANY_CHANNELS_MAP.keys())
 HOUR_START, HOUR_END = 6, 19
 
 # Zenvia conversation deep-link template. "{id}" is replaced with the
-# conversation.id from the webhook payload (matches the id in the Zenvia URL
-# path). The "?g=" group param is REQUIRED — without it Zenvia opens the inbox
-# with no group selected ("Selecione um grupo") and shows nothing. With it,
-# the Alto Valor group loads and the conversation list appears. Leave empty to
-# omit the Zenvia link entirely.
+# conversation.id from the webhook payload (it matches the id Zenvia uses in
+# its own URL path — verified against a real conversation). The "?g=" group
+# param is REQUIRED — without it Zenvia opens the inbox with no group selected
+# ("Selecione um grupo") and shows nothing.
+#
+# IMPORTANT: the path id ALONE does NOT open the conversation on a cold load —
+# Zenvia's single-page app ignores it and lands on the inbox. The conversation
+# only opens when a "&search=" term is also present (Zenvia's app runs the
+# inbox search, finds the contact, and opens it). So we ALWAYS append the
+# client's name/phone as the search term via _zenvia_url() below — that mirrors
+# exactly the URL Zenvia itself produces when you search the inbox by hand.
+# Leave the template empty to omit the Zenvia link entirely.
 ZENVIA_CONV_URL_TEMPLATE = "https://app.zenvia.com/sales-chat/inbox/all/{id}?g=69a88feecfe7701db3cb102f"
+
+
+def _zenvia_url(conv_id: str, search: str = "") -> str:
+    """Build a Zenvia deep-link that actually OPENS the conversation.
+
+    The conversation.id in the path is necessary but not sufficient: Zenvia's
+    SPA only surfaces a specific conversation when the "&search=" query param is
+    present (the contact name or phone). We append it so the link lands on the
+    conversation instead of the bare inbox.
+    """
+    if not (ZENVIA_CONV_URL_TEMPLATE and conv_id):
+        return ""
+    url = ZENVIA_CONV_URL_TEMPLATE.replace("{id}", conv_id)
+    s = (search or "").strip()
+    if s:
+        from urllib.parse import quote_plus
+        url += "&search=" + quote_plus(s)
+    return url
 
 # ── Business-hours helpers (Sem Resposta detection) ──────────────────────────
 # Working window used to decide whether a client was really "left waiting":
@@ -5466,7 +5491,7 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
     for r in rows_latest:
         if not _user_sees(access, r.agent or ""):
             continue
-        zurl = ZENVIA_CONV_URL_TEMPLATE.replace("{id}", r.conv_id) if (ZENVIA_CONV_URL_TEMPLATE and r.conv_id) else ""
+        zurl = _zenvia_url(r.conv_id, r.client_name or r.phone)
         seg = _get_segment(r.agent or "") or "Outros"
         for idx, o in enumerate(r.opportunities or []):
             tipo = o.get("tipo", "outro")
@@ -7886,7 +7911,7 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
         oque = (f"[{level}] " if level else "") + (snippet or "Conversa marcada como problema de conformidade.")
         conv_id = info.get("conv_id") or ""
         grampo_link = f"/dashboard/conversa?phone={_uqj(ph, safe='')}&canal={_uqj(canal, safe='')}"
-        zenvia_link = ZENVIA_CONV_URL_TEMPLATE.replace("{id}", conv_id) if (ZENVIA_CONV_URL_TEMPLATE and conv_id) else ""
+        zenvia_link = _zenvia_url(conv_id, cliente)
         # Level label without emoji + severity bucket for the badge
         _lvl_clean = level
         for _e in ("🔴", "🟠", "🟡", "🔵"):
@@ -9019,7 +9044,7 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
         # the time the client was actually left waiting during working hours.
         biz_h = c.get("silence_biz_h", 0)
         _cid = c.get("conv_id") or ""
-        _zurl = ZENVIA_CONV_URL_TEMPLATE.replace("{id}", _cid) if (ZENVIA_CONV_URL_TEMPLATE and _cid) else ""
+        _zurl = _zenvia_url(_cid, c.get("client_name") or c["phone"])
         sr_conv.append({
             "id":          c["phone"],
             "cliente":     c.get("client_name") or c["phone"],
