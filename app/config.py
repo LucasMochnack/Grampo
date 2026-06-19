@@ -40,7 +40,9 @@ class Settings(BaseSettings):
     # somando avaliação, oportunidades, sem-resposta e sugestão. Ao atingir, as
     # features param de chamar a IA até a virada do dia (degradam pro cache).
     # Protege contra qualquer disparo acidental. 0 = sem limite.
-    LLM_DAILY_CAP: int = 1500
+    # 500 é conservador: cobre o uso normal (~150-250/dia em dias movimentados)
+    # com folga, mas corta cedo um disparo descontrolado (o pico foi 1.761).
+    LLM_DAILY_CAP: int = 500
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
