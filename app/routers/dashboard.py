@@ -4273,6 +4273,11 @@ def score_conv_endpoint(request: Request, body: dict = Body(default={}), db: Ses
                 "from_cache": True,
             })
 
+    from app.services import llm_budget as _llm
+    if not _llm.try_consume(db):
+        db.close()
+        return JSONResponse({"error": "Limite diário de avaliações por IA atingido. Tente amanhã."}, status_code=429)
+
     try:
         scored = _call_score_llm(_build_transcript(msg_tuples))
         if last_event_id:
@@ -4343,9 +4348,12 @@ def run_score_scan(db, canal: str = "5519997733651", days: int = 30) -> dict:
     cp  = _real_phone(canal)
     _epoch = datetime.min.replace(tzinfo=timezone.utc)
 
+    from app.services import llm_budget as _llm
+
     total_scored = 0
     total_skipped = 0
     total_errors  = 0
+    capped = False
 
     for key, evs in groups_orm.items():
         if _real_phone(key) == cp:
@@ -4380,6 +4388,9 @@ def run_score_scan(db, canal: str = "5519997733651", days: int = 30) -> dict:
                 msg_tuples.append((_extract_direction(_p), _txt, _ts))
         if not msg_tuples:
             continue
+        if not _llm.try_consume(db):       # teto diário de IA atingido
+            capped = True
+            break
         try:
             # Uma única chamada devolve nota + produtos ofertados (custo-neutro).
             scored = _call_score_llm(_build_transcript(msg_tuples))
@@ -4392,6 +4403,7 @@ def run_score_scan(db, canal: str = "5519997733651", days: int = 30) -> dict:
 
     return {
         "ok": True,
+        "capped": capped,
         "scored": total_scored,
         "skipped_cached": total_skipped,
         "errors": total_errors,
@@ -4831,15 +4843,20 @@ def opp_scan_endpoint(request: Request, body: dict = Body(default={}), db: Sessi
     total = len(candidates)
     slice_ = candidates[offset: offset + batch_size]
 
+    from app.services import llm_budget as _llm
     scanned_this = 0
     found_this = 0
     llm_calls = 0
     errors = 0
+    capped = False
     for rp, last_event_id, conv_id, conv_canal, agent, client_name, last_msg_at, msg_tuples in slice_:
         cached = db.get(_CO, (rp, last_event_id))
         if cached and cached.opp_version == _OPP_VERSION:
             scanned_this += 1
             continue
+        if not _llm.try_consume(db):       # teto diário de IA atingido
+            capped = True
+            break
         try:
             opps = _call_opp_llm(_build_opp_transcript(msg_tuples))
             _upsert_opp(db, rp, last_event_id, conv_canal, conv_id,
@@ -4851,13 +4868,14 @@ def opp_scan_endpoint(request: Request, body: dict = Body(default={}), db: Sessi
             errors += 1
 
     next_offset = offset + batch_size
-    finished = next_offset >= total
+    finished = capped or next_offset >= total   # capped encerra a varredura
     db.close()
     return JSONResponse({
         "done":              min(next_offset, total),
         "total":             total,
         "next_offset":       next_offset if not finished else total,
         "finished":          finished,
+        "capped":            capped,
         "scanned_this_call": scanned_this,
         "found_this_call":   found_this,
         "llm_calls":         llm_calls,
@@ -5758,6 +5776,10 @@ def suggest_reply_endpoint(request: Request, body: dict = Body(default={}), db: 
 
     if not phone:
         return JSONResponse({"error": "missing phone"}, status_code=400)
+
+    from app.services import llm_budget as _llm
+    if not _llm.try_consume(db):
+        return JSONResponse({"suggestion": "Limite diário de IA atingido — tente novamente amanhã."})
 
     # Fresh query to get conversation messages. Use a 30-day window (the Sem
     # Resposta queue surfaces conversations up to ~14 days old, and a 7-day
@@ -9839,6 +9861,8 @@ def dashboard_diagnostico(request: Request, db: Session = Depends(get_db)):
         _as_last_result = json.loads(get_setting(db, "auto_score_last_result") or "{}")
     except Exception:
         _as_last_result = {}
+    from app.services import llm_budget as _llm
+    _llm_used, _llm_cap = _llm.usage_today(db)
     db.close()
 
     groups, phone_learned = _group_events(all_events, client_agent_map)
@@ -9940,12 +9964,20 @@ def dashboard_diagnostico(request: Request, db: Session = Depends(get_db)):
         )
     else:
         _as_status = '<span style="color:#5a6a8a">ainda não rodou — primeira execução no próximo domingo</span>'
+    _cap_txt = (f'{_llm_used} / {_llm_cap} chamadas hoje' if _llm_cap else f'{_llm_used} chamadas hoje (sem teto)')
+    _cap_color = "#ef4444" if (_llm_cap and _llm_used >= _llm_cap) else ("#eab308" if (_llm_cap and _llm_used >= 0.8 * _llm_cap) else "#0fa968")
     autoscore_html = (
-        '<div style="background:#0d1630;border:1px solid #1a2540;border-radius:10px;padding:14px 22px;margin-bottom:32px">'
+        '<div style="background:#0d1630;border:1px solid #1a2540;border-radius:10px;padding:14px 22px;margin-bottom:16px">'
         '<div style="font-size:10px;color:#5a6a8a;letter-spacing:1px;font-weight:700;margin-bottom:6px">'
         'AVALIAÇÃO AUTOMÁTICA DE AGENTES</div>'
         f'<div style="font-size:12px;color:#8a96aa">Agendada todo <b style="color:#e8ecf1">domingo às '
         f'{settings.AUTO_SCORE_HOUR}h</b> (Brasília) · janela de {settings.AUTO_SCORE_DAYS} dias · {_as_status}</div></div>'
+        '<div style="background:#0d1630;border:1px solid #1a2540;border-radius:10px;padding:14px 22px;margin-bottom:32px">'
+        '<div style="font-size:10px;color:#5a6a8a;letter-spacing:1px;font-weight:700;margin-bottom:6px">'
+        'TETO DIÁRIO DE IA (proteção de custo)</div>'
+        f'<div style="font-size:12px;color:#8a96aa">Consumo de hoje: <b style="color:{_cap_color}">{_cap_txt}</b>'
+        + (' — <span style="color:#ef4444">teto atingido, IA pausada até amanhã</span>' if (_llm_cap and _llm_used >= _llm_cap) else '')
+        + ' · ajuste com a variável <code style="color:#c4b5fd">LLM_DAILY_CAP</code> no Railway.</div></div>'
     )
 
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Diagnóstico</title>{COMMON_CSS}</head><body>

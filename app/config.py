@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     # externo batendo nesse endpoint todo dia (days=30) era o que estourava o
     # custo. Reative com CRON_SCORE_ENABLED=1 se algum dia precisar.
     CRON_SCORE_ENABLED: str = "0"
+    # Teto rígido de chamadas à API da Anthropic por dia (horário de Brasília),
+    # somando avaliação, oportunidades, sem-resposta e sugestão. Ao atingir, as
+    # features param de chamar a IA até a virada do dia (degradam pro cache).
+    # Protege contra qualquer disparo acidental. 0 = sem limite.
+    LLM_DAILY_CAP: int = 1500
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

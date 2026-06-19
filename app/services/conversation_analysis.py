@@ -192,6 +192,12 @@ def analyze_conversation(
     if not messages:
         return None
 
+    # Teto diário de chamadas à IA (proteção de custo).
+    from app.services import llm_budget as _llm
+    if not _llm.try_consume(db):
+        logger.warning("Teto diário de IA atingido — Sem Resposta não analisado")
+        return None
+
     # Lazy import so the dependency only kicks in when the feature is used
     try:
         import anthropic
