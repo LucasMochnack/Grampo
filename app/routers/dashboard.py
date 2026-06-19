@@ -57,6 +57,25 @@ COMPANY_CHANNELS_MAP: dict[str, str] = {
     "551920424283": "Expansão",
 }
 COMPANY_CHANNELS = set(COMPANY_CHANNELS_MAP.keys())
+
+
+def _req_canal(request, default: str = "5519997733651") -> str:
+    """Read & validate the 'canal' query param against the known company channels.
+    The value flows into many hrefs, so an unknown/forged value (XSS payloads,
+    etc.) must never survive — it falls back to ``default``."""
+    raw = (request.query_params.get("canal", default) or "").strip()
+    return raw if raw in COMPANY_CHANNELS else default
+
+
+def _formula_safe(v):
+    """Neutralize spreadsheet formula/DDE injection in exported cells: prefix a
+    leading =, +, -, @, tab, CR or LF with a quote so Excel/Sheets treat the cell
+    as text. Non-strings (numbers) pass through unchanged."""
+    if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r", "\n"):
+        return "'" + v
+    return v
+
+
 HOUR_START, HOUR_END = 6, 19
 
 # Zenvia conversation deep-link template. "{id}" is replaced with the
@@ -1697,7 +1716,7 @@ def dashboard_overview(request: Request, db: Session = Depends(get_db)):
     if access is None:
         return _auth_redirect()
 
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
     now_br = datetime.now(BRASILIA)
     today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
     two_days_ago = today_start - timedelta(days=1)
@@ -2147,7 +2166,7 @@ async def login_submit(request: Request, db: Session = Depends(get_db)):
     master = settings.DASHBOARD_PASSWORD
 
     token: str | None = None
-    if master and pwd == master:
+    if master and hmac.compare_digest(hashlib.sha256(pwd.encode()).digest(), hashlib.sha256(master.encode()).digest()):
         token = _MASTER_TOKEN
     else:
         for i, a in enumerate(_load_accesses(db)):
@@ -2674,7 +2693,7 @@ def dashboard_conversas_export(request: Request, db: Session = Depends(get_db)):
     if access is None:
         return RedirectResponse("/dashboard/login", status_code=302)
 
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
     all_events_raw, _ = get_events(db, limit=50000, offset=0)
     all_events_f = _filter_events_by_channel(all_events_raw, canal)
     client_agent_map = get_agent_mappings(db)
@@ -2737,7 +2756,7 @@ def dashboard_conversas_export(request: Request, db: Session = Depends(get_db)):
     writer.writerow(["Agente", "Telefone", "Nome Cliente", "Data", "Hora Início", "Hora Última Msg", "Msgs Enviadas", "Msgs Recebidas"])
     for row in rows:
         # Prefix phone with tab so Excel reads as text (prevents scientific notation)
-        writer.writerow([row[0], f"\t{row[1]}", row[2], row[3], row[4], row[5], row[6], row[7]])
+        writer.writerow([_formula_safe(row[0]), f"\t{row[1]}", _formula_safe(row[2]), row[3], row[4], row[5], row[6], row[7]])
     output.seek(0)
 
     filename = f"conversas-{periodo_exp}-{now_br.strftime('%Y%m%d%H%M')}.csv"
@@ -2754,7 +2773,7 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
     if access is None:
         return _auth_redirect()
 
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
     _periodo_conv = request.query_params.get("periodo_conv", "hoje")
     if _periodo_conv not in ("hoje", "7dias", "30dias"):
         _periodo_conv = "hoje"
@@ -2911,7 +2930,7 @@ def dashboard_main(request: Request, db: Session = Depends(get_db)):
       <span style="font-size:10.5px;color:{'#0fa968' if in_count else '#5a6a8a'};flex-shrink:0;font-weight:{'700' if in_count else '500'}">{ts}</span>
     </div>
     <div style="font-size:11px;color:#8a96aa;margin-top:2px;display:flex;align-items:center;gap:6px">
-      <span>{_short_agent_name(agent)}</span>{badge}
+      <span>{html_mod.escape(_short_agent_name(agent))}</span>{badge}
     </div>
     <div style="font-size:12px;color:{snippet_color};margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
       {alert_dot}{html_mod.escape(last_text or "—")}
@@ -3392,7 +3411,7 @@ def conv_search_api(request: Request, db: Session = Depends(get_db)):
         return JSONResponse({"cards": "", "panels": "", "count": 0}, status_code=401)
 
     q = request.query_params.get("q", "").strip().lower()
-    canal = request.query_params.get("canal", "5519997733651").strip()
+    canal = _req_canal(request)
 
     if len(q) < 2:
         return JSONResponse({"cards": "", "panels": "", "count": 0})
@@ -3473,7 +3492,7 @@ def conv_search_api(request: Request, db: Session = Depends(get_db)):
       <span style="font-size:10.5px;color:#5a6a8a;flex-shrink:0;font-weight:500">{ts}</span>
     </div>
     <div style="font-size:11px;color:#8a96aa;margin-top:2px;display:flex;align-items:center;gap:6px">
-      <span>{_short_agent_name(agent)}</span>{badge}
+      <span>{html_mod.escape(_short_agent_name(agent))}</span>{badge}
     </div>
     <div style="font-size:12px;color:#8a96aa;margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">
       {html_mod.escape(last_text or "—")}
@@ -3515,7 +3534,7 @@ def conv_messages_api(request: Request, db: Session = Depends(get_db)):
     if not access:
         return HTMLResponse('<div style="color:#ef4444;text-align:center;padding:20px">Sessão expirada</div>', status_code=401)
     client_key = request.query_params.get("phone", "").strip()
-    canal = request.query_params.get("canal", "5519997733651").strip()
+    canal = _req_canal(request)
     if not client_key:
         return HTMLResponse('<div style="color:#ef4444;padding:20px">Parâmetro ausente</div>', status_code=400)
     # Load up to 30 days to ensure full conversation history is available
@@ -3633,7 +3652,7 @@ def dashboard_conversa(request: Request, db: Session = Depends(get_db)):
         return _auth_redirect()
 
     client_key = request.query_params.get("phone", "").strip()
-    canal = request.query_params.get("canal", "5519997733651").strip()
+    canal = _req_canal(request)
     if not client_key:
         return HTMLResponse(
             f"<!DOCTYPE html><html><head><meta charset='utf-8'>{COMMON_CSS}</head>"
@@ -4462,7 +4481,7 @@ def cron_score_daily(request: Request, db: Session = Depends(get_db)):
         return JSONResponse({"ok": True, "disabled": True, "scored": 0,
                              "msg": "cron desativado — avaliação roda no agendador de domingo"})
 
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
     days  = int(request.query_params.get("days", "30"))
 
     result = run_score_scan(db, canal=canal, days=days)
@@ -5438,7 +5457,7 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
     if access is None:
         return RedirectResponse("/dashboard/login", status_code=302)
     is_admin = (access or {}).get("role") == "admin"
-    canal    = (request.query_params.get("canal") or "").strip()
+    canal    = _req_canal(request, default="")
     tipo_f   = (request.query_params.get("tipo") or "").strip()
     agente_f = (request.query_params.get("agente") or "").strip()
     time_f   = (request.query_params.get("time") or "").strip()
@@ -5863,7 +5882,7 @@ def agente_detalhe(request: Request, db: Session = Depends(get_db)):
     if access is None:
         return _auth_redirect()
 
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
     agent_name = request.query_params.get("agent", "")
     _dias_raw = request.query_params.get("dias", "1")
     dias = int(_dias_raw) if _dias_raw.isdigit() and int(_dias_raw) in (1, 7, 15, 30) else 1
@@ -5969,7 +5988,7 @@ def agente_detalhe(request: Request, db: Session = Depends(get_db)):
     _d30_cls = "active" if dias == 30 else ""
 
     page = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>{short_name} — {_period_label}</title>{COMMON_CSS}
+<title>{html_mod.escape(short_name)} — {_period_label}</title>{COMMON_CSS}
 <script>
 function toggleChat(id) {{
     var el = document.getElementById(id);
@@ -6114,7 +6133,7 @@ def dashboard_temas(request: Request, db: Session = Depends(get_db)):
     if access is None:
         return _auth_redirect()
 
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
     _dias_raw = request.query_params.get("dias", "7")
     dias = int(_dias_raw) if _dias_raw.isdigit() and int(_dias_raw) in (1, 7, 15, 30) else 7
 
@@ -6872,7 +6891,7 @@ def dashboard_clientes(request: Request, db: Session = Depends(get_db)):
     access = _get_access(request, db)
     if access is None:
         return _auth_redirect()
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
     _draw = request.query_params.get("dias", "7")
     dias = int(_draw) if _draw.isdigit() and int(_draw) in (1, 7, 15, 30) else 7
 
@@ -6967,7 +6986,7 @@ def dashboard_clientes_export(request: Request, db: Session = Depends(get_db)):
     access = _get_access(request, db)
     if access is None:
         return RedirectResponse("/dashboard/login", status_code=302)
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
     _draw = request.query_params.get("dias", "7")
     dias = int(_draw) if _draw.isdigit() and int(_draw) in (1, 7, 15, 30) else 7
 
@@ -6987,7 +7006,7 @@ def dashboard_clientes_export(request: Request, db: Session = Depends(get_db)):
         wb = Workbook(); ws = wb.active; ws.title = "Clientes"
         ws.append(headers)
         for r in rows:
-            ws.append(_r(r))
+            ws.append([_formula_safe(x) for x in _r(r)])
         hdr_fill = PatternFill("solid", fgColor="0B1120")
         for c in ws[1]:
             c.font = Font(bold=True, color="FFFFFF"); c.fill = hdr_fill
@@ -7027,7 +7046,7 @@ def debug_agent_clients(request: Request, db: Session = Depends(get_db)):
     if not _check_auth(request):
         return JSONResponse({"error": "unauth"}, status_code=401)
     import re as _re2
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
     agent_filter = request.query_params.get("agent", "").lower()
     now_br = datetime.now(BRASILIA)
     today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -7181,7 +7200,7 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
     if access is None:
         return _auth_redirect()
 
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
     acked = _get_acked_alerts(db)
     client_name_map = get_client_names(db)
 
@@ -7778,7 +7797,7 @@ def dashboard_relatorio_juridico(request: Request, db: Session = Depends(get_db)
     if (access or {}).get("role") != "admin":
         return HTMLResponse("<h3 style='font-family:sans-serif;padding:40px'>Acesso restrito a administradores.</h3>", status_code=403)
 
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
     fmt   = request.query_params.get("format", "html")
 
     acked = _get_acked_alerts(db)
@@ -8198,7 +8217,7 @@ def dashboard_agentes_export(request: Request, db: Session = Depends(get_db)):
     _old_seg = request.query_params.get("segmento", "")
     if _old_seg:
         segmentos.add(_old_seg)
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
 
     now_br = datetime.now(BRASILIA)
     today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -8282,7 +8301,7 @@ def dashboard_agentes_export(request: Request, db: Session = Depends(get_db)):
     writer = csv.writer(output)
     writer.writerow(["Agente", "Telefone", "Nome Cliente", "Data", "Hora 1º Contato"])
     for row in _rows:
-        writer.writerow([row[0], f"\t{row[1]}", row[2], row[3], row[4]])
+        writer.writerow([_formula_safe(row[0]), f"\t{row[1]}", _formula_safe(row[2]), row[3], row[4]])
     output.seek(0)
 
     filename = f"agentes-{periodo}-{now_br.strftime('%Y%m%d%H%M')}.csv"
@@ -8873,7 +8892,7 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
     if access is None:
         return _auth_redirect()
 
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
     # Identification thresholds (business-hours aware):
     MIN_SILENCE_BIZ_H  = 1.0   # at least 1 business hour (Mon–Fri 9–18h) waiting
     MIN_SILENCE_REAL_H = 0.5   # and at least 30 min real, so we never flag a
@@ -9788,7 +9807,7 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
     if access is None:
         return _auth_redirect()
 
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
     days  = max(1, min(30, int(request.query_params.get("days", "7"))))
 
     from app.models import ConversationScore as _CS
@@ -9984,7 +10003,7 @@ def dashboard_diagnostico(request: Request, db: Session = Depends(get_db)):
     if (access or {}).get("role") != "admin":
         return HTMLResponse("<h3>Acesso restrito a administradores.</h3>", status_code=403)
 
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
     now_br = datetime.now(BRASILIA)
     today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
     cutoff_7d   = today_start - timedelta(days=6)
@@ -10188,7 +10207,7 @@ def dashboard_agentes_heatmap(request: Request, db: Session = Depends(get_db)):
     fim_raw    = request.query_params.get("fim", "")
     _segs_raw  = request.query_params.get("segmentos", "")
     segmentos: set[str] = {s.strip() for s in _segs_raw.split(",") if s.strip()} if _segs_raw else set()
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
 
     now_br = datetime.now(BRASILIA)
     today_start = now_br.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -10330,7 +10349,7 @@ def dashboard_agentes_heatmap(request: Request, db: Session = Depends(get_db)):
             _det = f"/dashboard/agente-detalhe?agent={_url_quote(agent_name)}&canal={canal}"
             rows += (f'<tr><td style="border-left:3px solid {sc};padding-left:10px;white-space:nowrap;font-size:12px;font-weight:600;background:#0b1120">'
                      f'{dot}<a href="{_det}" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dotted #3a4a6a" '
-                     f'onmouseover="this.style.color=\'#0fa968\'" onmouseout="this.style.color=\'inherit\'">{_short_agent_name(agent_name)}</a>'
+                     f'onmouseover="this.style.color=\'#0fa968\'" onmouseout="this.style.color=\'inherit\'">{html_mod.escape(_short_agent_name(agent_name))}</a>'
                      f'</td>{cells}</tr>')
         return rows
 
@@ -10386,7 +10405,7 @@ def dashboard_agentes_heatmap(request: Request, db: Session = Depends(get_db)):
         _det2 = f"/dashboard/agente-detalhe?agent={_url_quote(_ag)}&canal={canal}"
         wday_rows += (f'<tr><td style="border-left:3px solid {sc};padding-left:10px;white-space:nowrap;font-size:12px;font-weight:600;background:#0b1120">'
                       f'{dot}<a href="{_det2}" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dotted #3a4a6a" '
-                      f'onmouseover="this.style.color=\'#0fa968\'" onmouseout="this.style.color=\'inherit\'">{_short_agent_name(_ag)}</a>'
+                      f'onmouseover="this.style.color=\'#0fa968\'" onmouseout="this.style.color=\'inherit\'">{html_mod.escape(_short_agent_name(_ag))}</a>'
                       f'</td>{cells}</tr>')
 
     _wday_headers = ""
@@ -10529,7 +10548,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
     _old_seg = request.query_params.get("segmento", "")
     if _old_seg:
         segmentos.add(_old_seg)
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
     msg = request.query_params.get("msg", "")
     count = request.query_params.get("count", "")
 
@@ -11001,7 +11020,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
                 row_total = len(_union_set)
             cells += f'<td style="text-align:center;font-weight:800;font-size:15px;color:#0fa968;background:#0f1629;padding:8px 4px;border:1px solid #1a2540">{row_total}</td>'
             _det_url = f"/dashboard/agente-detalhe?agent={_url_quote(agent_name)}&canal={canal}"
-            rows += f'<tr><td style="border-left:3px solid {seg_color};padding-left:10px;white-space:nowrap;font-size:12px;font-weight:600;background:#0b1120">{dot}<a href="{_det_url}" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dotted #3a4a6a" onmouseover="this.style.color=\'#0fa968\'" onmouseout="this.style.color=\'inherit\'">{_short_agent_name(agent_name)}</a></td>{cells}</tr>'
+            rows += f'<tr><td style="border-left:3px solid {seg_color};padding-left:10px;white-space:nowrap;font-size:12px;font-weight:600;background:#0b1120">{dot}<a href="{_det_url}" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dotted #3a4a6a" onmouseover="this.style.color=\'#0fa968\'" onmouseout="this.style.color=\'inherit\'">{html_mod.escape(_short_agent_name(agent_name))}</a></td>{cells}</tr>'
         return rows
 
     hourly_rows_msgs = _build_heatmap_rows(hourly_msgs, client_mode=False)
@@ -11079,7 +11098,7 @@ def dashboard_agentes(request: Request, db: Session = Depends(get_db)):
             cells += _dh_cell(v, _dh_mx, is_today=(_d == _today_date))
         cells += f'<td style="text-align:center;font-weight:800;font-size:13px;color:#0fa968;background:#0f1629;padding:8px 4px;border:1px solid #1a2540">{row_total}</td>'
         _det_url_w = f"/dashboard/agente-detalhe?agent={_url_quote(_ag)}&canal={canal}"
-        weekday_heatmap_rows += f'<tr><td style="border-left:3px solid {seg_color};padding-left:10px;white-space:nowrap;font-size:12px;font-weight:600;background:#0b1120">{dot}<a href="{_det_url_w}" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dotted #3a4a6a" onmouseover="this.style.color=\'#0fa968\'" onmouseout="this.style.color=\'inherit\'">{_short_agent_name(_ag)}</a></td>{cells}</tr>'
+        weekday_heatmap_rows += f'<tr><td style="border-left:3px solid {seg_color};padding-left:10px;white-space:nowrap;font-size:12px;font-weight:600;background:#0b1120">{dot}<a href="{_det_url_w}" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dotted #3a4a6a" onmouseover="this.style.color=\'#0fa968\'" onmouseout="this.style.color=\'inherit\'">{html_mod.escape(_short_agent_name(_ag))}</a></td>{cells}</tr>'
 
     # Column headers: one per specific date  (day name + date, today highlighted)
     _wday_headers = ""
@@ -11703,7 +11722,7 @@ def dashboard_mensagens(request: Request, db: Session = Depends(get_db)):
     if access is None:
         return _auth_redirect()
 
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
     _msgs_since = (datetime.now(BRASILIA) - timedelta(days=7)).replace(
         hour=0, minute=0, second=0, microsecond=0
     ).astimezone(timezone.utc)
@@ -11914,7 +11933,7 @@ def dashboard_evolucao(request: Request, db: Session = Depends(get_db)):
     if access is None:
         return _auth_redirect()
 
-    canal = request.query_params.get("canal", "5519997733651")
+    canal = _req_canal(request)
 
     _evolucao_since = (datetime.now(BRASILIA) - timedelta(days=91)).replace(
         hour=0, minute=0, second=0, microsecond=0
@@ -12064,7 +12083,7 @@ def dashboard_evolucao(request: Request, db: Session = Depends(get_db)):
         s1_rows += (f'<tr>'
                     f'<td style="border-left:3px solid {seg_color};padding-left:10px;'
                     f'white-space:nowrap;font-size:12px;font-weight:600;background:#0b1120">'
-                    f'{dot}{_short_agent_name(ag)}</td>{cells}</tr>')
+                    f'{dot}{html_mod.escape(_short_agent_name(ag))}</td>{cells}</tr>')
 
     # Total row
     if s1_rows:
