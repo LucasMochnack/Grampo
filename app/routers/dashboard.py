@@ -5805,6 +5805,61 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
     return HTMLResponse(page)
 
 
+def _suggest_context_block(db, phone: str) -> str:
+    """Monta um bloco de contexto do cliente (resumo da avaliação, produtos já
+    oferecidos, oportunidades mapeadas, assessor/segmento) para enriquecer a
+    sugestão de resposta. USO INTERNO — a IA é instruída a não repetir isso ao
+    cliente. Cada lookup é protegido para nunca quebrar a sugestão."""
+    from app.models import (ConversationScore as _CS, ConversationCoverage as _CC,
+                            ConversationOpportunity as _CO)
+    from app.crud import get_agent_mappings, get_client_names
+    parts: list[str] = []
+    try:
+        nm = (get_client_names(db).get(phone) or "").strip()
+        if nm:
+            parts.append(f"Nome do cliente: {nm}")
+    except Exception:
+        pass
+    try:
+        agent = (get_agent_mappings(db).get(phone) or "").strip()
+        if agent:
+            seg = _get_segment(agent) or ""
+            parts.append(f"Assessor responsável: {_short_agent_name(agent)}"
+                         + (f" · segmento {seg}" if seg else ""))
+    except Exception:
+        pass
+    try:
+        sc = db.query(_CS).filter(_CS.phone == phone).order_by(_CS.scored_at.desc()).first()
+        if sc:
+            if (sc.motivo or "").strip():
+                parts.append(f"Assunto do último atendimento: {sc.motivo.strip()}")
+            if (sc.resumo or "").strip():
+                parts.append(f"Resumo do último atendimento: {sc.resumo.strip()[:600]}")
+    except Exception:
+        pass
+    try:
+        cov = db.query(_CC).filter(_CC.phone == phone).order_by(_CC.scored_at.desc()).first()
+        if cov and cov.produtos:
+            _labels = {tid: lbl for tid, lbl, *_ in TOPIC_RULES}
+            offered = [_labels.get(p, p) for p in cov.produtos if p]
+            if offered:
+                parts.append("Produtos que o assessor já ofereceu: " + ", ".join(offered[:8]))
+    except Exception:
+        pass
+    try:
+        op = (db.query(_CO).filter(_CO.phone == phone, _CO.has_opp == 1)
+              .order_by(_CO.detected_at.desc()).first())
+        if op and op.opportunities:
+            tits = [(o.get("titulo") or o.get("tipo") or "").strip()
+                    for o in op.opportunities if isinstance(o, dict)]
+            tits = [t for t in tits if t]
+            if tits:
+                parts.append("Oportunidades mapeadas para este cliente: " + "; ".join(tits[:5]))
+    except Exception:
+        pass
+    return "\n".join(parts)
+
+
 @router.post("/dashboard/suggest-reply", include_in_schema=False)
 def suggest_reply_endpoint(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
     """Generate a suggested advisor reply for a pending Sem Resposta conversation.
@@ -5860,6 +5915,8 @@ def suggest_reply_endpoint(request: Request, body: dict = Body(default={}), db: 
     raw_evs = get_events_since(db, since=cutoff_utc, limit=30000)
     raw_evs = _filter_events_by_channel(raw_evs, canal)
     cam = get_agent_mappings(db)
+    # Contexto extra do cliente (resumo, produtos, oportunidades) — antes do close.
+    _ctx_extra = _suggest_context_block(db, phone)
     db.close()
 
     groups_orm, _ = _group_events(raw_evs, cam)
@@ -5888,7 +5945,7 @@ def suggest_reply_endpoint(request: Request, body: dict = Body(default={}), db: 
     if not msg_tuples:
         return JSONResponse({"suggestion": "Não foi possível carregar o histórico da conversa."})
 
-    suggestion = _suggest_reply(msg_tuples, reason=reason)
+    suggestion = _suggest_reply(msg_tuples, reason=reason, client_context=_ctx_extra)
     # Cacheia p/ reuso gratuito (Copiloto reabre sem reprocessar). Sessão nova
     # porque o db da request já foi fechado acima.
     if last_event_id and suggestion and not suggestion.startswith(("Não foi", "Limite")):
@@ -7076,7 +7133,7 @@ def dashboard_clientes_export(request: Request, db: Session = Depends(get_db)):
 
 _COPILOTO_PHONES_KEY = "copiloto_phones"
 _COPILOTO_SUGG_KEY   = "copiloto_sugg_cache"
-_SUGG_CACHE_VER      = "r2"   # versão do prompt de sugestão; bump invalida o cache
+_SUGG_CACHE_VER      = "r3"   # versão do prompt de sugestão; bump invalida o cache
 _COPILOTO_SUGG_MAX   = 800   # limita o tamanho do cache de sugestões
 
 

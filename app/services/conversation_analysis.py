@@ -315,6 +315,7 @@ Conteúdo:
 - Se o cliente fez uma pergunta, aborde direto.
 - Se pediu cotação/informação que você não tem, diga de forma natural que vai verificar e retornar. NUNCA invente número, taxa, produto, rentabilidade ou prazo.
 - Espelhe o tom e o vocabulário que o ASSESSOR já usou na conversa (se ele é informal, seja informal; se trata por "você" ou "senhor", mantenha o mesmo).
+- Se vier um bloco "CONTEXTO DO CLIENTE", use como pano de fundo para deixar a resposta mais relevante (assunto pendente, produto já oferecido, oportunidade) — mas NUNCA repita nota, tag, jargão ou nome de produto interno desse bloco; soe como se você já conhecesse o cliente naturalmente.
 
 Para soar humano (evite os vícios típicos de IA):
 - PROIBIDO clichê corporativo: "fico à disposição", "não hesite em entrar em contato", "entendo perfeitamente", "compreendo sua preocupação", "espero que esteja tudo bem", "é um prazer", "estou aqui para o que precisar", "qualquer dúvida estou à disposição".
@@ -332,6 +333,7 @@ Formato: responda APENAS com o texto da mensagem — sem aspas, sem "Sugestão:"
 def suggest_reply(
     messages: list[tuple[str, str, datetime]],
     reason: str = "",
+    client_context: str = "",
 ) -> str:
     """Generate a suggested advisor reply for a pending conversation.
 
@@ -357,9 +359,14 @@ def suggest_reply(
         lines.append(f"[{ts_str}] {who}: {body}")
 
     transcript = "\n".join(lines)
-    context = f"\n\nContexto: {reason}" if reason else ""
+    _ctx = f"\n\nContexto (motivo): {reason}" if reason else ""
+    _bg = ""
+    if client_context:
+        _bg = ("\n\n=== CONTEXTO DO CLIENTE (uso interno — NÃO repita nada disto ao "
+               "cliente; use só para deixar a resposta mais relevante e pessoal) ===\n"
+               + client_context + "\n=== FIM CONTEXTO ===")
     user_prompt = (
-        f"Conversa abaixo. Sugira uma resposta para o ASSESSOR retomar o atendimento.{context}\n\n"
+        f"Conversa abaixo. Sugira uma resposta para o ASSESSOR retomar o atendimento.{_ctx}{_bg}\n\n"
         f"=== CONVERSA ===\n{transcript}\n=== FIM ===\n\n"
         "Escreva APENAS a mensagem sugerida, sem mais nada:"
     )
