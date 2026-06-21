@@ -7191,11 +7191,16 @@ def _copiloto_data(db, access, phones: list[str], sugg_cache: dict):
         last_text = _extract_content_preview(last_ev.raw_payload or {}, max_len=400) or ""
         conv_id = ""
         contact_name = ""
+        canal_conv = ""
         for ev in msg_evs:
             _p = ev.raw_payload or {}
             _cid = (_p.get("conversation") or {}).get("id") or ""
             if _cid:
                 conv_id = _cid
+            if not canal_conv:
+                _ch = _extract_channel(_p)
+                if _ch:
+                    canal_conv = _ch
             if not contact_name:
                 _cn = _extract_contact_name(_p)
                 if _cn:
@@ -7212,6 +7217,7 @@ def _copiloto_data(db, access, phones: list[str], sugg_cache: dict):
             "last_ts_str":   last_ev.received_at.astimezone(BRASILIA).strftime("%d/%m %H:%M"),
             "last_event_id": last_event_id,
             "conv_id":       conv_id,
+            "canal_conv":    canal_conv,
             "waiting":       last_dir == "IN",
             "suggestion":    sugg_cache.get(f"{phone}|{last_event_id}", ""),
         })
@@ -7308,6 +7314,23 @@ async function copSalvarGrupo(){
   }catch(e){ copToast('Erro ao salvar.'); }
   if(b){ b.disabled=false; b.textContent='Salvar grupo'; }
 }
+async function copEnviar(i){
+  var card=document.getElementById('cop-'+i); var ta=document.getElementById('sugg-'+i);
+  if(!card||!ta) return;
+  var txt=(ta.value||'').trim();
+  if(!txt){ copToast('Escreva ou gere uma resposta antes de enviar.'); return; }
+  var nome=card.dataset.name||'o cliente';
+  if(!confirm('Enviar esta resposta para '+nome+' no WhatsApp?\\n\\n"'+txt.slice(0,180)+(txt.length>180?'…':'')+'"')) return;
+  var btn=document.getElementById('send-'+i);
+  if(btn){ btn.disabled=true; btn.textContent='Enviando…'; }
+  try{
+    var r=await fetch('/dashboard/copiloto/send',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({phone:card.dataset.phone, from:card.dataset.from, text:txt})});
+    var d=await r.json();
+    if(d.ok){ copToast('✅ Enviado para '+nome+' pela Zenvia'); card.classList.add('cop-sent'); if(btn) btn.textContent='✓ Enviado'; }
+    else { copToast('⚠ '+(d.error||'Falha no envio')); if(btn){ btn.disabled=false; btn.textContent='📨 Enviar resposta'; } }
+  }catch(e){ copToast('Erro de rede no envio.'); if(btn){ btn.disabled=false; btn.textContent='📨 Enviar resposta'; } }
+}
 """
 
 
@@ -7390,6 +7413,7 @@ def dashboard_copiloto(request: Request, db: Session = Depends(get_db)):
             cards += (
                 f'<div class="cop-card {pend_cls} {has_cls}" id="cop-{i}" data-idx="{i}" '
                 f'data-phone="{html_mod.escape(c["phone"])}" data-eid="{html_mod.escape(c["last_event_id"])}" '
+                f'data-from="{html_mod.escape(c.get("canal_conv") or "")}" data-name="{html_mod.escape(c["client_name"])}" '
                 f'data-reason="{html_mod.escape(c["last_text"][:300])}">'
                 '<div class="cop-head">'
                 f'<span class="cop-name">{html_mod.escape(c["client_name"])}</span>{badge}'
@@ -7399,7 +7423,7 @@ def dashboard_copiloto(request: Request, db: Session = Depends(get_db)):
                 f'<div class="cop-msg"><span class="who">{who}:</span>{html_mod.escape(c["last_text"] or "—")}</div>'
                 f'<div class="cop-actions"><button class="cop-btn" id="btn-{i}" onclick="copGerar({i})">{btn_label}</button></div>'
                 f'<textarea class="cop-sugg" id="sugg-{i}" style="display:{ta_disp}" placeholder="A sugestão da IA aparece aqui — edite antes de enviar.">{html_mod.escape(sugg)}</textarea>'
-                f'<div class="cop-sw" id="sw-{i}" style="display:{sw_disp}"><button class="cop-btn ghost" onclick="copCopiar({i})">⧉ Copiar</button>{zlink}</div>'
+                f'<div class="cop-sw" id="sw-{i}" style="display:{sw_disp}"><button class="cop-btn" id="send-{i}" onclick="copEnviar({i})">📨 Enviar resposta</button><button class="cop-btn ghost" onclick="copCopiar({i})">⧉ Copiar</button>{zlink}</div>'
                 '</div>'
             )
         body_main = controls + cards
@@ -7444,6 +7468,70 @@ def copiloto_save_group(request: Request, body: dict = Body(default={}), db: Ses
     phones = _parse_phone_list(body.get("phones") or "")
     _save_copiloto_phones(db, phones)
     return JSONResponse({"ok": True, "count": len(phones)})
+
+
+@router.post("/dashboard/copiloto/send", include_in_schema=False)
+def copiloto_send(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
+    """Envia a resposta (revisada pelo assessor) ao cliente via API da Zenvia.
+    Cada envio é uma ação humana explícita — nada automático."""
+    access = _get_access(request, db)
+    if access is None:
+        return JSONResponse({"ok": False, "error": "unauth"}, status_code=401)
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "bad json"}, status_code=400)
+    phone = (body.get("phone") or "").strip()
+    text  = (body.get("text") or "").strip()
+    frm   = (body.get("from") or "").strip()
+    if not phone or not text:
+        return JSONResponse({"ok": False, "error": "telefone ou texto ausente"}, status_code=400)
+
+    # Escopo: viewers só enviam para clientes da própria carteira (admin/gestor veem tudo).
+    if access.get("role") not in ("admin", "gestor"):
+        from app.crud import get_agent_mappings
+        agent = get_agent_mappings(db).get(phone) or ""
+        if not agent or not _user_sees(access, agent):
+            return JSONResponse({"ok": False, "error": "sem permissão para este cliente"}, status_code=403)
+
+    # "from" = número da empresa (canal). Validado contra a allowlist; cai no
+    # canal principal se vier vazio/inválido.
+    if frm not in COMPANY_CHANNELS:
+        frm = settings.AUTO_SCORE_CANAL if settings.AUTO_SCORE_CANAL in COMPANY_CHANNELS else next(iter(COMPANY_CHANNELS), "")
+
+    token = settings.ZENVIA_API_TOKEN
+    if not token:
+        return JSONResponse({"ok": False, "error": "Envio não configurado — defina ZENVIA_API_TOKEN no Railway."})
+
+    import httpx
+    import logging as _logging
+    try:
+        resp = httpx.post(
+            "https://api.zenvia.com/v2/channels/whatsapp/messages",
+            headers={"X-API-TOKEN": token, "Content-Type": "application/json"},
+            json={"from": frm, "to": phone, "contents": [{"type": "text", "text": text}]},
+            timeout=20,
+        )
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Falha de rede ao falar com a Zenvia."})
+
+    # Auditoria: quem enviou, para quem, resultado (stdout → Railway).
+    _logging.getLogger("copiloto").info(
+        "COPILOTO_SEND from=%s to=%s status=%s role=%s", frm, phone, resp.status_code, access.get("role"))
+
+    if resp.status_code in (200, 201):
+        return JSONResponse({"ok": True})
+    detail = ""
+    try:
+        _j = resp.json(); detail = _j.get("message") or _j.get("error") or str(_j)[:200]
+    except Exception:
+        detail = (resp.text or "")[:200]
+    low = (detail or "").lower()
+    if resp.status_code in (401, 403):
+        msg = "Token da Zenvia inválido ou sem permissão para enviar."
+    elif ("template" in low or "session" in low or "window" in low or "24" in low or "hsm" in low):
+        msg = "Fora da janela de 24h do WhatsApp — esse cliente precisa de um template aprovado."
+    else:
+        msg = f"A Zenvia recusou (HTTP {resp.status_code}): {detail}"
+    return JSONResponse({"ok": False, "error": msg, "status": resp.status_code})
 
 
 # ── Alertas Dashboard ─────────────────────────────────────────────────────────

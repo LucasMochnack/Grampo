@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""          # Free Whisper via Groq (console.groq.com)
     OPENAI_API_KEY: str = ""        # Paid Whisper via OpenAI
     ANTHROPIC_API_KEY: str = ""     # Required for Claude-based "Sem Resposta" analysis
+    # Token da API da Zenvia (Customer Cloud) p/ ENVIAR mensagens pela aba
+    # Copiloto. Gerar em Configurações → Tokens e Webhooks. Vazio = envio desativado.
+    ZENVIA_API_TOKEN: str = ""
     # Model id for interactive/quality-sensitive calls (sugestão de resposta).
     ANTHROPIC_MODEL: str = "claude-sonnet-4-6"
     # Model id for high-volume batch analysis (notas, oportunidades, Sem Resposta).
