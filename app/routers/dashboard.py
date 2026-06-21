@@ -5841,7 +5841,7 @@ def suggest_reply_endpoint(request: Request, body: dict = Body(default={}), db: 
     from app.services import llm_budget as _llm
     # Cache hit (por telefone + último evento): devolve sem consumir o teto de IA.
     if last_event_id:
-        _cached = _get_sugg_cache(db).get(f"{phone}|{last_event_id}")
+        _cached = _get_sugg_cache(db).get(f"{phone}|{last_event_id}|{_SUGG_CACHE_VER}")
         if _cached:
             return JSONResponse({"suggestion": _cached, "cached": True})
     if not _llm.try_consume(db, feature="sugestao"):
@@ -5896,7 +5896,7 @@ def suggest_reply_endpoint(request: Request, body: dict = Body(default={}), db: 
         _db2 = _SL()
         try:
             _c = _get_sugg_cache(_db2)
-            _c[f"{phone}|{last_event_id}"] = suggestion
+            _c[f"{phone}|{last_event_id}|{_SUGG_CACHE_VER}"] = suggestion
             _save_sugg_cache(_db2, _c)
         finally:
             _db2.close()
@@ -7076,6 +7076,7 @@ def dashboard_clientes_export(request: Request, db: Session = Depends(get_db)):
 
 _COPILOTO_PHONES_KEY = "copiloto_phones"
 _COPILOTO_SUGG_KEY   = "copiloto_sugg_cache"
+_SUGG_CACHE_VER      = "r2"   # versão do prompt de sugestão; bump invalida o cache
 _COPILOTO_SUGG_MAX   = 800   # limita o tamanho do cache de sugestões
 
 
@@ -7229,7 +7230,7 @@ def _copiloto_data(db, access, phones: list[str], sugg_cache: dict):
             "conv_id":       conv_id,
             "canal_conv":    canal_conv,
             "waiting":       last_dir == "IN",
-            "suggestion":    sugg_cache.get(f"{phone}|{last_event_id}", ""),
+            "suggestion":    sugg_cache.get(f"{phone}|{last_event_id}|{_SUGG_CACHE_VER}", ""),
         })
     db.close()
     missing = [p for p in phones if p not in found]
