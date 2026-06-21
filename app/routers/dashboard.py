@@ -5813,7 +5813,8 @@ def suggest_reply_endpoint(request: Request, body: dict = Body(default={}), db: 
     Returns: { suggestion: "..." }
     Sync def → threadpool (blocking LLM call must not freeze event loop).
     """
-    if not _check_auth(request):
+    access = _get_access(request, db)
+    if access is None:
         return JSONResponse({"error": "unauth"}, status_code=401)
     if not isinstance(body, dict):
         return JSONResponse({"error": "bad json"}, status_code=400)
@@ -5827,6 +5828,15 @@ def suggest_reply_endpoint(request: Request, body: dict = Body(default={}), db: 
 
     if not phone:
         return JSONResponse({"error": "missing phone"}, status_code=400)
+
+    # Escopo: viewers só sugerem para clientes da própria carteira (admin/gestor
+    # veem tudo) — ANTES de ler cache ou chamar a IA. Sem isto, qualquer
+    # autenticado leria o teor da conversa de qualquer cliente (IDOR).
+    if access.get("role") not in ("admin", "gestor"):
+        from app.crud import get_agent_mappings as _gam
+        _agent = _gam(db).get(phone) or ""
+        if not _agent or not _user_sees(access, _agent):
+            return JSONResponse({"error": "forbidden"}, status_code=403)
 
     from app.services import llm_budget as _llm
     # Cache hit (por telefone + último evento): devolve sem consumir o teto de IA.
@@ -7484,8 +7494,28 @@ def copiloto_send(request: Request, body: dict = Body(default={}), db: Session =
     frm   = (body.get("from") or "").strip()
     if not phone or not text:
         return JSONResponse({"ok": False, "error": "telefone ou texto ausente"}, status_code=400)
+    if len(text) > 4096:
+        return JSONResponse({"ok": False, "error": "mensagem muito longa (máx. 4096 caracteres)."}, status_code=400)
+    phone = _normalize_phone_digits(phone) or phone   # canoniza p/ escopo e envio
 
-    # Escopo: viewers só enviam para clientes da própria carteira (admin/gestor veem tudo).
+    # Destinatário precisa estar no GRUPO gerenciado — INDEPENDENTE do papel.
+    # A página só envia para conversas do grupo; isto bloqueia número arbitrário
+    # (evita spam/phishing saindo dos números oficiais da assessoria).
+    _managed = set(_get_copiloto_phones(db))
+    if phone not in _managed and phone[-11:] not in {p[-11:] for p in _managed if len(p) >= 11}:
+        return JSONResponse({"ok": False, "error": "destinatário fora do grupo do Copiloto."}, status_code=403)
+
+    # Rate-limit simples: teto diário global de envios (anti-loop/spam).
+    _today = datetime.now(BRASILIA).strftime("%Y-%m-%d")
+    from app.crud import get_setting as _gs, set_setting as _ss
+    try:
+        _sent_today = int(json.loads(_gs(db, "copiloto_send_count") or "{}").get(_today, 0))
+    except Exception:
+        _sent_today = 0
+    if _sent_today >= 300:
+        return JSONResponse({"ok": False, "error": "Limite diário de envios atingido (300)."}, status_code=429)
+
+    # Escopo por papel: viewers só enviam para clientes da própria carteira.
     if access.get("role") not in ("admin", "gestor"):
         from app.crud import get_agent_mappings
         agent = get_agent_mappings(db).get(phone) or ""
@@ -7513,11 +7543,15 @@ def copiloto_send(request: Request, body: dict = Body(default={}), db: Session =
     except Exception:
         return JSONResponse({"ok": False, "error": "Falha de rede ao falar com a Zenvia."})
 
-    # Auditoria: quem enviou, para quem, resultado (stdout → Railway).
+    # Auditoria (telefone mascarado): quem enviou, p/ quem, resultado (stdout → Railway).
     _logging.getLogger("copiloto").info(
-        "COPILOTO_SEND from=%s to=%s status=%s role=%s", frm, phone, resp.status_code, access.get("role"))
+        "COPILOTO_SEND from=%s to=***%s status=%s role=%s", frm, phone[-4:], resp.status_code, access.get("role"))
 
     if resp.status_code in (200, 201):
+        try:
+            _ss(db, "copiloto_send_count", json.dumps({_today: _sent_today + 1}))
+        except Exception:
+            pass
         return JSONResponse({"ok": True})
     detail = ""
     try:
@@ -7530,7 +7564,10 @@ def copiloto_send(request: Request, body: dict = Body(default={}), db: Session =
     elif ("template" in low or "session" in low or "window" in low or "24" in low or "hsm" in low):
         msg = "Fora da janela de 24h do WhatsApp — esse cliente precisa de um template aprovado."
     else:
-        msg = f"A Zenvia recusou (HTTP {resp.status_code}): {detail}"
+        # Não repassar o detalhe bruto da Zenvia ao front (info-disclosure);
+        # registra no log e devolve mensagem genérica.
+        _logging.getLogger("copiloto").warning("COPILOTO_SEND_FAIL status=%s detail=%s", resp.status_code, detail)
+        msg = f"A Zenvia recusou o envio (HTTP {resp.status_code}). Verifique o número e tente novamente."
     return JSONResponse({"ok": False, "error": msg, "status": resp.status_code})
 
 
