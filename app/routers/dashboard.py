@@ -7255,7 +7255,7 @@ _COP_CSS = """
 .cop-btn.ghost{background:#16203a;color:#c8d2e8;border:1px solid #243152}
 .cop-btn[disabled]{opacity:.55;cursor:default}
 .cop-sugg{width:100%;min-height:84px;margin-top:10px;background:#0b1120;border:1px solid #243152;border-radius:8px;color:#e8ecf1;padding:10px 12px;font-size:13px;line-height:1.5;font-family:inherit;resize:vertical}
-.cop-sw{gap:8px;margin-top:8px;align-items:center}
+.cop-sw{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;align-items:center}
 .cop-zenvia{background:#16203a;color:#5b9bff;text-decoration:none;font-weight:600;font-size:12px;padding:8px 14px;border-radius:8px;border:1px solid #243152}
 .cop-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:#0fa968;color:#04150c;font-weight:700;font-size:13px;padding:10px 18px;border-radius:10px;opacity:0;transition:all .25s;z-index:9999;pointer-events:none}
 .cop-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
@@ -7271,6 +7271,7 @@ function copToast(msg){
 async function copGerar(i){
   var card=document.getElementById('cop-'+i); if(!card) return '';
   var ta=document.getElementById('sugg-'+i), btn=document.getElementById('btn-'+i), sw=document.getElementById('sw-'+i);
+  if(ta && ta.value.trim() && !confirm('Substituir o texto atual pela sugestão da IA?')) return '';
   var prev=btn?btn.textContent:'';
   if(btn){ btn.disabled=true; btn.textContent='Gerando…'; }
   try{
@@ -7415,8 +7416,6 @@ def dashboard_copiloto(request: Request, db: Session = Depends(get_db)):
             zlink = (f'<a class="cop-zenvia" href="{html_mod.escape(zurl)}" target="_blank" rel="noopener">💬 Abrir na Zenvia</a>'
                      if zurl else "")
             sugg = c["suggestion"]
-            ta_disp = "block" if sugg else "none"
-            sw_disp = "flex" if sugg else "none"
             has_cls = "cop-has" if sugg else ""
             pend_cls = "cop-pending" if c["waiting"] else ""
             btn_label = "↻ Regerar" if sugg else "✨ Sugerir resposta"
@@ -7431,9 +7430,11 @@ def dashboard_copiloto(request: Request, db: Session = Depends(get_db)):
                 f'<span class="cop-meta" style="margin-left:auto;font-family:\'JetBrains Mono\',monospace">{html_mod.escape(_fmt_phone_br(c["phone"]))}</span>'
                 '</div>'
                 f'<div class="cop-msg"><span class="who">{who}:</span>{html_mod.escape(c["last_text"] or "—")}</div>'
-                f'<div class="cop-actions"><button class="cop-btn" id="btn-{i}" onclick="copGerar({i})">{btn_label}</button></div>'
-                f'<textarea class="cop-sugg" id="sugg-{i}" style="display:{ta_disp}" placeholder="A sugestão da IA aparece aqui — edite antes de enviar.">{html_mod.escape(sugg)}</textarea>'
-                f'<div class="cop-sw" id="sw-{i}" style="display:{sw_disp}"><button class="cop-btn" id="send-{i}" onclick="copEnviar({i})">📨 Enviar resposta</button><button class="cop-btn ghost" onclick="copCopiar({i})">⧉ Copiar</button>{zlink}</div>'
+                f'<textarea class="cop-sugg" id="sugg-{i}" placeholder="Escreva a resposta ao cliente — ou clique em ✨ Sugerir para a IA gerar um rascunho que você pode editar.">{html_mod.escape(sugg)}</textarea>'
+                f'<div class="cop-sw" id="sw-{i}">'
+                f'<button class="cop-btn ghost" id="btn-{i}" onclick="copGerar({i})">{btn_label}</button>'
+                f'<button class="cop-btn" id="send-{i}" onclick="copEnviar({i})">📨 Enviar resposta</button>'
+                f'<button class="cop-btn ghost" onclick="copCopiar({i})">⧉ Copiar</button>{zlink}</div>'
                 '</div>'
             )
         body_main = controls + cards
