@@ -7236,6 +7236,17 @@ def _copiloto_data(db, access, phones: list[str], sugg_cache: dict):
     groups_orm, phone_learned = _group_events(raw_evs, cam)
     _epoch = datetime.min.replace(tzinfo=timezone.utc)
 
+    # Histórico de envios pelo Copiloto (registrado no Grampo), por sufixo de telefone.
+    sent_map: dict = {}
+    try:
+        from app.models import CopilotoEnvio as _CE
+        for r in (db.query(_CE).filter(_CE.status == "ok")
+                  .order_by(_CE.sent_at.desc()).limit(400).all()):
+            _suf = _re.sub(r"\D", "", r.phone or "")[-11:]
+            sent_map.setdefault(_suf, []).append(r)
+    except Exception:
+        sent_map = {}
+
     found: set[str] = set()
     convos: list[dict] = []
     for key, evs in groups_orm.items():
@@ -7287,6 +7298,10 @@ def _copiloto_data(db, access, phones: list[str], sugg_cache: dict):
             "conv_id":       conv_id,
             "canal_conv":    canal_conv,
             "waiting":       last_dir == "IN",
+            "enviadas":      [{"ts": e.sent_at.astimezone(BRASILIA).strftime("%d/%m %H:%M"),
+                               "text": (e.text or "")[:140],
+                               "agent": _short_agent_name(e.agent or "")}
+                              for e in sent_map.get(pd[-11:], [])[:3]],
             "suggestion":    sugg_cache.get(f"{phone}|{last_event_id}|{_SUGG_CACHE_VER}", ""),
         })
     db.close()
@@ -7477,13 +7492,27 @@ def dashboard_copiloto(request: Request, db: Session = Depends(get_db)):
             has_cls = "cop-has" if sugg else ""
             pend_cls = "cop-pending" if c["waiting"] else ""
             btn_label = "↻ Regerar" if sugg else "✨ Sugerir resposta"
+            _env = c.get("enviadas") or []
+            env_chip = ('<span class="cop-badge" style="background:rgba(91,155,255,.15);color:#8fb6ff">📤 respondido via Copiloto</span>'
+                        if _env else "")
+            env_html = ""
+            if _env:
+                _eitems = "".join(
+                    '<div style="font-size:11px;color:#8a96aa;padding:3px 0;border-top:1px solid #131c33">'
+                    + '<span style="color:#0fa968">✓ ' + e["ts"] + '</span> ' + html_mod.escape(e["agent"]) + ': '
+                    + '<span style="color:#c0c8d8">' + html_mod.escape(e["text"]) + '</span></div>'
+                    for e in _env
+                )
+                env_html = ('<div style="margin-top:10px;background:#0b1120;border:1px solid #131c33;border-radius:8px;padding:8px 12px">'
+                            '<div style="font-size:10px;color:#5a6a8a;letter-spacing:.05em;font-weight:700;margin-bottom:2px">📤 ENVIADAS PELO COPILOTO</div>'
+                            + _eitems + '</div>')
             cards += (
                 f'<div class="cop-card {pend_cls} {has_cls}" id="cop-{i}" data-idx="{i}" '
                 f'data-phone="{html_mod.escape(c["phone"])}" data-eid="{html_mod.escape(c["last_event_id"])}" '
                 f'data-from="{html_mod.escape(c.get("canal_conv") or "")}" data-name="{html_mod.escape(c["client_name"])}" '
                 f'data-reason="{html_mod.escape(c["last_text"][:300])}">'
                 '<div class="cop-head">'
-                f'<span class="cop-name">{html_mod.escape(c["client_name"])}</span>{badge}'
+                f'<span class="cop-name">{html_mod.escape(c["client_name"])}</span>{badge}{env_chip}'
                 f'<span class="cop-meta">{html_mod.escape(_short_agent_name(c["agent"]))} · {c["last_ts_str"]}</span>'
                 f'<span class="cop-meta" style="margin-left:auto;font-family:\'JetBrains Mono\',monospace">{html_mod.escape(_fmt_phone_br(c["phone"]))}</span>'
                 '</div>'
@@ -7493,6 +7522,7 @@ def dashboard_copiloto(request: Request, db: Session = Depends(get_db)):
                 f'<button class="cop-btn ghost" id="btn-{i}" onclick="copGerar({i})">{btn_label}</button>'
                 f'<button class="cop-btn" id="send-{i}" onclick="copEnviar({i})" title="Entrega no WhatsApp do cliente, mas NÃO aparece no inbox da Zenvia — para registrar na conversa, use Abrir na Zenvia">📨 Enviar direto</button>'
                 f'<button class="cop-btn ghost" onclick="copCopiar({i})">⧉ Copiar</button>{zlink}</div>'
+                f'{env_html}'
                 '</div>'
             )
         body_main = controls + cards
@@ -7612,6 +7642,18 @@ def copiloto_send(request: Request, body: dict = Body(default={}), db: Session =
             _ss(db, "copiloto_send_count", json.dumps({_today: _sent_today + 1}))
         except Exception:
             pass
+        # Registra o envio no Grampo (o inbox da Zenvia não mostra envios via API).
+        try:
+            from app.models import CopilotoEnvio as _CE
+            from app.crud import get_agent_mappings as _gam2
+            db.add(_CE(phone=phone, agent=(_gam2(db).get(phone) or ""),
+                       sender=access.get("role"), text=text[:4096], status="ok"))
+            db.commit()
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:
+                pass
         return JSONResponse({"ok": True})
     detail = ""
     try:

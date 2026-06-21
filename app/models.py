@@ -268,3 +268,30 @@ class ConversationOpportunity(Base):
     )
 
 
+class CopilotoEnvio(Base):
+    """Registro (no Grampo) de cada resposta enviada via Copiloto "Enviar direto".
+
+    O envio por API entrega no WhatsApp mas NÃO aparece no inbox da Zenvia, então
+    guardamos aqui um histórico auditável: quem enviou, para quem, quando e o quê.
+    """
+    __tablename__ = "copiloto_envios"
+
+    id      = Column(Integer, primary_key=True, autoincrement=True)
+    phone   = Column(String(32),  nullable=False)
+    agent   = Column(String(255), nullable=True)
+    sender  = Column(String(60),  nullable=True)   # papel de quem enviou (admin/gestor/viewer)
+    text    = Column(Text,        nullable=False)
+    status  = Column(String(20),  nullable=True)   # ok | erro
+
+    sent_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        Index("ix_copiloto_envios_phone", "phone"),
+        Index("ix_copiloto_envios_sent_at", "sent_at"),
+    )
+
+
