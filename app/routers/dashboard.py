@@ -7389,7 +7389,7 @@ async function copEnviar(i){
   var txt=(ta.value||'').trim();
   if(!txt){ copToast('Escreva ou gere uma resposta antes de enviar.'); return; }
   var nome=card.dataset.name||'o cliente';
-  if(!confirm('Enviar esta resposta para '+nome+' no WhatsApp?\\n\\n"'+txt.slice(0,180)+(txt.length>180?'…':'')+'"')) return;
+  if(!confirm('Enviar DIRETO para '+nome+' no WhatsApp?\\n\\n⚠ Este envio NÃO aparece no inbox da Zenvia. Para registrar na conversa, use "Abrir na Zenvia".\\n\\nMensagem: "'+txt.slice(0,150)+(txt.length>150?'…':'')+'"')) return;
   var btn=document.getElementById('send-'+i);
   if(btn){ btn.disabled=true; btn.textContent='Enviando…'; }
   try{
@@ -7491,7 +7491,7 @@ def dashboard_copiloto(request: Request, db: Session = Depends(get_db)):
                 f'<textarea class="cop-sugg" id="sugg-{i}" placeholder="Escreva a resposta ao cliente — ou clique em ✨ Sugerir para a IA gerar um rascunho que você pode editar.">{html_mod.escape(sugg)}</textarea>'
                 f'<div class="cop-sw" id="sw-{i}">'
                 f'<button class="cop-btn ghost" id="btn-{i}" onclick="copGerar({i})">{btn_label}</button>'
-                f'<button class="cop-btn" id="send-{i}" onclick="copEnviar({i})">📨 Enviar resposta</button>'
+                f'<button class="cop-btn" id="send-{i}" onclick="copEnviar({i})" title="Entrega no WhatsApp do cliente, mas NÃO aparece no inbox da Zenvia — para registrar na conversa, use Abrir na Zenvia">📨 Enviar direto</button>'
                 f'<button class="cop-btn ghost" onclick="copCopiar({i})">⧉ Copiar</button>{zlink}</div>'
                 '</div>'
             )
@@ -7499,7 +7499,8 @@ def dashboard_copiloto(request: Request, db: Session = Depends(get_db)):
 
     info_banner = (
         '<div style="background:rgba(91,155,255,.08);border:1px solid rgba(91,155,255,.25);border-radius:10px;padding:12px 16px;margin-bottom:14px;font-size:12px;color:#a9bbe0;line-height:1.5">'
-        '<strong style="color:#cfe0ff">Como funciona (v1):</strong> a IA lê o histórico e sugere uma resposta <strong>sob demanda</strong> (clique em &quot;Sugerir&quot;). A sugestão fica salva e não reprocessa, respeitando o teto diário de IA. Você revisa, edita e envia pela Zenvia. Nada é enviado automaticamente ainda.'
+        '<strong style="color:#cfe0ff">Como funciona (v1):</strong> a IA sugere uma resposta <strong>sob demanda</strong> (botão &quot;Sugerir&quot;) ou você escreve a sua; revisa e envia. '
+        '<strong style="color:#f2b007">Dois modos de envio:</strong> &quot;📨 Enviar direto&quot; entrega no WhatsApp na hora, mas <strong>NÃO aparece no inbox da Zenvia</strong>; &quot;💬 Abrir na Zenvia&quot; abre a conversa pra você colar e enviar lá — aí fica <strong>registrado no inbox</strong>, atribuído ao assessor. Nada é enviado automaticamente.'
         '</div>'
     )
 
