@@ -4324,7 +4324,7 @@ def score_conv_endpoint(request: Request, body: dict = Body(default={}), db: Ses
             })
 
     from app.services import llm_budget as _llm
-    if not _llm.try_consume(db):
+    if not _llm.try_consume(db, feature="avaliacao"):
         db.close()
         return JSONResponse({"error": "Limite diário de avaliações por IA atingido. Tente amanhã."}, status_code=429)
 
@@ -4438,7 +4438,7 @@ def run_score_scan(db, canal: str = "5519997733651", days: int = 30) -> dict:
                 msg_tuples.append((_extract_direction(_p), _txt, _ts))
         if not msg_tuples:
             continue
-        if not _llm.try_consume(db):       # teto diário de IA atingido
+        if not _llm.try_consume(db, feature="avaliacao"):   # teto diário de IA
             capped = True
             break
         try:
@@ -4904,7 +4904,7 @@ def opp_scan_endpoint(request: Request, body: dict = Body(default={}), db: Sessi
         if cached and cached.opp_version == _OPP_VERSION:
             scanned_this += 1
             continue
-        if not _llm.try_consume(db):       # teto diário de IA atingido
+        if not _llm.try_consume(db, feature="oportunidades"):   # teto diário de IA
             capped = True
             break
         try:
@@ -5844,7 +5844,7 @@ def suggest_reply_endpoint(request: Request, body: dict = Body(default={}), db: 
         _cached = _get_sugg_cache(db).get(f"{phone}|{last_event_id}")
         if _cached:
             return JSONResponse({"suggestion": _cached, "cached": True})
-    if not _llm.try_consume(db):
+    if not _llm.try_consume(db, feature="sugestao"):
         return JSONResponse({"suggestion": "Limite diário de IA atingido — tente novamente amanhã."})
 
     # Fresh query to get conversation messages. Use a 30-day window (the Sem
@@ -10553,6 +10553,7 @@ def dashboard_diagnostico(request: Request, db: Session = Depends(get_db)):
         _as_last_result = {}
     from app.services import llm_budget as _llm
     _llm_used, _llm_cap = _llm.usage_today(db)
+    _llm_by = _llm.breakdown_today(db)
     db.close()
 
     groups, phone_learned = _group_events(all_events, client_agent_map)
@@ -10656,6 +10657,20 @@ def dashboard_diagnostico(request: Request, db: Session = Depends(get_db)):
         _as_status = '<span style="color:#5a6a8a">ainda não rodou — primeira execução no próximo domingo</span>'
     _cap_txt = (f'{_llm_used} / {_llm_cap} chamadas hoje' if _llm_cap else f'{_llm_used} chamadas hoje (sem teto)')
     _cap_color = "#ef4444" if (_llm_cap and _llm_used >= _llm_cap) else ("#eab308" if (_llm_cap and _llm_used >= 0.8 * _llm_cap) else "#0fa968")
+    _pct = int(min(100, _llm_used / _llm_cap * 100)) if _llm_cap else 0
+    _bar = (f'<div style="height:8px;background:#0b1120;border-radius:4px;overflow:hidden;margin-top:10px">'
+            f'<div style="width:{_pct}%;height:100%;background:{_cap_color}"></div></div>') if _llm_cap else ''
+    _feat_labels = {"avaliacao": "Avaliação de agentes", "oportunidades": "Oportunidades",
+                    "sem-resposta": "Sem Resposta", "sugestao": "Sugestões / Copiloto", "outros": "Outros"}
+    if _llm_by:
+        _bd_html = '<div style="margin-top:10px">' + "".join(
+            f'<span style="background:#0b1120;border:1px solid #1a2540;border-radius:999px;padding:3px 10px;'
+            f'font-size:11px;color:#c0c8d8;margin:6px 6px 0 0;display:inline-block">'
+            f'{html_mod.escape(_feat_labels.get(_k, _k))}: <b style="color:#e8ecf1">{_v}</b></span>'
+            for _k, _v in sorted(_llm_by.items(), key=lambda kv: -kv[1])
+        ) + '</div>'
+    else:
+        _bd_html = '<div style="margin-top:10px;font-size:11px;color:#5a6a8a">Nenhuma chamada de IA hoje ainda.</div>'
     autoscore_html = (
         '<div style="background:#0d1630;border:1px solid #1a2540;border-radius:10px;padding:14px 22px;margin-bottom:16px">'
         '<div style="font-size:10px;color:#5a6a8a;letter-spacing:1px;font-weight:700;margin-bottom:6px">'
@@ -10664,10 +10679,16 @@ def dashboard_diagnostico(request: Request, db: Session = Depends(get_db)):
         f'{settings.AUTO_SCORE_HOUR}h</b> (Brasília) · janela de {settings.AUTO_SCORE_DAYS} dias · {_as_status}</div></div>'
         '<div style="background:#0d1630;border:1px solid #1a2540;border-radius:10px;padding:14px 22px;margin-bottom:32px">'
         '<div style="font-size:10px;color:#5a6a8a;letter-spacing:1px;font-weight:700;margin-bottom:6px">'
-        'TETO DIÁRIO DE IA (proteção de custo)</div>'
-        f'<div style="font-size:12px;color:#8a96aa">Consumo de hoje: <b style="color:{_cap_color}">{_cap_txt}</b>'
+        'CONSUMO DE IA HOJE (proteção de custo)</div>'
+        f'<div style="font-size:12px;color:#8a96aa">Chamadas à API da Anthropic: <b style="color:{_cap_color}">{_cap_txt}</b>'
         + (' — <span style="color:#ef4444">teto atingido, IA pausada até amanhã</span>' if (_llm_cap and _llm_used >= _llm_cap) else '')
-        + ' · ajuste com a variável <code style="color:#c4b5fd">LLM_DAILY_CAP</code> no Railway.</div></div>'
+        + '</div>'
+        + _bar
+        + _bd_html
+        + '<div style="font-size:11px;color:#5a6a8a;margin-top:12px">Contagem em <b>chamadas</b> à API '
+          '(não tokens brutos). Ajuste o teto com <code style="color:#c4b5fd">LLM_DAILY_CAP</code> no Railway · '
+          'tokens e custo reais em <a href="https://console.anthropic.com/settings/usage" target="_blank" '
+          'rel="noopener" style="color:#5b9bff;text-decoration:none">console.anthropic.com</a>.</div></div>'
     )
 
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Diagnóstico</title>{COMMON_CSS}</head><body>

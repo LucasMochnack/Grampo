@@ -194,7 +194,7 @@ def analyze_conversation(
 
     # Teto diário de chamadas à IA (proteção de custo).
     from app.services import llm_budget as _llm
-    if not _llm.try_consume(db):
+    if not _llm.try_consume(db, feature="sem-resposta"):
         logger.warning("Teto diário de IA atingido — Sem Resposta não analisado")
         return None
 

@@ -48,19 +48,34 @@ def usage_today(db) -> tuple[int, int]:
     return cnt, _cap()
 
 
-def try_consume(db, n: int = 1) -> bool:
+def breakdown_today(db) -> dict:
+    """Retorna {feature: chamadas} de hoje (vazio se ainda não houve uso).
+    Apenas informativo (detalhamento por funcionalidade); não afeta o teto."""
+    data = _load(db)
+    if data.get("day") != _today():
+        return {}
+    by = data.get("by")
+    return {str(k): int(v) for k, v in by.items()} if isinstance(by, dict) else {}
+
+
+def try_consume(db, n: int = 1, feature: str = "outros") -> bool:
     """Reserva n chamadas contra o teto de hoje. False se estourar o teto
-    (a feature deve então pular a chamada à IA)."""
+    (a feature deve então pular a chamada à IA). `feature` serve só para o
+    detalhamento de uso por funcionalidade — NÃO altera a lógica do teto."""
     cap = _cap()
     if cap <= 0:
-        return True   # sem limite
+        return True   # sem limite (não rastreia detalhamento p/ não escrever a cada chamada)
     today = _today()
     data = _load(db)
-    cnt = int(data.get("count", 0)) if data.get("day") == today else 0
+    if data.get("day") != today:
+        data = {"day": today, "count": 0, "by": {}}
+    cnt = int(data.get("count", 0))
     if cnt + n > cap:
         return False
     try:
-        set_setting(db, _KEY, json.dumps({"day": today, "count": cnt + n}))
+        by = data.get("by") if isinstance(data.get("by"), dict) else {}
+        by[feature] = int(by.get(feature, 0)) + n
+        set_setting(db, _KEY, json.dumps({"day": today, "count": cnt + n, "by": by}))
     except Exception:
         return True   # nunca bloquear por falha de persistência do contador
     return True
