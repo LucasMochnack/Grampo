@@ -7300,7 +7300,7 @@ def _copiloto_data(db, access, phones: list[str], sugg_cache: dict):
             "waiting":       last_dir == "IN",
             "enviadas":      [{"ts": e.sent_at.astimezone(BRASILIA).strftime("%d/%m %H:%M"),
                                "text": (e.text or "")[:140],
-                               "agent": _short_agent_name(e.agent or "")}
+                               "agent": _short_agent_name(agent)}   # assessor atual (não o gravado, p/ não defasar)
                               for e in sent_map.get(pd[-11:], [])[:3]],
             "suggestion":    sugg_cache.get(f"{phone}|{last_event_id}|{_SUGG_CACHE_VER}", ""),
         })
