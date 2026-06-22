@@ -6240,15 +6240,23 @@ def dashboard_temas(request: Request, db: Session = Depends(get_db)):
         cov_by_key = {}
     # Resumo mais recente por telefone (para "conversas recentes" no detalhe v2).
     resumo_by_phone: dict = {}
+    resumo_ts_by_phone: dict = {}   # quando a IA gerou aquele resumo (scored_at)
     try:
         from app.models import ConversationScore as _CSq
         _sc_window = (now_br_tmp := datetime.now(BRASILIA) - timedelta(days=45)).astimezone(timezone.utc)
         for _s in (db.query(_CSq).filter(_CSq.canal == canal, _CSq.scored_at >= _sc_window)
                    .order_by(_CSq.scored_at.asc()).all()):
             resumo_by_phone[_s.phone] = (_s.resumo or "").strip()
+            resumo_ts_by_phone[_s.phone] = _s.scored_at
     except Exception:
         resumo_by_phone = {}
+        resumo_ts_by_phone = {}
     db.close()  # release connection before heavy processing
+
+    # Data da análise de IA mais recente (resumos) — mostrada no topo p/ não
+    # confundir com o "Atualizado HH:MM" (que é só o refresh da página).
+    _ia_last_ts = max(resumo_ts_by_phone.values(), default=None)
+    _ia_last_lbl = (_ia_last_ts.astimezone(BRASILIA).strftime("%d/%m") if _ia_last_ts else "")
 
     now_br = datetime.now(BRASILIA)
     if dias == 1:
@@ -6610,6 +6618,22 @@ function pautaExcluir(id){
         d = int(s // 86400)
         return "ontem" if d == 1 else f"há {d} dias"
 
+    def _v2_iadate(phone):
+        """Etiqueta com a data em que a IA gerou o resumo desta conversa.
+        Marca como defasado quando o cliente mandou mensagem DEPOIS da análise
+        (a reavaliação só roda no agendador de domingo)."""
+        rts = resumo_ts_by_phone.get(phone)
+        if not rts:
+            return ""
+        dlabel = rts.astimezone(BRASILIA).strftime("%d/%m")
+        lts = last_ts_by_phone.get(phone)
+        stale = bool(lts and lts.astimezone(BRASILIA) > rts.astimezone(BRASILIA))
+        if stale:
+            return (f'<div style="font-size:10px;color:#c79234;margin-top:5px;font-family:{JM};" '
+                    f'title="O cliente enviou mensagens depois desta análise — o resumo pode estar desatualizado. A reavaliação roda no domingo.">'
+                    f'⚠ análise IA · {dlabel} (msgs novas depois)</div>')
+        return f'<div style="font-size:10px;color:#5b6577;margin-top:5px;font-family:{JM};">análise IA · {dlabel}</div>'
+
     # clientes/conversas por assessor (a partir do drill já calculado)
     convos_by_agent: dict = defaultdict(list)
     for _tid, _tl, _tc in shelf:
@@ -6692,6 +6716,7 @@ function pautaExcluir(id){
             f'<span style="font-size:10.5px;font-weight:600;color:{tc};background:rgba(255,255,255,0.05);border-radius:5px;padding:2px 7px;">{html_mod.escape(tl)}</span>'
             f'<span style="font-size:11px;color:#5b6577;margin-left:auto;font-family:{JM};">{_v2_rel(last_ts_by_phone.get(phone))}</span></div>'
             + (f'<div style="font-size:12.5px;color:#9aa3b8;line-height:1.45;">{html_mod.escape((resumo_by_phone.get(phone) or "")[:120])}</div>' if resumo_by_phone.get(phone) else "")
+            + _v2_iadate(phone)
             + '</div></div>'
             for tid, tl, tc, phone, name in cv
         ) or '<div style="font-size:12.5px;color:#6a7589;font-style:italic;">Sem conversas com produto identificado no período.</div>'
@@ -6816,7 +6841,9 @@ function pautaExcluir(id){
         f'<div style="flex:1;min-width:170px;padding:18px 24px;border-right:1px solid rgba(255,255,255,0.06);border-top:3px solid #22c66e;"><div style="display:flex;align-items:baseline;gap:5px;"><span style="font-family:{JM};font-weight:700;font-size:30px;color:{_avg_col};">{cov_avg:.1f}</span><span style="font-family:{JM};font-size:14px;color:#5b6577;">/ {shelf_n}</span></div><div class="spaced" style="font-size:10.5px;font-weight:600;letter-spacing:0.12em;color:#8893a8;text-transform:uppercase;margin-top:5px;">Cobertura média / assessor</div></div>'
         f'<div style="flex:1;min-width:170px;padding:18px 24px;border-right:1px solid rgba(255,255,255,0.06);border-top:3px solid #ef5a6a;"><div style="font-family:{JM};font-weight:700;font-size:30px;color:#ff7b87;">{n_neglected}</div><div class="spaced" style="font-size:10.5px;font-weight:600;letter-spacing:0.12em;color:#8893a8;text-transform:uppercase;margin-top:5px;">Produtos negligenciados</div></div>'
         f'<div style="flex:1.3;min-width:190px;padding:18px 24px;border-right:1px solid rgba(255,255,255,0.06);border-top:3px solid #f2b007;"><div class="spaced" style="font-weight:700;font-size:20px;color:#f2b007;line-height:1.15;">{html_mod.escape(_short_agent_name(narrowest)) if narrowest else "—"}</div><div class="spaced" style="font-size:10.5px;font-weight:600;letter-spacing:0.12em;color:#8893a8;text-transform:uppercase;margin-top:6px;">Assessor mais estreito</div></div>'
-        f'<div style="flex:1.2;min-width:170px;padding:18px 24px;border-top:3px solid #38bdf8;"><div style="font-family:{JM};font-weight:700;font-size:30px;color:#7ccef5;">{n_conv_ia}</div><div class="spaced" style="font-size:10.5px;font-weight:600;letter-spacing:0.12em;color:#8893a8;text-transform:uppercase;margin-top:5px;">Conversas verificadas · IA</div></div>'
+        f'<div style="flex:1.2;min-width:170px;padding:18px 24px;border-top:3px solid #38bdf8;"><div style="font-family:{JM};font-weight:700;font-size:30px;color:#7ccef5;">{n_conv_ia}</div><div class="spaced" style="font-size:10.5px;font-weight:600;letter-spacing:0.12em;color:#8893a8;text-transform:uppercase;margin-top:5px;">Conversas verificadas · IA</div>'
+        + (f'<div style="font-size:10px;color:#6a7589;font-family:{JM};margin-top:5px;" title="Os resumos são gerados pela IA na varredura de domingo. Esta é a data da análise mais recente.">resumos via IA · última {_ia_last_lbl}</div>' if _ia_last_lbl else '')
+        + '</div>'
         '</div>'
     )
 
@@ -7133,7 +7160,7 @@ def dashboard_clientes_export(request: Request, db: Session = Depends(get_db)):
 
 _COPILOTO_PHONES_KEY = "copiloto_phones"
 _COPILOTO_SUGG_KEY   = "copiloto_sugg_cache"
-_SUGG_CACHE_VER      = "r8"   # versão do prompt de sugestão; bump invalida o cache
+_SUGG_CACHE_VER      = "r9"   # versão do prompt de sugestão; bump invalida o cache
 _COPILOTO_SUGG_MAX   = 800   # limita o tamanho do cache de sugestões
 
 
