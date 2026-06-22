@@ -7188,6 +7188,24 @@ def _crm_url(client_name: str) -> str:
     return "https://assessorxp.lightning.force.com/one/one.app#" + b
 
 
+def _get_copiloto_stages(db) -> dict:
+    """Pins manuais de etapa do Kanban {telefone: etapa}. Só as etapas comerciais
+    (decisao/concluido) são pinadas; as de comunicação são automáticas."""
+    import json as _json
+    from app.crud import get_setting
+    try:
+        v = _json.loads(get_setting(db, "copiloto_stages") or "{}")
+        return v if isinstance(v, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_copiloto_stages(db, stages: dict) -> None:
+    import json as _json
+    from app.crud import set_setting
+    set_setting(db, "copiloto_stages", _json.dumps(stages))
+
+
 def _get_copiloto_phones(db) -> list[str]:
     import json as _json
     from app.crud import get_setting
@@ -7260,6 +7278,7 @@ def _copiloto_data(db, access, phones: list[str], sugg_cache: dict):
             sent_map.setdefault(_suf, []).append(r)
     except Exception:
         sent_map = {}
+    stages_pins = _get_copiloto_stages(db)
 
     found: set[str] = set()
     convos: list[dict] = []
@@ -7317,6 +7336,8 @@ def _copiloto_data(db, access, phones: list[str], sugg_cache: dict):
                                "agent": _short_agent_name(agent)}   # assessor atual (não o gravado, p/ não defasar)
                               for e in sent_map.get(pd[-11:], [])[:3]],
             "suggestion":    sugg_cache.get(f"{phone}|{last_event_id}|{_SUGG_CACHE_VER}", ""),
+            "stage":         (stages_pins.get(phone) if stages_pins.get(phone) in ("decisao", "concluido")
+                              else ("para_responder" if last_dir == "IN" else "aguardando_cliente")),
         })
     db.close()
     missing = [p for p in phones if p not in found]
@@ -7345,6 +7366,16 @@ _COP_CSS = """
 .cop-sw{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;align-items:center}
 .cop-zenvia{background:#16203a;color:#5b9bff;text-decoration:none;font-weight:600;font-size:12px;padding:8px 14px;border-radius:8px;border:1px solid #243152}
 .cop-crm{background:#1c1633;color:#c4b5fd;text-decoration:none;font-weight:600;font-size:12px;padding:8px 14px;border-radius:8px;border:1px solid #3a2f5a}
+.kb-board{display:flex;gap:14px;overflow-x:auto;padding-bottom:10px;align-items:flex-start}
+.kb-col{flex:1 1 0;min-width:300px;max-width:400px;background:#0b1120;border:1px solid #1a2540;border-radius:12px;padding:10px 10px 14px}
+.kb-col.drop{border-color:#0fa968;box-shadow:inset 0 0 0 2px rgba(15,169,104,.25)}
+.kb-col-head{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:700;color:#c8d2e8;padding:4px 6px 12px}
+.kb-count{margin-left:auto;background:#1a2540;color:#8a96aa;border-radius:999px;padding:1px 9px;font-size:11px;font-weight:700}
+.kb-cards{display:flex;flex-direction:column;gap:10px;min-height:50px}
+.kb-empty{color:#3a4a6a;text-align:center;font-size:12px;padding:14px 0}
+.kb-handle{cursor:grab;color:#5a6a8a;font-size:10px;font-weight:700;letter-spacing:1.5px;margin-bottom:6px;user-select:none}
+.kb-handle:active{cursor:grabbing}
+.cop-card{margin-bottom:0}
 .cop-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:#0fa968;color:#04150c;font-weight:700;font-size:13px;padding:10px 18px;border-radius:10px;opacity:0;transition:all .25s;z-index:9999;pointer-events:none}
 .cop-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 """
@@ -7355,6 +7386,30 @@ function copToast(msg){
   if(!t){ t=document.createElement('div'); t.id='copToast'; t.className='cop-toast'; document.body.appendChild(t); }
   t.textContent=msg; t.classList.add('show');
   clearTimeout(t._h); t._h=setTimeout(function(){ t.classList.remove('show'); },2800);
+}
+function kbDrag(ev, id){ ev.dataTransfer.setData('text/plain', id); ev.dataTransfer.effectAllowed='move'; }
+function kbAllow(ev){ ev.preventDefault(); ev.currentTarget.classList.add('drop'); }
+function kbLeave(ev){ ev.currentTarget.classList.remove('drop'); }
+function kbCounts(){
+  document.querySelectorAll('.kb-col').forEach(function(col){
+    var cards=col.querySelector('.kb-cards'); if(!cards) return;
+    var n=cards.querySelectorAll('.cop-card').length;
+    var b=col.querySelector('.kb-count'); if(b) b.textContent=n;
+    var empty=cards.querySelector('.kb-empty');
+    if(n===0 && !empty){ var d=document.createElement('div'); d.className='kb-empty'; d.textContent='—'; cards.appendChild(d); }
+    if(n>0 && empty){ empty.remove(); }
+  });
+}
+function kbDrop(ev, stage){
+  ev.preventDefault();
+  var col=ev.currentTarget; col.classList.remove('drop');
+  var id=ev.dataTransfer.getData('text/plain');
+  var card=document.getElementById(id); if(!card) return;
+  var cards=col.querySelector('.kb-cards'); if(!cards) return;
+  cards.appendChild(card);
+  kbCounts();
+  fetch('/dashboard/copiloto/stage',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({phone:card.dataset.phone, stage:stage})}).catch(function(){ copToast('Falha ao salvar a etapa.'); });
 }
 async function copGerar(i){
   var card=document.getElementById('cop-'+i); if(!card) return '';
@@ -7490,12 +7545,16 @@ def dashboard_copiloto(request: Request, db: Session = Depends(get_db)):
     else:
         controls = (
             '<div style="display:flex;align-items:center;gap:12px;margin:2px 0 14px;flex-wrap:wrap">'
-            f'<span class="cop-meta">{n_wait} aguardando resposta · {len(convos)} conversas no grupo</span>'
+            f'<span class="cop-meta">{n_wait} aguardando · {len(convos)} no grupo · arraste os cards (⠿) entre as colunas</span>'
             + ('<button class="cop-btn" id="copAll" style="margin-left:auto" onclick="copGerarTodas()">✨ Sugerir para todas as pendentes</button>'
                if n_wait else '')
             + '</div>'
         )
-        cards = ""
+        _STAGES = [("para_responder", "🔔 Para responder"),
+                   ("aguardando_cliente", "⏳ Aguardando cliente"),
+                   ("decisao", "🧠 Decisão / alocação"),
+                   ("concluido", "✅ Concluído")]
+        buckets: dict = {sid: [] for sid, _ in _STAGES}
         for i, c in enumerate(convos):
             who = "Cliente" if c["last_dir"] == "IN" else "Você"
             badge = ('<span class="cop-badge wait">aguardando resposta</span>' if c["waiting"]
@@ -7524,11 +7583,12 @@ def dashboard_copiloto(request: Request, db: Session = Depends(get_db)):
                 env_html = ('<div style="margin-top:10px;background:#0b1120;border:1px solid #131c33;border-radius:8px;padding:8px 12px">'
                             '<div style="font-size:10px;color:#5a6a8a;letter-spacing:.05em;font-weight:700;margin-bottom:2px">📤 ENVIADAS PELO COPILOTO</div>'
                             + _eitems + '</div>')
-            cards += (
+            card_html = (
                 f'<div class="cop-card {pend_cls} {has_cls}" id="cop-{i}" data-idx="{i}" '
                 f'data-phone="{html_mod.escape(c["phone"])}" data-eid="{html_mod.escape(c["last_event_id"])}" '
                 f'data-from="{html_mod.escape(c.get("canal_conv") or "")}" data-name="{html_mod.escape(c["client_name"])}" '
                 f'data-reason="{html_mod.escape(c["last_text"][:300])}">'
+                f'<div class="kb-handle" draggable="true" ondragstart="kbDrag(event,\'cop-{i}\')" title="Arraste para mover de etapa">⠿ mover</div>'
                 '<div class="cop-head">'
                 f'<span class="cop-name">{html_mod.escape(c["client_name"])}</span>{badge}{env_chip}'
                 f'<span class="cop-meta">{html_mod.escape(_short_agent_name(c["agent"]))} · {c["last_ts_str"]}</span>'
@@ -7543,7 +7603,15 @@ def dashboard_copiloto(request: Request, db: Session = Depends(get_db)):
                 f'{env_html}'
                 '</div>'
             )
-        body_main = controls + cards
+            buckets.get(c.get("stage") or "para_responder", buckets["para_responder"]).append(card_html)
+        _cols = ""
+        for sid, label in _STAGES:
+            _items = "".join(buckets[sid]) or '<div class="kb-empty">—</div>'
+            _cols += (f'<div class="kb-col" data-stage="{sid}" ondragover="kbAllow(event)" '
+                      f'ondragleave="kbLeave(event)" ondrop="kbDrop(event,\'{sid}\')">'
+                      f'<div class="kb-col-head">{label}<span class="kb-count">{len(buckets[sid])}</span></div>'
+                      f'<div class="kb-cards">{_items}</div></div>')
+        body_main = controls + f'<div class="kb-board">{_cols}</div>'
 
     info_banner = (
         '<div style="background:rgba(91,155,255,.08);border:1px solid rgba(91,155,255,.25);border-radius:10px;padding:12px 16px;margin-bottom:14px;font-size:12px;color:#a9bbe0;line-height:1.5">'
@@ -7586,6 +7654,29 @@ def copiloto_save_group(request: Request, body: dict = Body(default={}), db: Ses
     phones = _parse_phone_list(body.get("phones") or "")
     _save_copiloto_phones(db, phones)
     return JSONResponse({"ok": True, "count": len(phones)})
+
+
+@router.post("/dashboard/copiloto/stage", include_in_schema=False)
+def copiloto_set_stage(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
+    """Move um cliente de etapa no Kanban. As etapas comerciais (decisao/concluido)
+    ficam 'pinadas'; mover para uma etapa de comunicação remove o pin (volta ao
+    automático, que segue a conversa)."""
+    access = _get_access(request, db)
+    if access is None:
+        return JSONResponse({"ok": False, "error": "unauth"}, status_code=401)
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False, "error": "bad json"}, status_code=400)
+    phone = (body.get("phone") or "").strip()
+    stage = (body.get("stage") or "").strip()
+    if not phone:
+        return JSONResponse({"ok": False, "error": "telefone ausente"}, status_code=400)
+    stages = _get_copiloto_stages(db)
+    if stage in ("decisao", "concluido"):
+        stages[phone] = stage
+    else:
+        stages.pop(phone, None)   # volta ao automático
+    _save_copiloto_stages(db, stages)
+    return JSONResponse({"ok": True, "stage": stage})
 
 
 @router.post("/dashboard/copiloto/send", include_in_schema=False)
