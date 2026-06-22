@@ -10795,135 +10795,94 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
 # ══════════════ GESTÃO DE SISTEMAS — documentação interna das páginas ══════════
 # (label, cor, fundo) de cada "motor" de geração de dados.
 _GS_TAGS = {
-    "live":     ("Ao vivo",          "#0fa968", "rgba(15,169,104,.14)"),
-    "week":     ("IA · domingo",     "#5b9bff", "rgba(91,155,255,.14)"),
-    "ondemand": ("IA · sob demanda", "#f2b007", "rgba(242,176,7,.14)"),
+    "live":     ("Na hora",          "#0fa968", "rgba(15,169,104,.14)"),
+    "week":     ("Toda semana",      "#5b9bff", "rgba(91,155,255,.14)"),
+    "ondemand": ("Quando você pede", "#f2b007", "rgba(242,176,7,.14)"),
 }
 
 # Documentação de cada página. Mantida à mão (revisar quando uma página mudar).
 _GESTAO_PAGINAS = [
     {"label": "Visão Geral", "route": "/dashboard/overview", "grupo": "Monitoramento", "tags": ["live"],
-     "resumo": "Pulso do dia em tempo real: conversas, mensagens, status dos agentes, alertas e temas dos últimos 7 dias.",
-     "mostra": "5 KPIs (conversas hoje, mensagens, agentes ativos, alertas, temas), status dos agentes, volume de mensagens por hora, heatmap de temas × agente e top 3 clientes em risco.",
-     "fonte": "Eventos do webhook (WebhookEvent) + gabarito de agentes. Calculado em memória.",
-     "geracao": "Ao vivo — lê os últimos 2 dias de eventos a cada carregamento. Sem IA, sem cache, sem agendador.",
-     "detalhes": ["Alertas por palavra-chave em 4 níveis (crítico/alto/monitoramento/operacional).",
-                  "Temas por palavra-chave (TOPIC_RULES), sem LLM.",
-                  "Status do agente pelo último envio: online ≤30min, ocioso 30–240min, offline >240min.",
-                  "Respeita canal e permissões (cada usuário vê só seus agentes)."]},
-    {"label": "Conversas", "route": "/dashboard", "grupo": "Monitoramento", "tags": ["live", "week", "ondemand"],
-     "resumo": "Painel central: lista de conversas por cliente, com temas, alertas e a nota de qualidade do atendimento.",
-     "mostra": "Lista de conversas (cliente, telefone, agente, nº de mensagens, badges de tema), o transcript da conversa selecionada e um painel de contexto. Filtros por período, tipo e agente.",
-     "fonte": "Eventos do webhook (ao vivo) + avaliações da IA (ConversationScore/Coverage) + gabarito.",
-     "geracao": "Híbrido — temas saem ao vivo por palavra-chave; a nota 0–10 e os insights vêm da varredura de domingo (Claude) ou de um clique manual em 'Avaliar'.",
-     "detalhes": ["Temas ao vivo: sem latência, sem IA, custo zero.",
-                  "Nota 0–10: só pela varredura de domingo ou pelo botão Avaliar (consome teto de IA).",
-                  "Conversa com alerta não reconhecido fica vermelha; pode marcar como OK.",
-                  "Consumo de IA limitado pelo teto diário (llm_budget)."]},
+     "serve": "Um resumo rápido do dia: quanto movimento teve, como estão os assessores e o que merece atenção.",
+     "ve": "Os números do dia, o status dos assessores (online, ocioso, offline), um gráfico de mensagens por hora e os clientes que precisam de atenção.",
+     "atualiza": "Na hora — sempre que você abre, mostra o momento atual.",
+     "bom": ["Não usa IA, é só leitura das mensagens.",
+             "O status do assessor vem do horário da última resposta dele."]},
+    {"label": "Conversas", "route": "/dashboard", "grupo": "Monitoramento", "tags": ["live", "week"],
+     "serve": "Abrir as conversas do WhatsApp uma a uma, com o assunto e a nota de atendimento.",
+     "ve": "A lista de conversas por cliente, o bate-papo completo de cada uma e o assunto marcado por etiquetas.",
+     "atualiza": "Os assuntos aparecem na hora; a nota de qualidade vem da análise de domingo (ou quando alguém clica em Avaliar).",
+     "bom": ["Conversa com alerta ainda não resolvido fica em vermelho.",
+             "A nota só aparece depois que a IA avaliou aquela conversa."]},
     {"label": "Alertas", "route": "/dashboard/alertas", "grupo": "Monitoramento", "tags": ["live"],
-     "resumo": "Compliance: classifica as conversas por palavras-chave sensíveis em 4 níveis e deixa você triar caso a caso.",
-     "mostra": "KPIs (ativos, OK, problemas, total), alertas de hoje aguardando triagem, tabela de problemas confirmados e a análise histórica (contadores por nível + top 30 gatilhos).",
-     "fonte": "Eventos do webhook + marcações de triagem (alert_acknowledgments).",
-     "geracao": "Ao vivo (sem IA) — alertas de hoje classificados na hora por ~150 palavras-chave em 4 níveis. O histórico varre todo o banco e fica em cache por 10 min.",
-     "detalhes": ["Cada alerta mostra o gatilho exato que disparou, colorido por gravidade.",
-                  "Você marca cada um como OK (falso positivo) ou Problema (confirmado).",
-                  "Sem IA — 100% regra de palavra-chave.",
-                  "Os marcados ficam em tabelas separadas, para rastreabilidade de compliance."]},
+     "serve": "Pegar conversas com palavras de risco (reclamação, ameaça, promessa exagerada) para você revisar.",
+     "ve": "Os alertas de hoje para revisar, os que você já marcou como problema e um histórico com os termos que mais disparam.",
+     "atualiza": "Na hora — olha as mensagens do dia na hora. Sem IA, só por palavras.",
+     "bom": ["Cada alerta mostra a palavra exata que disparou.",
+             "Você marca cada um como OK (falso alarme) ou Problema."]},
     {"label": "Sem Resposta", "route": "/dashboard/sem-resposta", "grupo": "Monitoramento", "tags": ["live", "week"],
-     "resumo": "Clientes que mandaram mensagem e o assessor ainda não respondeu, priorizados por tempo de espera em horário comercial.",
-     "mostra": "Lista ordenada por tempo de espera, com horas comerciais, última mensagem, prioridade (alta/média/baixa), resumo da IA do que o cliente pediu e link pra Zenvia.",
-     "fonte": "Eventos do webhook (ao vivo) + cache de análise da IA.",
-     "geracao": "Híbrido — a lista de candidatos é ao vivo (últimos 14 dias); a análise de cada conversa vem do cache da IA (grátis se já analisada), com até 15 análises novas por carregamento. A varredura de domingo reforça em lote.",
-     "detalhes": ["Silêncio medido em horário comercial (seg–sex 9–18h); noite e fim de semana não contam.",
-                  "Só entra se a última msg é do cliente, há assessor, esperou ≥1h comercial e a IA classificou como 'pendente'.",
-                  "Claude define status, prioridade e resume o pedido em uma frase.",
-                  "Teto diário de IA protege o custo."]},
+     "serve": "Ver quais clientes ficaram esperando resposta, dos que esperam há mais tempo para os mais recentes.",
+     "ve": "A lista de quem está aguardando, há quanto tempo (em horário comercial), o que a pessoa pediu e um link pra Zenvia.",
+     "atualiza": "A lista é na hora; o resumo do que o cliente pediu é escrito pela IA (reaproveitado quando já foi feito).",
+     "bom": ["O tempo de espera só conta em horário comercial (seg a sex, 9h às 18h).",
+             "Só entra quem realmente está esperando o assessor responder."]},
     {"label": "Copiloto IA", "route": "/dashboard/copiloto", "grupo": "Monitoramento", "tags": ["live", "ondemand"],
-     "resumo": "A IA sugere a resposta ao cliente; o assessor revisa, edita e envia. Base do atendimento assistido.",
-     "mostra": "Grupo de clientes atendidos pela plataforma, um Kanban de 4 colunas (Para responder, Aguardando cliente, Decisão/alocação, Concluído) e, em cada card, a sugestão da IA, os botões Enviar direto / Abrir na Zenvia / CRM e o histórico de envios.",
-     "fonte": "Eventos (últimos 30 dias) + registro de envios (copiloto_envios) + contexto do cliente (score/cobertura/oportunidades).",
-     "geracao": "Lista ao vivo a cada carregamento. A sugestão só é gerada quando o assessor clica em 'Sugerir' (sob demanda): usa cache por evento e, se não houver, chama a IA respeitando o teto diário.",
-     "detalhes": ["Nada é enviado nem sugerido automaticamente — sempre por ação humana.",
-                  "Cache por último evento: nova msg do cliente regenera; reabrir a mesma conversa é grátis.",
-                  "Envio direto pelo WhatsApp não gera evento; o Kanban detecta a resposta comparando o horário do envio com a última msg do cliente.",
-                  "Estourou o teto diário → mostra aviso e não chama a IA."]},
+     "serve": "A IA escreve um rascunho de resposta pro cliente; o assessor lê, ajusta e envia.",
+     "ve": "Os clientes do grupo num quadro de 4 etapas e, em cada um, a sugestão da IA com os botões de enviar.",
+     "atualiza": "A lista é na hora; a sugestão só é escrita quando o assessor clica em Sugerir.",
+     "bom": ["Nada é enviado sozinho — sempre tem alguém revisando antes.",
+             "Mandar pelo botão Enviar direto não aparece no histórico da Zenvia."]},
     {"label": "Oportunidades", "route": "/dashboard/oportunidades", "grupo": "Monitoramento", "tags": ["live", "ondemand", "week"],
-     "resumo": "Pipeline Kanban com sinais comerciais que a IA encontrou nas conversas (aporte, risco de saída, interesse em produto).",
-     "mostra": "Kanban (Mapeada, Em execução, Ganha, Perdido), KPIs (valor em aberto/ganho, conversão, risco de saída) e cards com tipo, valor estimado, confiança da IA, data e trecho. Filtros por período, assessor, time, tipo e canal.",
-     "fonte": "Tabela ConversationOpportunity (resultado já minerado) + eventos do webhook.",
-     "geracao": "Três fluxos — a lista é lida ao vivo do que já foi minerado; o botão 'Buscar oportunidades' roda a mineração sob demanda; e a varredura de domingo também minera. Sempre com pré-filtro de palavra-chave antes da IA.",
-     "detalhes": ["Pré-filtro barato: só conversas com sinal (aporte/resgate/outro banco/herança...) vão pra IA.",
-                  "A IA devolve até 8 oportunidades por conversa e descarta confiança abaixo de 40%.",
-                  "Deduplica por estado: se a conversa evoluiu e não há mais oportunidade, a antiga sai do board.",
-                  "Etapas são manuais (arrastar); o pin do assessor vence o status sugerido pela IA."]},
+     "serve": "Ver os sinais de negócio que a IA achou nas conversas (cliente quer aportar, pode sair, se interessou por um produto).",
+     "ve": "Um quadro de negociação (Mapeada, Em execução, Ganha, Perdido) com o valor, a chance e o trecho da conversa.",
+     "atualiza": "O quadro mostra o que já foi encontrado; para procurar de novo, clique em Buscar (a IA varre as conversas).",
+     "bom": ["Para economizar, só conversas com sinais reais vão pra IA.",
+             "Você arrasta os cards entre as etapas; isso vale mais que o palpite da IA."]},
     {"label": "Agentes", "route": "/dashboard/agentes", "grupo": "Monitoramento", "tags": ["live"],
-     "resumo": "Atividade dos assessores em tempo real: mensagens, clientes contatados, status e heatmaps por hora e por dia.",
-     "mostra": "Cards por status (trabalhando/ocioso/offline), ranking por volume, heatmaps hora × agente e dia × agente, gráficos diários e o upload/download do gabarito (telefone → agente). Filtros por período e segmento.",
-     "fonte": "Eventos do webhook + gabarito (AgentMapping). Cálculo em memória.",
-     "geracao": "Ao vivo a cada carregamento. Sem IA.",
-     "detalhes": ["Status sempre reflete HOJE: online ≤30min, ocioso 31–240min, offline >240min.",
-                  "Clientes = telefones únicos (deduplicados).",
-                  "Gabarito é um CSV (export de contatos da Zenvia); se tiver mais de 3h, mostra alerta pra atualizar.",
-                  "Score/cobertura por IA fica na aba Avaliação Agentes, não aqui."]},
+     "serve": "Acompanhar a atividade de cada assessor: quantos clientes, quantas mensagens e se está online agora.",
+     "ve": "Cards por status (trabalhando, ocioso, offline), um ranking por volume e mapas de calor por hora e por dia.",
+     "atualiza": "Na hora. Sem IA.",
+     "bom": ["Online = respondeu nos últimos 30min; ocioso = até 4h; offline = mais que isso.",
+             "É aqui que você sobe o gabarito (quem atende qual cliente)."]},
     {"label": "Temas", "route": "/dashboard/temas", "grupo": "Análise", "tags": ["live", "week"],
-     "resumo": "Cobertura de produtos por assessor: o que cada um ofereceu, comparado com a prateleira completa.",
-     "mostra": "KPIs (cobertura média, produtos negligenciados, mais estreito, conversas verificadas), ranking de assessores, detalhe de produtos por assessor, lacunas do time, matriz assessor × produto e conversas recentes com resumo da IA. Hoje filtrada só pras mesas Alta Renda e On Demand.",
-     "fonte": "Eventos + cobertura verificada (ConversationCoverage) + resumos (ConversationScore) + gabarito.",
-     "geracao": "Híbrido — lista e métricas ao vivo; a cobertura usa a classificação da IA de domingo (com fallback por palavra-chave até a próxima varredura). O resumo e a data de cada conversa vêm da varredura.",
-     "detalhes": ["Se a IA ainda não rodou, cai pra palavra-chave até o próximo domingo.",
-                  "Os resumos mostram a data da análise; se o cliente falou depois, avisa que pode estar defasado.",
-                  "Filtrada para as mesas Alta Renda e On Demand (internos/externos ficam de fora).",
-                  "A varredura de domingo extrai nota, resumo e produtos de cada conversa, com cache pra não reavaliar o que não mudou."]},
+     "serve": "Ver quantos produtos diferentes cada assessor está oferecendo aos clientes.",
+     "ve": "O ranking de cobertura, o que cada um oferece, o que ninguém oferece e uma matriz assessor × produto. Hoje mostra só Alta Renda e On Demand.",
+     "atualiza": "As listas são na hora; a classificação dos produtos vem da análise de domingo (com uma aproximação por palavras até lá).",
+     "bom": ["Cada resumo mostra a data da análise; se o cliente falou depois, avisa que pode estar velho.",
+             "Mostra só as mesas Alta Renda e On Demand."]},
     {"label": "Clientes", "route": "/dashboard/clientes", "grupo": "Análise", "tags": ["live", "week"],
-     "resumo": "Carteira por assessor com o resumo e a nota do último atendimento de cada cliente no período.",
-     "mostra": "Tabela: assessor, cliente, último contato, motivo, resumo e nota (0–10, colorida). Filtros por período e busca; exporta pra Excel.",
-     "fonte": "ConversationScore (nota/motivo/resumo) + eventos (data do último contato) + gabarito.",
-     "geracao": "Híbrido — a lista e o último contato saem ao vivo; nota, motivo e resumo vêm da varredura de domingo. Cliente ainda não avaliado mostra um trecho da última mensagem (sem IA).",
-     "detalhes": ["A avaliação roda domingo 22h (janela de recuperação até segunda 06h59).",
-                  "Cliente sem contato no período ou sem assessor não aparece.",
-                  "Nota: verde ≥7, amarelo ≥5, vermelho <5; conversas não avaliáveis mostram um traço."]},
+     "serve": "A carteira de cada assessor com a nota e o resumo do último atendimento de cada cliente.",
+     "ve": "Uma tabela com assessor, cliente, último contato, motivo, resumo e nota (0 a 10). Dá pra buscar e exportar pro Excel.",
+     "atualiza": "A lista é na hora; a nota e o resumo vêm da análise de domingo.",
+     "bom": ["Cliente ainda não avaliado mostra um trecho da última mensagem no lugar do resumo.",
+             "Nota: verde é bom, amarelo é médio, vermelho é ruim."]},
     {"label": "Avaliação Agentes", "route": "/dashboard/avaliacao-agentes", "grupo": "Análise", "tags": ["live", "week"],
-     "resumo": "Desempenho agregado por assessor: nota média, distribuição de notas e feedback estruturado (acertos, erros, melhorias).",
-     "mostra": "Por agente: média, histograma, total avaliado/ignorado, top pontos positivos, erros e melhorias, e a lista de atendimentos com detalhe. Filtros por período e canal.",
-     "fonte": "ConversationScore (nota, tipo, motivo, resumo, pontos positivos/erros/melhorias) + eventos.",
-     "geracao": "Ao vivo lê o que já foi calculado; a geração é agendada na varredura de domingo 22h (Claude avalia as conversas dos últimos 30 dias).",
-     "detalhes": ["Mostra quando foi a última avaliação; se nunca rodou, avisa.",
-                  "Conversas não avaliáveis (social, só saída, cliente sumiu) ficam em 'ignorados' e não puxam a média.",
-                  "Existe um cron manual (/cron/score-daily) protegido por senha, hoje desligado (CRON_SCORE_ENABLED=0)."]},
+     "serve": "A nota média de cada assessor e o que ele faz bem ou precisa melhorar.",
+     "ve": "Por assessor: a média, um gráfico das notas e as listas de acertos, erros e melhorias mais comuns.",
+     "atualiza": "Mostra o que a análise de domingo calculou.",
+     "bom": ["Conversas que não dá pra avaliar (só um oi, só uma saída) ficam de fora da média.",
+             "Indica a data da última análise."]},
     {"label": "Evolução", "route": "/dashboard/evolucao", "grupo": "Análise", "tags": ["live"],
-     "resumo": "Evolução do alcance do time: clientes únicos contatados por semana, nas últimas 13 semanas.",
-     "mostra": "KPIs (semanas, pico, média), heatmap agente × semana, linha de volume total e por agente, média por dia da semana e temas por semana.",
-     "fonte": "Eventos do webhook + gabarito + regras de tema (TOPIC_RULES).",
-     "geracao": "Ao vivo — lê 91 dias de eventos a cada carregamento. Sem IA. Cache de 5 min entre requisições.",
-     "detalhes": ["Tópicos por palavra-chave (18 regras), sem IA.",
-                  "Particionado por semana ISO; clientes únicos por agente e tema.",
-                  "Cache de 5 min na chave (canal, início, limite)."]},
+     "serve": "Ver se o time está alcançando mais clientes ao longo das semanas.",
+     "ve": "Clientes por semana (últimas 13), por assessor e por tema, em gráficos e num mapa de calor.",
+     "atualiza": "Na hora. Sem IA.",
+     "bom": ["Conta cliente único por semana (não repete quem falou várias vezes)."]},
     {"label": "Mensagens Iniciais", "route": "/dashboard/mensagens", "grupo": "Análise", "tags": ["live"],
-     "resumo": "Taxa de resposta das primeiras mensagens (abordagens) dos assessores, e quais templates de abertura funcionam.",
-     "mostra": "KPIs (abordagens, clientes que responderam, taxa de retorno, templates únicos), taxa por assessor e lista de templates agrupados por similaridade com % de resposta.",
-     "fonte": "Eventos do webhook — últimos 7 dias.",
-     "geracao": "Ao vivo a cada carregamento. Sem IA — normaliza os textos por regex e agrupa templates parecidos.",
-     "detalhes": ["Janela fixa de 7 dias.",
-                  "Normalização por regex (valores/datas/nomes viram placeholders), sem Claude.",
-                  "Agrupa abordagens parecidas (mais de 75% de sobreposição).",
-                  "Taxa = 1ª msg do assessor (OUT) vs. cliente respondeu (IN)."]},
+     "serve": "Ver quantos clientes respondem às primeiras abordagens e quais textos de abertura funcionam melhor.",
+     "ve": "A taxa de resposta por assessor e os modelos de mensagem de abertura, agrupados por parecidos, com a % de retorno.",
+     "atualiza": "Na hora, sempre dos últimos 7 dias. Sem IA.",
+     "bom": ["Agrupa abordagens parecidas pra você comparar o que dá mais resposta."]},
     {"label": "Acessos", "route": "/dashboard/acessos", "grupo": "Admin", "tags": ["live"],
-     "resumo": "Administração de logins: cria senhas, define papéis e quais agentes cada usuário enxerga.",
-     "mostra": "KPIs (total de acessos, admins, viewers), formulário pra criar/editar/remover senhas com papel e agentes visíveis, e log dos últimos 20 logins (quem, sucesso/falha, IP, data).",
-     "fonte": "Configurações no banco (settings) + log de acessos + lista de agentes (AGENT_SEGMENT + gabarito).",
-     "geracao": "Ao vivo — lê os acessos do banco ao abrir; o log é gravado a cada tentativa de login. Sem IA.",
-     "detalhes": ["Só admin entra nesta página.",
-                  "Três papéis: admin (tudo), gestor (todos os agentes, sem páginas de admin), viewer (só os agentes selecionados).",
-                  "Cada login grava IP, navegador e horário (Brasília).",
-                  "A senha-mestra do Railway sempre funciona como admin."]},
+     "serve": "Criar e gerenciar logins: senha, papel e quais assessores cada pessoa pode ver.",
+     "ve": "A lista de acessos, o formulário pra criar ou editar e o registro dos últimos logins.",
+     "atualiza": "Na hora. Sem IA.",
+     "bom": ["Três papéis: admin (tudo), gestor (todos os assessores), viewer (só os escolhidos).",
+             "Cada login fica registrado com IP e horário."]},
     {"label": "Diagnóstico", "route": "/dashboard/diagnostico", "grupo": "Admin", "tags": ["live", "week"],
-     "resumo": "Saúde dos dados: conversas sem agente, grupos não resolvidos, agentes fora do mapa e o consumo de IA do dia.",
-     "mostra": "Cards (conversas em 7 dias, com/sem agente, não resolvidas), status da avaliação automática, consumo de IA de hoje (barra) e tabelas de conversas sem atendente, grupos não resolvidos e agentes fora do mapa.",
-     "fonte": "Eventos do webhook + gabarito + configurações (settings).",
-     "geracao": "Ao vivo — conversas/agentes/grupos processados do banco a cada carregamento. O status da Avaliação Automática reflete a varredura de domingo.",
-     "detalhes": ["Agrupamento e detecção de agente por regra/regex, sem IA.",
-                  "Mostra o consumo de IA do dia com teto (LLM_DAILY_CAP); ao atingir, a IA pausa até meia-noite.",
-                  "Indica quando foi a última varredura e quantas conversas avaliou."]},
+     "serve": "Conferir a saúde dos dados: conversas sem assessor, gente fora do mapa e o consumo de IA do dia.",
+     "ve": "Cards de qualidade, o status da última análise de domingo, o gasto de IA de hoje e tabelas do que precisa de ajuste.",
+     "atualiza": "Na hora; o status da análise reflete a varredura de domingo.",
+     "bom": ["Mostra o gasto de IA do dia e o limite; ao bater o limite, a IA pausa até meia-noite."]},
 ]
 
 _GS_CSS = """
@@ -10941,6 +10900,11 @@ _GS_CSS = """
 .gs-route{font-family:'JetBrains Mono',monospace;font-size:11px;color:#5b9bff;background:#0b1120;border:1px solid #1a2540;border-radius:6px;padding:2px 7px}
 .gs-tag{font-size:10px;font-weight:700;border-radius:999px;padding:2px 9px;letter-spacing:.02em}
 .gs-resumo{font-size:13px;color:#c0c8d8;line-height:1.5;margin-bottom:12px}
+.gs-row{display:grid;grid-template-columns:120px 1fr;gap:14px;padding:8px 0;border-top:1px solid rgba(255,255,255,0.05)}
+.gs-q{font-size:11px;font-weight:700;color:#7a8499}
+.gs-row p{margin:0;font-size:12.5px;color:#c8d2e2;line-height:1.5}
+.gs-row .gs-det{margin:0}
+@media(max-width:600px){.gs-row{grid-template-columns:1fr;gap:3px}}
 .gs-gen{background:#0b1120;border-left:3px solid #5b9bff;border-radius:6px;padding:9px 12px;margin-bottom:12px;font-size:12.5px;color:#c0c8d8;line-height:1.5}
 .gs-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:11px}
 .gs-lbl{display:block;font-size:10px;font-weight:700;letter-spacing:.08em;color:#5a6a8a;text-transform:uppercase;margin-bottom:4px}
@@ -11016,14 +10980,14 @@ _GS_FLOW_MOTORES = '''<svg viewBox="0 0 760 250" role="img" xmlns="http://www.w3
 <line x1="380" y1="86" x2="380" y2="115" stroke="#5a6a8a" stroke-width="1.5" marker-end="url(#mfm)"/>
 <line x1="617" y1="86" x2="617" y2="115" stroke="#5a6a8a" stroke-width="1.5" marker-end="url(#mfm)"/>
 <rect x="38" y="117" width="210" height="50" rx="10" fill="#0f1629" stroke="#0fa968" stroke-width="1.5"/>
-<text x="143" y="139" text-anchor="middle" font-size="13" font-weight="700" fill="#3ddc84">🟢 Ao vivo</text>
-<text x="143" y="156" text-anchor="middle" font-size="10" fill="#8a96aa">sem IA · sem custo · na hora</text>
+<text x="143" y="139" text-anchor="middle" font-size="13" font-weight="700" fill="#3ddc84">🟢 Na hora</text>
+<text x="143" y="156" text-anchor="middle" font-size="10" fill="#8a96aa">sem IA · sempre atual</text>
 <rect x="275" y="117" width="210" height="50" rx="10" fill="#0f1629" stroke="#5b9bff" stroke-width="1.5"/>
-<text x="380" y="139" text-anchor="middle" font-size="13" font-weight="700" fill="#8fb6ff">🔵 IA · domingo 22h</text>
-<text x="380" y="156" text-anchor="middle" font-size="10" fill="#8a96aa">varredura semanal</text>
+<text x="380" y="139" text-anchor="middle" font-size="13" font-weight="700" fill="#8fb6ff">🔵 Toda semana</text>
+<text x="380" y="156" text-anchor="middle" font-size="10" fill="#8a96aa">a IA no domingo</text>
 <rect x="512" y="117" width="210" height="50" rx="10" fill="#0f1629" stroke="#f2b007" stroke-width="1.5"/>
-<text x="617" y="139" text-anchor="middle" font-size="13" font-weight="700" fill="#f2b007">🟡 IA · sob demanda</text>
-<text x="617" y="156" text-anchor="middle" font-size="10" fill="#8a96aa">quando você clica</text>
+<text x="617" y="139" text-anchor="middle" font-size="13" font-weight="700" fill="#f2b007">🟡 Quando você pede</text>
+<text x="617" y="156" text-anchor="middle" font-size="10" fill="#8a96aa">você clica num botão</text>
 <text x="143" y="191" text-anchor="middle" font-size="10" fill="#8a96aa">Visão Geral · Conversas</text>
 <text x="143" y="205" text-anchor="middle" font-size="10" fill="#8a96aa">Agentes · Alertas</text>
 <text x="143" y="219" text-anchor="middle" font-size="10" fill="#8a96aa">Evolução · Mensagens</text>
@@ -11084,9 +11048,9 @@ def dashboard_gestao_sistemas(request: Request, db: Session = Depends(get_db)):
     legend = "".join(
         f'<div class="gs-leg"><span class="gs-dot" style="background:{_c}"></span><span>{_t}</span></div>'
         for _c, _t in [
-            ("#0fa968", '<b style="color:#e8ecf1">Ao vivo</b> — recalculado a cada carregamento, direto das mensagens do webhook. Sem IA, sem custo, sempre atual.'),
-            ("#5b9bff", '<b style="color:#e8ecf1">IA · domingo</b> — vem da varredura automática de domingo 22h (o Claude lê as conversas e gera nota, resumo, cobertura e oportunidades). Não muda entre uma varredura e outra.'),
-            ("#f2b007", '<b style="color:#e8ecf1">IA · sob demanda</b> — só roda quando alguém dispara um botão, consumindo o teto diário de IA (ex.: sugerir resposta no Copiloto, buscar oportunidades).'),
+            ("#0fa968", '<b style="color:#e8ecf1">Na hora</b> — mostra o que está acontecendo agora, direto das mensagens. Sempre atualizado e sem custo.'),
+            ("#5b9bff", '<b style="color:#e8ecf1">Toda semana</b> — a IA lê as conversas no domingo à noite e gera as notas e os resumos. Muda uma vez por semana.'),
+            ("#f2b007", '<b style="color:#e8ecf1">Quando você pede</b> — só roda quando alguém clica num botão, como sugerir uma resposta ou buscar oportunidades.'),
         ]
     )
 
@@ -11098,18 +11062,17 @@ def dashboard_gestao_sistemas(request: Request, db: Session = Depends(get_db)):
                 f'<span class="gs-tag" style="color:{_col};background:{_bg}">{_lbl}</span>'
                 for _lbl, _col, _bg in (_GS_TAGS[t] for t in p["tags"])
             )
-            det = "".join(f'<li>{html_mod.escape(d)}</li>' for d in p["detalhes"])
+            bom = "".join(f'<li>{html_mod.escape(d)}</li>' for d in p.get("bom", []))
+            bom_row = (f'<div class="gs-row"><span class="gs-q">Bom saber</span>'
+                       f'<ul class="gs-det">{bom}</ul></div>') if bom else ""
             body_parts.append(
                 '<div class="gs-card">'
                 f'<div class="gs-head"><span class="gs-title">{html_mod.escape(p["label"])}</span>'
                 f'<span class="gs-route">{html_mod.escape(p["route"])}</span>{tags_html}</div>'
-                f'<div class="gs-resumo">{html_mod.escape(p["resumo"])}</div>'
-                f'<div class="gs-gen"><b style="color:#8fb6ff">Como é gerado:</b> {html_mod.escape(p["geracao"])}</div>'
-                '<div class="gs-grid">'
-                f'<div><span class="gs-lbl">O que mostra</span><p>{html_mod.escape(p["mostra"])}</p></div>'
-                f'<div><span class="gs-lbl">Fonte dos dados</span><p>{html_mod.escape(p["fonte"])}</p></div>'
-                '</div>'
-                f'<ul class="gs-det">{det}</ul>'
+                f'<div class="gs-row"><span class="gs-q">Pra que serve</span><p>{html_mod.escape(p["serve"])}</p></div>'
+                f'<div class="gs-row"><span class="gs-q">O que você vê</span><p>{html_mod.escape(p["ve"])}</p></div>'
+                f'<div class="gs-row"><span class="gs-q">Quando atualiza</span><p>{html_mod.escape(p["atualiza"])}</p></div>'
+                f'{bom_row}'
                 '</div>'
             )
     body_html = "".join(body_parts)
@@ -11131,11 +11094,11 @@ def dashboard_gestao_sistemas(request: Request, db: Session = Depends(get_db)):
   <div class="gs-wrap">
     <div style="margin-bottom:16px">
       <h1 style="margin:0;font-size:21px;color:#e8ecf1">Gestão de Sistemas</h1>
-      <p style="margin:5px 0 0;font-size:12.5px;color:#8a96aa">Como cada página do Grampo funciona, de onde vêm os dados e quando atualizam.</p>
+      <p style="margin:5px 0 0;font-size:12.5px;color:#8a96aa">Em linguagem simples: o que cada página faz e quando os números mudam.</p>
     </div>
     <div class="gs-intro">
-      <h2>Os 3 motores de dados</h2>
-      <p class="sub">Saber qual motor move cada página explica por que algumas coisas são instantâneas e outras só mudam no domingo. As etiquetas em cada página abaixo indicam quais motores ela usa.</p>
+      <h2>Quando os números mudam</h2>
+      <p class="sub">A maior dúvida costuma ser "isso aqui é de agora ou está velho?". Cada página abaixo tem etiquetas coloridas que respondem isso:</p>
       <div class="gs-legend">{legend}</div>
     </div>
     <div class="gs-grouplabel">Como funciona · fluxos</div>
