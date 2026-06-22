@@ -1284,6 +1284,10 @@ def _get_segment(agent_name: str) -> str:
 # via classification (DB overrides), so filters/colunas são dinâmicos.
 _SEGMENT_BASE_ORDER = ["Alta Renda", "On Demand", "Externo"]
 
+# Mesas de atendimento exibidas na aba Temas/Cobertura (exclui internos/externos
+# e assessores sem segmento — eles não fazem parte do acompanhamento de mesa).
+_COBERTURA_SEGMENTS = ("Alta Renda", "On Demand")
+
 
 def _all_segments() -> list:
     vals = set(AGENT_SEGMENT.values()) | set(_seg_overrides.values())
@@ -6507,6 +6511,10 @@ function pautaExcluir(id){
         agent = phone_learned.get(client_num) or client_agent_map.get(ph) or phone_learned.get(ph) or "Sem atendente"
         if agent == "Sem atendente" or not _user_sees(access, agent):
             continue
+        # Temas mostra só as mesas de atendimento Alta Renda e On Demand;
+        # remove assessores internos/externos e sem segmento.
+        if _get_segment(agent) not in _COBERTURA_SEGMENTS:
+            continue
         agent_clients[agent].add(ph)
         # last_event_id (não-status) p/ casar com a cobertura verificada por IA.
         nonstatus = sorted(
@@ -6854,7 +6862,7 @@ function pautaExcluir(id){
         '<div class="v2card" style="overflow:hidden;">'
         '<div style="padding:18px 20px 14px;border-bottom:1px solid rgba(255,255,255,0.06);">'
         '<div style="display:flex;align-items:center;gap:9px;"><span style="width:7px;height:7px;border-radius:50%;background:#22c66e;"></span><h2 class="spaced" style="font-weight:600;font-size:15px;margin:0;">Cobertura da prateleira</h2></div>'
-        f'<div style="font-size:11.5px;color:#6a7589;margin-top:5px;">do mais pro menos coberto · {_period_label.lower()}</div></div>'
+        f'<div style="font-size:11.5px;color:#6a7589;margin-top:5px;">do mais pro menos coberto · {_period_label.lower()} · só mesas Alta Renda e On Demand</div></div>'
         f'<div style="max-height:660px;overflow-y:auto;padding:8px;">{list_html}</div></div>'
         f'<div class="v2card" style="padding:26px 28px;position:sticky;top:18px;">{panels_html}'
         f'<div style="font-size:11px;color:#5b6577;margin-top:20px;border-top:1px solid rgba(255,255,255,0.06);padding-top:12px;">Conta só quando o <b style="color:#9aa3b8;">assessor</b> leva o produto ao cliente. {_src_note}</div>'
