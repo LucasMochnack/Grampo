@@ -7174,6 +7174,20 @@ def _fmt_phone_br(p: str) -> str:
     return p
 
 
+def _crm_url(client_name: str) -> str:
+    """Link de BUSCA no Salesforce (CRM) pelo código do cliente extraído do nome
+    (ex.: 'NOME - 6930674'). Abre a busca; a conta vem como resultado top.
+    Formato one.app base64 — validado no Salesforce da assessoria."""
+    import re as _re, json as _json, base64 as _b64
+    m = _re.search(r"(\d{4,})\s*$", client_name or "")
+    if not m:
+        return ""
+    payload = {"componentDef": "forceSearch:searchPageDesktop",
+               "attributes": {"term": m.group(1), "scopeMap": {"type": "TOP_RESULTS"}, "groupId": "DEFAULT"}}
+    b = _b64.b64encode(_json.dumps(payload).encode()).decode()
+    return "https://assessorxp.lightning.force.com/one/one.app#" + b
+
+
 def _get_copiloto_phones(db) -> list[str]:
     import json as _json
     from app.crud import get_setting
@@ -7330,6 +7344,7 @@ _COP_CSS = """
 .cop-sugg{width:100%;min-height:84px;margin-top:10px;background:#0b1120;border:1px solid #243152;border-radius:8px;color:#e8ecf1;padding:10px 12px;font-size:13px;line-height:1.5;font-family:inherit;resize:vertical}
 .cop-sw{display:flex;flex-wrap:wrap;gap:8px;margin-top:8px;align-items:center}
 .cop-zenvia{background:#16203a;color:#5b9bff;text-decoration:none;font-weight:600;font-size:12px;padding:8px 14px;border-radius:8px;border:1px solid #243152}
+.cop-crm{background:#1c1633;color:#c4b5fd;text-decoration:none;font-weight:600;font-size:12px;padding:8px 14px;border-radius:8px;border:1px solid #3a2f5a}
 .cop-toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:#0fa968;color:#04150c;font-weight:700;font-size:13px;padding:10px 18px;border-radius:10px;opacity:0;transition:all .25s;z-index:9999;pointer-events:none}
 .cop-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 """
@@ -7488,6 +7503,9 @@ def dashboard_copiloto(request: Request, db: Session = Depends(get_db)):
             zurl = _zenvia_url(c["conv_id"], c["client_name"] or c["phone"])
             zlink = (f'<a class="cop-zenvia" href="{html_mod.escape(zurl)}" target="_blank" rel="noopener">💬 Abrir na Zenvia</a>'
                      if zurl else "")
+            crm = _crm_url(c["client_name"])
+            crm_link = (f'<a class="cop-crm" href="{html_mod.escape(crm)}" target="_blank" rel="noopener">📇 Registrar no CRM</a>'
+                        if crm else "")
             sugg = c["suggestion"]
             has_cls = "cop-has" if sugg else ""
             pend_cls = "cop-pending" if c["waiting"] else ""
@@ -7521,7 +7539,7 @@ def dashboard_copiloto(request: Request, db: Session = Depends(get_db)):
                 f'<div class="cop-sw" id="sw-{i}">'
                 f'<button class="cop-btn ghost" id="btn-{i}" onclick="copGerar({i})">{btn_label}</button>'
                 f'<button class="cop-btn" id="send-{i}" onclick="copEnviar({i})" title="Entrega no WhatsApp do cliente, mas NÃO aparece no inbox da Zenvia — para registrar na conversa, use Abrir na Zenvia">📨 Enviar direto</button>'
-                f'<button class="cop-btn ghost" onclick="copCopiar({i})">⧉ Copiar</button>{zlink}</div>'
+                f'<button class="cop-btn ghost" onclick="copCopiar({i})">⧉ Copiar</button>{zlink}{crm_link}</div>'
                 f'{env_html}'
                 '</div>'
             )
