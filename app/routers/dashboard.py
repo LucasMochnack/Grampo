@@ -7319,6 +7319,19 @@ def _copiloto_data(db, access, phones: list[str], sugg_cache: dict):
                     contact_name = _cn
         last_event_id = str(last_ev.id)
         found.add(pd if pd in managed else next((p for p in phones if p[-11:] == pd[-11:]), pd))
+        # Mensagens enviadas pelo Copiloto (via API) NÃO geram evento de webhook,
+        # então o "last_dir" do inbound não enxerga que o assessor já respondeu.
+        # Se o envio mais recente pelo Copiloto for POSTERIOR à última mensagem do
+        # cliente, a bola está com o cliente → "aguardando cliente", não "para responder".
+        _sent_list = sent_map.get(pd[-11:], [])
+        _last_sent = _sent_list[0].sent_at if _sent_list else None
+        if _last_sent is not None and _last_sent.tzinfo is None:
+            _last_sent = _last_sent.replace(tzinfo=timezone.utc)
+        replied_via_copiloto = bool(
+            last_dir == "IN" and _last_sent is not None
+            and _last_sent > last_ev.received_at.astimezone(timezone.utc)
+        )
+        effective_waiting = (last_dir == "IN") and not replied_via_copiloto
         convos.append({
             "phone":         phone,
             "agent":         agent,
@@ -7330,14 +7343,15 @@ def _copiloto_data(db, access, phones: list[str], sugg_cache: dict):
             "last_event_id": last_event_id,
             "conv_id":       conv_id,
             "canal_conv":    canal_conv,
-            "waiting":       last_dir == "IN",
+            "waiting":       effective_waiting,
+            "replied_copiloto": replied_via_copiloto,
             "enviadas":      [{"ts": e.sent_at.astimezone(BRASILIA).strftime("%d/%m %H:%M"),
                                "text": (e.text or "")[:140],
                                "agent": _short_agent_name(agent)}   # assessor atual (não o gravado, p/ não defasar)
                               for e in sent_map.get(pd[-11:], [])[:3]],
             "suggestion":    sugg_cache.get(f"{phone}|{last_event_id}|{_SUGG_CACHE_VER}", ""),
             "stage":         (stages_pins.get(phone) if stages_pins.get(phone) in ("decisao", "concluido")
-                              else ("para_responder" if last_dir == "IN" else "aguardando_cliente")),
+                              else ("para_responder" if effective_waiting else "aguardando_cliente")),
         })
     db.close()
     missing = [p for p in phones if p not in found]
@@ -7557,8 +7571,12 @@ def dashboard_copiloto(request: Request, db: Session = Depends(get_db)):
         buckets: dict = {sid: [] for sid, _ in _STAGES}
         for i, c in enumerate(convos):
             who = "Cliente" if c["last_dir"] == "IN" else "Você"
-            badge = ('<span class="cop-badge wait">aguardando resposta</span>' if c["waiting"]
-                     else '<span class="cop-badge ok">respondido</span>')
+            if c["waiting"]:
+                badge = '<span class="cop-badge wait">aguardando resposta</span>'
+            elif c.get("replied_copiloto"):
+                badge = '<span class="cop-badge ok">aguardando cliente</span>'
+            else:
+                badge = '<span class="cop-badge ok">respondido</span>'
             zurl = _zenvia_url(c["conv_id"], c["client_name"] or c["phone"])
             zlink = (f'<a class="cop-zenvia" href="{html_mod.escape(zurl)}" target="_blank" rel="noopener">💬 Abrir na Zenvia</a>'
                      if zurl else "")
