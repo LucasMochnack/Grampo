@@ -10951,6 +10951,124 @@ _GS_CSS = """
 """
 
 
+def _gs_vflow(uid, nodes):
+    """Gera um SVG de fluxo vertical (tema do dashboard) a partir de uma lista de
+    nós. Cada nó: {text, sub?, kind:'accent'?, badge?, edge?(rótulo da seta abaixo),
+    off?:{label,text}(saída lateral tracejada)}."""
+    H, GAP, TOP, CX, BX, BW = 52, 30, 22, 210, 60, 300
+    OFFX, OFFW = 398, 202
+    n = len(nodes)
+    total_h = TOP + (n - 1) * (H + GAP) + H + 16
+    op = ('<svg viewBox="0 0 620 ' + str(total_h) + '" role="img" xmlns="http://www.w3.org/2000/svg" '
+          'style="width:100%;max-width:560px;height:auto;display:block;margin:4px auto 0;'
+          "font-family:'Segoe UI',system-ui,-apple-system,sans-serif\">")
+    out = [op,
+           f'<defs><marker id="m{uid}" markerWidth="9" markerHeight="9" refX="6.5" refY="3.5" orient="auto">'
+           f'<path d="M0,0 L7,3.5 L0,7 Z" fill="#5a6a8a"/></marker></defs>']
+    ys = [TOP + i * (H + GAP) for i in range(n)]
+    for i in range(n - 1):
+        y1, y2 = ys[i] + H, ys[i + 1]
+        out.append(f'<line x1="{CX}" y1="{y1}" x2="{CX}" y2="{y2 - 2}" stroke="#5a6a8a" stroke-width="1.5" marker-end="url(#m{uid})"/>')
+        if nodes[i].get("edge"):
+            out.append(f'<text x="{CX + 12}" y="{(y1 + y2) // 2 + 4}" font-size="10" fill="#8a96aa">{nodes[i]["edge"]}</text>')
+    for i, nd in enumerate(nodes):
+        y = ys[i]
+        accent = nd.get("kind") == "accent"
+        stroke = "#5b9bff" if accent else "#243152"
+        sw = "2" if accent else "1.5"
+        out.append(f'<rect x="{BX}" y="{y}" width="{BW}" height="{H}" rx="10" fill="#0f1629" stroke="{stroke}" stroke-width="{sw}"/>')
+        tfill = "#8fb6ff" if accent else "#e8ecf1"
+        if nd.get("sub"):
+            out.append(f'<text x="{CX}" y="{y + 21}" text-anchor="middle" font-size="13" font-weight="600" fill="{tfill}">{nd["text"]}</text>')
+            out.append(f'<text x="{CX}" y="{y + 38}" text-anchor="middle" font-size="10.5" fill="#8a96aa">{nd["sub"]}</text>')
+        else:
+            out.append(f'<text x="{CX}" y="{y + H // 2 + 5}" text-anchor="middle" font-size="13" font-weight="600" fill="{tfill}">{nd["text"]}</text>')
+        if nd.get("badge"):
+            bcol = "#f2b007" if nd["badge"] == "MANUAL" else "#5b9bff"
+            out.append(f'<text x="{BX + BW - 12}" y="{y + 15}" text-anchor="end" font-size="8.5" font-weight="700" letter-spacing="0.05em" fill="{bcol}">{nd["badge"]}</text>')
+        off = nd.get("off")
+        if off:
+            ym = y + H // 2
+            out.append(f'<line x1="{BX + BW}" y1="{ym}" x2="{OFFX - 2}" y2="{ym}" stroke="#5a6a8a" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#m{uid})"/>')
+            if off.get("label"):
+                out.append(f'<text x="{(BX + BW + OFFX) // 2}" y="{ym - 5}" text-anchor="middle" font-size="9" fill="#8a96aa">{off["label"]}</text>')
+            out.append(f'<rect x="{OFFX}" y="{y + 5}" width="{OFFW}" height="{H - 10}" rx="9" fill="none" stroke="#2c3a5a" stroke-width="1.2" stroke-dasharray="4 3"/>')
+            out.append(f'<text x="{OFFX + OFFW // 2}" y="{ym + 4}" text-anchor="middle" font-size="10" fill="#7a8499">{off["text"]}</text>')
+    out.append("</svg>")
+    return "".join(out)
+
+
+# Diagrama dos 3 motores (branching) — estático, tema do dashboard.
+_GS_FLOW_MOTORES = '''<svg viewBox="0 0 760 250" role="img" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;display:block;font-family:'Segoe UI',system-ui,-apple-system,sans-serif">
+<title>Os tres motores de dados</title>
+<defs><marker id="mfm" markerWidth="9" markerHeight="9" refX="6.5" refY="3.5" orient="auto"><path d="M0,0 L7,3.5 L0,7 Z" fill="#5a6a8a"/></marker></defs>
+<rect x="56" y="24" width="166" height="44" rx="9" fill="#0f1629" stroke="#243152" stroke-width="1.5"/>
+<text x="139" y="51" text-anchor="middle" font-size="12.5" fill="#e8ecf1">Mensagem do cliente</text>
+<line x1="222" y1="46" x2="262" y2="46" stroke="#5a6a8a" stroke-width="1.5" marker-end="url(#mfm)"/>
+<rect x="266" y="24" width="176" height="44" rx="9" fill="#0f1629" stroke="#243152" stroke-width="1.5"/>
+<text x="354" y="51" text-anchor="middle" font-size="12.5" fill="#e8ecf1">Webhook (tempo real)</text>
+<line x1="442" y1="46" x2="482" y2="46" stroke="#5a6a8a" stroke-width="1.5" marker-end="url(#mfm)"/>
+<rect x="486" y="24" width="166" height="44" rx="9" fill="#0f1629" stroke="#243152" stroke-width="1.5"/>
+<text x="569" y="51" text-anchor="middle" font-size="12.5" fill="#e8ecf1">Banco de eventos</text>
+<line x1="569" y1="68" x2="569" y2="86" stroke="#5a6a8a" stroke-width="1.5"/>
+<line x1="143" y1="86" x2="617" y2="86" stroke="#5a6a8a" stroke-width="1.5"/>
+<line x1="143" y1="86" x2="143" y2="115" stroke="#5a6a8a" stroke-width="1.5" marker-end="url(#mfm)"/>
+<line x1="380" y1="86" x2="380" y2="115" stroke="#5a6a8a" stroke-width="1.5" marker-end="url(#mfm)"/>
+<line x1="617" y1="86" x2="617" y2="115" stroke="#5a6a8a" stroke-width="1.5" marker-end="url(#mfm)"/>
+<rect x="38" y="117" width="210" height="50" rx="10" fill="#0f1629" stroke="#0fa968" stroke-width="1.5"/>
+<text x="143" y="139" text-anchor="middle" font-size="13" font-weight="700" fill="#3ddc84">🟢 Ao vivo</text>
+<text x="143" y="156" text-anchor="middle" font-size="10" fill="#8a96aa">sem IA · sem custo · na hora</text>
+<rect x="275" y="117" width="210" height="50" rx="10" fill="#0f1629" stroke="#5b9bff" stroke-width="1.5"/>
+<text x="380" y="139" text-anchor="middle" font-size="13" font-weight="700" fill="#8fb6ff">🔵 IA · domingo 22h</text>
+<text x="380" y="156" text-anchor="middle" font-size="10" fill="#8a96aa">varredura semanal</text>
+<rect x="512" y="117" width="210" height="50" rx="10" fill="#0f1629" stroke="#f2b007" stroke-width="1.5"/>
+<text x="617" y="139" text-anchor="middle" font-size="13" font-weight="700" fill="#f2b007">🟡 IA · sob demanda</text>
+<text x="617" y="156" text-anchor="middle" font-size="10" fill="#8a96aa">quando você clica</text>
+<text x="143" y="191" text-anchor="middle" font-size="10" fill="#8a96aa">Visão Geral · Conversas</text>
+<text x="143" y="205" text-anchor="middle" font-size="10" fill="#8a96aa">Agentes · Alertas</text>
+<text x="143" y="219" text-anchor="middle" font-size="10" fill="#8a96aa">Evolução · Mensagens</text>
+<text x="380" y="191" text-anchor="middle" font-size="10" fill="#8a96aa">Temas · Clientes</text>
+<text x="380" y="205" text-anchor="middle" font-size="10" fill="#8a96aa">Avaliação Agentes</text>
+<text x="380" y="219" text-anchor="middle" font-size="10" fill="#8a96aa">nota nas Conversas</text>
+<text x="617" y="191" text-anchor="middle" font-size="10" fill="#8a96aa">Copiloto (sugerir)</text>
+<text x="617" y="205" text-anchor="middle" font-size="10" fill="#8a96aa">Oportunidades (buscar)</text>
+</svg>'''
+
+_GS_FLOWS = [
+    ("Visão geral · os 3 caminhos do dado",
+     "Toda mensagem entra pelo webhook em tempo real. A partir do banco de eventos, três motores diferentes alimentam as páginas.",
+     _GS_FLOW_MOTORES),
+    ("Varredura de domingo · a IA semanal",
+     "Roda sozinha todo domingo às 22h. Avalia as conversas e gera nota, resumo, cobertura e oportunidades — o que abastece Temas, Clientes, Avaliação e a nota nas Conversas. Respeita o teto diário; janela de recuperação até segunda 06h59.",
+     _gs_vflow("sun", [
+        {"text": "Domingo, 22h", "sub": "agendador interno", "badge": "AUTO"},
+        {"text": "Pega conversas dos últimos 30 dias"},
+        {"text": "Já avaliada e sem mudança?", "edge": "não", "off": {"label": "sim", "text": "pula (cache, sem custo)"}},
+        {"text": "Claude avalia a conversa", "sub": "nota 0–10 · resumo · produtos", "kind": "accent"},
+        {"text": "Salva (Score / Coverage)"},
+     ])),
+    ("Oportunidades · mineração sob demanda",
+     "Só roda quando você clica em Buscar (e também na varredura de domingo). Um pré-filtro de palavra-chave evita gastar IA com conversas sem sinal comercial.",
+     _gs_vflow("opp", [
+        {"text": "Você clica em Buscar", "badge": "MANUAL"},
+        {"text": "Cliente deu sinal? (pré-filtro)", "edge": "sim", "off": {"label": "não", "text": "descarta, sem IA"}},
+        {"text": "Já minerada? (cache)", "edge": "não", "off": {"label": "sim", "text": "pula, sem IA"}},
+        {"text": "IA extrai oportunidades", "sub": "tipo · valor · estágio · confiança", "kind": "accent"},
+        {"text": "Salva (ConversationOpportunity)"},
+        {"text": "Aparece no Kanban"},
+     ])),
+    ("Copiloto · sugestão de resposta",
+     "Só gera quando o assessor clica em Sugerir. A IA monta um rascunho com o histórico e o contexto do cliente; nada é enviado sem ação humana.",
+     _gs_vflow("cop", [
+        {"text": "Assessor clica em Sugerir", "badge": "MANUAL"},
+        {"text": "Tem no cache? (por última msg)", "edge": "não", "off": {"label": "sim", "text": "devolve grátis"}},
+        {"text": "Tem saldo no teto diário?", "edge": "sim", "off": {"label": "não", "text": "avisa: limite atingido"}},
+        {"text": "Claude gera a resposta", "sub": "usa histórico + contexto do cliente", "kind": "accent"},
+        {"text": "Assessor revisa, edita e envia"},
+     ])),
+]
+
+
 @router.get("/dashboard/gestao-sistemas", response_class=HTMLResponse, include_in_schema=False)
 def dashboard_gestao_sistemas(request: Request, db: Session = Depends(get_db)):
     """Documentação interna: explica como cada página do Grampo funciona,
@@ -10996,6 +11114,14 @@ def dashboard_gestao_sistemas(request: Request, db: Session = Depends(get_db)):
             )
     body_html = "".join(body_parts)
 
+    flows_html = "".join(
+        '<div class="gs-card">'
+        f'<div class="gs-head"><span class="gs-title">{html_mod.escape(_t)}</span></div>'
+        f'<div class="gs-resumo" style="margin-bottom:6px">{html_mod.escape(_d)}</div>'
+        f'{_svg}</div>'
+        for _t, _d, _svg in _GS_FLOWS
+    )
+
     page = f"""<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">
 <title>Gestão de Sistemas — Alto Valor</title>{COMMON_CSS}
 <style>{_GS_CSS}</style>
@@ -11012,6 +11138,8 @@ def dashboard_gestao_sistemas(request: Request, db: Session = Depends(get_db)):
       <p class="sub">Saber qual motor move cada página explica por que algumas coisas são instantâneas e outras só mudam no domingo. As etiquetas em cada página abaixo indicam quais motores ela usa.</p>
       <div class="gs-legend">{legend}</div>
     </div>
+    <div class="gs-grouplabel">Como funciona · fluxos</div>
+    {flows_html}
     {body_html}
   </div>
 </div>
