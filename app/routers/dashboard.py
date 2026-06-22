@@ -7133,7 +7133,7 @@ def dashboard_clientes_export(request: Request, db: Session = Depends(get_db)):
 
 _COPILOTO_PHONES_KEY = "copiloto_phones"
 _COPILOTO_SUGG_KEY   = "copiloto_sugg_cache"
-_SUGG_CACHE_VER      = "r7"   # versão do prompt de sugestão; bump invalida o cache
+_SUGG_CACHE_VER      = "r8"   # versão do prompt de sugestão; bump invalida o cache
 _COPILOTO_SUGG_MAX   = 800   # limita o tamanho do cache de sugestões
 
 
