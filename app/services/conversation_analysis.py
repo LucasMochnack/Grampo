@@ -318,16 +318,25 @@ Conteúdo:
 - Espelhe o tom e o vocabulário que o ASSESSOR já usou na conversa (se ele é informal, seja informal; se trata por "você" ou "senhor", mantenha o mesmo).
 - Se vier um bloco "CONTEXTO DO CLIENTE", use como pano de fundo para deixar a resposta mais relevante (assunto pendente, produto já oferecido, oportunidade) — mas NUNCA repita nota, tag, jargão ou nome de produto interno desse bloco; soe como se você já conhecesse o cliente naturalmente.
 
-Para soar humano (evite os vícios típicos de IA):
-- PROIBIDO clichê corporativo: "fico à disposição", "não hesite em entrar em contato", "entendo perfeitamente", "compreendo sua preocupação", "espero que esteja tudo bem", "é um prazer", "estou aqui para o que precisar", "qualquer dúvida estou à disposição".
-- Não repita nem parafraseie o que o cliente disse antes de responder ("vi que você perguntou sobre...", "entendi que você quer...").
-- Sem travessão (—), sem listas de três itens, sem linguagem floreada ou genérica.
-- Vá direto ao ponto, sem rodeio nem encheção de linguiça.
-- Emoji só se o assessor já usa, e no máximo um. Sem exclamação em excesso.
-- Não comece sempre com "Olá, [Nome]!" de forma robótica — muitas vezes é continuação de conversa e nem precisa de saudação.
-- Não soe formal ou empolado demais. Soe como um assessor de verdade mandando uma mensagem rápida.
+Para soar humano, EVITE os erros que mais entregam que é IA:
+- PROIBIDO travessão (o caractere "—" ou "–"). Use ponto ou vírgula, ou reescreva a frase.
+- PROIBIDO oferecer um "cardápio" de opções (ex.: "liquidez, rendimento de curto prazo ou longo prazo?"). Se for perguntar, faça UMA pergunta simples e específica.
+- PROIBIDO entusiasmo genérico de vendedor: "Que ótimo!", "Vamos aproveitar!", "Perfeito!", "te indico a melhor opção".
+- PROIBIDO clichê corporativo: "fico à disposição", "não hesite em entrar em contato", "entendo perfeitamente", "espero que esteja tudo bem", "é um prazer", "qualquer dúvida estou à disposição".
+- Não repita nem parafraseie o que o cliente disse ("vi que você quer...", "entendi que você...").
+- Emoji só se o assessor já usa, no máximo um. Sem exclamação em excesso.
+- Sem saudação robótica repetida; muitas vezes é continuação de conversa e nem precisa.
+- Vá direto ao ponto, como uma pessoa de verdade mandando um zap rápido, NÃO como um texto de vendas.
 
-Formato: responda APENAS com o texto da mensagem — sem aspas, sem "Sugestão:", sem explicação, sem nada além da mensagem.
+EXEMPLO do que NÃO fazer (puro vício de IA):
+"Bom dia, Lucas! Que ótimo, vamos aproveitar esse aporte. Me fala o que você busca: liquidez, rendimento de curto prazo, ou algo de longo prazo? Assim te indico a melhor opção."
+(erros: entusiasmo de vendedor, cardápio de 3 opções, fechamento genérico)
+
+EXEMPLO bom (humano e direto):
+"Bom dia, Lucas! Esse valor você prefere deixar mais à mão ou pode deixar rendendo um tempo?"
+(uma pergunta só, simples, sem lista, sem encheção)
+
+Formato: responda APENAS com o texto da mensagem (sem aspas, sem "Sugestão:", sem explicação).
 """
 
 
@@ -384,7 +393,11 @@ def suggest_reply(
         for block in (resp.content or []):
             if getattr(block, "type", "") == "text":
                 raw += block.text or ""
-        return raw.strip() or "[Sem sugestão gerada]"
+        raw = raw.strip()
+        for _dash in (" — ", " – ", "—", "–"):   # trava determinística: sem travessão (vício de IA)
+            raw = raw.replace(_dash, ", ")
+        raw = raw.replace(",  ", ", ").replace(" ,", ",")
+        return raw or "[Sem sugestão gerada]"
     except Exception as exc:
         logger.error("suggest_reply failed: %s", exc)
         return f"[Erro ao gerar sugestão: {exc}]"
