@@ -2595,6 +2595,23 @@ _PAGE_TITLES: dict[str, str] = {
 }
 
 
+_INGEST_JS = """<script>
+(function(){
+  function _ckIngest(){
+    fetch('/dashboard/ingestion-status',{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).then(function(d){
+      var el=document.getElementById('ingestAlert'); if(!el||!d) return;
+      if(d.stale){
+        el.innerHTML='\\u26a0 <b>Ingestao de mensagens parada ha '+d.minutes+' min</b> \\u2014 o webhook da Zenvia pode estar com problema. Verifique no painel da Zenvia.';
+        el.style.display='block';
+      } else { el.style.display='none'; }
+    }).catch(function(){});
+  }
+  _ckIngest();
+  setInterval(_ckIngest, 120000);
+})();
+</script>"""
+
+
 def _nav_html(active: str, extra: str = "", canal: str = "", unacked_alerts: int = 0, acked_alerts: int = 0, is_admin: bool = False, title: str = "", role: str = "") -> str:
     canal_qs = f"?canal={canal}"
 
@@ -2677,6 +2694,7 @@ def _nav_html(active: str, extra: str = "", canal: str = "", unacked_alerts: int
     <button onclick="location.reload()" style="background:#111a2e;border:1px solid #1a2540;color:#c0c8d8;padding:6px 12px;border-radius:8px;font-size:11px;cursor:pointer;font-weight:600;font-family:'Montserrat',sans-serif">&#x21bb;</button>
   </div>
 </div>
+<div id="ingestAlert" role="alert" style="display:none;position:fixed;top:60px;left:220px;right:0;z-index:60;background:#7f1d1d;color:#fff;font-size:12.5px;font-weight:600;padding:9px 18px;border-bottom:1px solid #ef4444;text-align:center"></div>
 <script>
 function switchCanal(val) {{
     var url = new URL(window.location.href);
@@ -2698,7 +2716,38 @@ function switchCanal(val) {{
     updateTimer();
     setInterval(updateTimer, 1000);
 }})();
-</script>"""
+</script>{_INGEST_JS}"""
+
+
+@router.get("/dashboard/ingestion-status", include_in_schema=False)
+def ingestion_status(request: Request, db: Session = Depends(get_db)):
+    """Status leve da ingestão (p/ o banner de alerta): diz se o webhook parou.
+    Considera 'parado' = 0 eventos por >=25 min EM HORÁRIO COMERCIAL (seg-sex
+    9h-18h Brasília), pra não dar falso alarme de madrugada/fim de semana.
+    Cacheado 60s — só consulta o banco 1x/min, independente de quantos acessam."""
+    if _get_access(request, db) is None:
+        db.close()
+        return JSONResponse({"stale": False})
+
+    def _compute():
+        now = datetime.now(timezone.utc)
+        recent = get_events_since(db, since=now - timedelta(minutes=70), limit=3000)
+        last = None
+        for e in recent:
+            rt = getattr(e, "received_at", None)
+            if rt and (last is None or rt > last):
+                last = rt
+        mins = 999 if last is None else int((now - last.astimezone(timezone.utc)).total_seconds() // 60)
+        nbr = datetime.now(BRASILIA)
+        biz = (nbr.weekday() < 5 and 9 <= nbr.hour < 18)
+        return {"stale": bool(biz and mins >= 25), "minutes": mins, "biz": biz}
+
+    try:
+        res = _cache.cached(("ingestion-status",), 60.0, _compute)
+    except Exception:
+        res = {"stale": False}
+    db.close()
+    return JSONResponse(res)
 
 
 # ── Conversations Dashboard ─────────────────────────────────────────────────
