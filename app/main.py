@@ -4,9 +4,19 @@ import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.responses import RedirectResponse
 
-from app.database import create_tables
+from app.database import create_tables, SessionLocal
 from app.routers import events, health, webhook, dashboard
+
+# Páginas que o perfil "compliance" PODE acessar (só a aba Alertas + auth + ação
+# de marcar alerta). Qualquer outra rota /dashboard/* é redirecionada p/ Alertas.
+_COMPLIANCE_ALLOWED = {
+    "/dashboard/alertas",
+    "/dashboard/ack-alert",
+    "/dashboard/login",
+    "/dashboard/logout",
+}
 from app.services.auto_score import weekly_score_loop
 
 # Scheduler logs to stdout so Railway captures the weekly-run reports.
@@ -70,6 +80,27 @@ def create_app() -> FastAPI:
             "connect-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
         )
         return resp
+
+    @app.middleware("http")
+    async def _compliance_gate(request, call_next):
+        # O perfil "compliance" só enxerga a aba Alertas. Qualquer outra rota
+        # /dashboard/* é redirecionada para lá. Só pagamos a consulta ao banco
+        # quando o caminho NÃO está na lista permitida (rotas de Alertas/login
+        # passam direto, sem custo). Não afeta /webhook nem /health.
+        path = request.url.path
+        if path.startswith("/dashboard") and path not in _COMPLIANCE_ALLOWED:
+            access = None
+            try:
+                db = SessionLocal()
+                try:
+                    access = dashboard._get_access(request, db)
+                finally:
+                    db.close()
+            except Exception:
+                access = None
+            if access and access.get("role") == "compliance":
+                return RedirectResponse("/dashboard/alertas", status_code=303)
+        return await call_next(request)
 
     app.include_router(health.router)
     app.include_router(webhook.router)

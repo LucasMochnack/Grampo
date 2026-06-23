@@ -490,7 +490,7 @@ def _parse_accesses_json(raw: str) -> list[dict]:
         pw = item.get("password")
         if not pw or not isinstance(pw, str):
             continue
-        role = item.get("role") if item.get("role") in ("admin", "viewer", "gestor") else "viewer"
+        role = item.get("role") if item.get("role") in ("admin", "viewer", "gestor", "compliance") else "viewer"
         agents = item.get("agents") or []
         if not isinstance(agents, list):
             agents = []
@@ -517,7 +517,7 @@ def _save_accesses(db: Session, accesses: list[dict]) -> None:
         pw = (a.get("password") or "").strip()
         if not pw:
             continue
-        role = a.get("role") if a.get("role") in ("admin", "viewer", "gestor") else "viewer"
+        role = a.get("role") if a.get("role") in ("admin", "viewer", "gestor", "compliance") else "viewer"
         agents = a.get("agents") or []
         if not isinstance(agents, list):
             agents = []
@@ -609,8 +609,8 @@ def _user_sees(access: dict | None, agent_name: str) -> bool:
     """Return True if the access is allowed to view the given agent."""
     if not access:
         return False
-    if access.get("role") in ("admin", "gestor"):
-        return True   # gestor vê todos os agentes, mas não acessa páginas de admin
+    if access.get("role") in ("admin", "gestor", "compliance"):
+        return True   # gestor/compliance veem todos os agentes (compliance só na aba Alertas)
     allowed = access.get("agents") or []
     if not allowed:
         return False
@@ -2376,6 +2376,7 @@ def dashboard_acessos(request: Request, db: Session = Depends(get_db)):
                   '<div><label>Papel</label><select onchange="accesses[' + i + '].role=this.value;render()">' +
                     '<option value="viewer"' + (role==='viewer'?' selected':'') + '>Viewer (agentes específicos)</option>' +
                     '<option value="gestor"' + (role==='gestor'?' selected':'') + '>Gestor (vê tudo, sem admin)</option>' +
+                    '<option value="compliance"' + (role==='compliance'?' selected':'') + '>Compliance (só Alertas)</option>' +
                     '<option value="admin"' + (role==='admin'?' selected':'') + '>Admin</option>' +
                   '</select></div>' +
                   '<div style="display:flex;align-items:flex-end;justify-content:flex-end"><button type="button" class="btn-del" onclick="delRow(' + i + ')">Remover</button></div>' +
@@ -2384,6 +2385,8 @@ def dashboard_acessos(request: Request, db: Session = Depends(get_db)):
                     ? '<p style="font-size:11px;color:#c4b5fd;margin:0">Admin vê <strong>todos</strong> os agentes e pode gerenciar acessos.</p>'
                     : role === 'gestor'
                     ? '<p style="font-size:11px;color:#6ee7b7;margin:0">Gestor vê <strong>todos</strong> os agentes e todas as abas, mas <strong>não</strong> acessa as páginas de admin (Acessos, Diagnóstico).</p>'
+                    : role === 'compliance'
+                    ? '<p style="font-size:11px;color:#fbbf24;margin:0">Compliance acessa <strong>somente a aba Alertas</strong> (de todos os agentes). Qualquer outra página é redirecionada para Alertas. Ideal para compartilhar com o Compliance.</p>'
                     : '<div><label>Agentes visíveis <span style="color:#4a5a7a;text-transform:none;letter-spacing:0;font-weight:500">(' + (a.agents ? a.agents.length : 0) + ' selecionados)</span></label><div class="agents-grid">' + agentsHtml + '</div></div>');
             list.appendChild(row);
         }});
@@ -2592,7 +2595,7 @@ _PAGE_TITLES: dict[str, str] = {
 }
 
 
-def _nav_html(active: str, extra: str = "", canal: str = "", unacked_alerts: int = 0, acked_alerts: int = 0, is_admin: bool = False, title: str = "") -> str:
+def _nav_html(active: str, extra: str = "", canal: str = "", unacked_alerts: int = 0, acked_alerts: int = 0, is_admin: bool = False, title: str = "", role: str = "") -> str:
     canal_qs = f"?canal={canal}"
 
     def _ni(page_id: str, label: str, href: str, badge: str = "") -> str:
@@ -2622,31 +2625,39 @@ def _nav_html(active: str, extra: str = "", canal: str = "", unacked_alerts: int
     # extra goes in topbar right (period filter for agentes, etc.)
     topbar_extra = f'<div style="display:flex;align-items:center;gap:8px">{extra}</div>' if extra else ""
 
+    _alertas_item = f'<a href="/dashboard/alertas{canal_qs}" class="nav-item {"active" if active == "alertas" else ""}">Alertas{acked_b_html}</a>'
+    if role == "compliance":
+        # Compliance só enxerga a aba Alertas — sidebar enxuta.
+        nav_groups_html = ('<div class="nav-group"><div class="nav-group-label">COMPLIANCE</div>'
+                           + _alertas_item + '</div>')
+    else:
+        nav_groups_html = (
+            '<div class="nav-group"><div class="nav-group-label">MONITORAMENTO</div>'
+            + _ni("overview", "Visão Geral", f"/dashboard/overview{canal_qs}")
+            + _ni("conversas", "Conversas", f"/dashboard{canal_qs}", unacked_b)
+            + _alertas_item
+            + _ni("sem-resposta", "Sem Resposta", f"/dashboard/sem-resposta{canal_qs}")
+            + _ni("copiloto", "Copiloto IA", f"/dashboard/copiloto{canal_qs}")
+            + _ni("oportunidades", "Oportunidades", f"/dashboard/oportunidades{canal_qs}")
+            + _ni("agentes", "Agentes", f"/dashboard/agentes{canal_qs}")
+            + '</div>'
+            + '<div class="nav-group"><div class="nav-group-label">ANÁLISE</div>'
+            + _ni("temas", "Temas", f"/dashboard/temas{canal_qs}")
+            + _ni("clientes", "Clientes", f"/dashboard/clientes{canal_qs}")
+            + _ni("avaliacao", "Avaliação Agentes", f"/dashboard/avaliacao-agentes{canal_qs}")
+            + _ni("evolucao", "Evolução", f"/dashboard/evolucao{canal_qs}")
+            + _ni("mensagens", "Mensagens iniciais", f"/dashboard/mensagens{canal_qs}")
+            + '</div>'
+            + admin_group
+        )
+
     return f"""<aside class="gp-sidebar">
   <div class="sidebar-brand">
     <img src="{ALTO_VALOR_LOGO}" alt="Alto Valor Investimentos"
          style="width:100%;max-width:160px;height:auto;object-fit:contain;opacity:.92;display:block;margin:0 auto 4px" />
     <div style="text-align:center;font-size:8px;letter-spacing:2px;color:#5a6a8a;font-weight:600;margin-top:2px">GRAMPO</div>
   </div>
-  <div class="nav-group">
-    <div class="nav-group-label">MONITORAMENTO</div>
-    {_ni("overview", "Visão Geral", f"/dashboard/overview{canal_qs}")}
-    {_ni("conversas", "Conversas", f"/dashboard{canal_qs}", unacked_b)}
-    <a href="/dashboard/alertas{canal_qs}" class="nav-item {'active' if active == 'alertas' else ''}">Alertas{acked_b_html}</a>
-    {_ni("sem-resposta", "Sem Resposta", f"/dashboard/sem-resposta{canal_qs}")}
-    {_ni("copiloto", "Copiloto IA", f"/dashboard/copiloto{canal_qs}")}
-    {_ni("oportunidades", "Oportunidades", f"/dashboard/oportunidades{canal_qs}")}
-    {_ni("agentes", "Agentes", f"/dashboard/agentes{canal_qs}")}
-  </div>
-  <div class="nav-group">
-    <div class="nav-group-label">ANÁLISE</div>
-    {_ni("temas", "Temas", f"/dashboard/temas{canal_qs}")}
-    {_ni("clientes", "Clientes", f"/dashboard/clientes{canal_qs}")}
-    {_ni("avaliacao", "Avaliação Agentes", f"/dashboard/avaliacao-agentes{canal_qs}")}
-    {_ni("evolucao", "Evolução", f"/dashboard/evolucao{canal_qs}")}
-    {_ni("mensagens", "Mensagens iniciais", f"/dashboard/mensagens{canal_qs}")}
-  </div>
-  {admin_group}
+  {nav_groups_html}
   <div class="sidebar-footer">
     <div style="width:28px;height:28px;border-radius:50%;background:#0fa968;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;color:#0b1120;flex-shrink:0">AV</div>
     <div style="flex:1;min-width:0;line-height:1.3">
@@ -8174,7 +8185,7 @@ def dashboard_alertas(request: Request, db: Session = Depends(get_db)):
 
     _active_top_color = "#ef4444" if n_active > 0 else "#1a2540"
     _active_val_color = "#ef4444" if n_active > 0 else "#5a6a8a"
-    nav = _nav_html("alertas", canal=canal, unacked_alerts=n_active, acked_alerts=len(acked), is_admin=is_admin, title="Alertas")
+    nav = _nav_html("alertas", canal=canal, unacked_alerts=n_active, acked_alerts=len(acked), is_admin=is_admin, title="Alertas", role=(access or {}).get("role", ""))
 
     # ── Build full-history audit section (admin only) ───────────────────────
     audit_html = ""
