@@ -2592,6 +2592,7 @@ _PAGE_TITLES: dict[str, str] = {
     "evolucao":   "Evolução",
     "acessos":    "Acessos",
     "gestao":     "Gestão de Sistemas",
+    "pdi":        "PDI",
 }
 
 
@@ -2662,6 +2663,7 @@ def _nav_html(active: str, extra: str = "", canal: str = "", unacked_alerts: int
             + _ni("temas", "Temas", f"/dashboard/temas{canal_qs}")
             + _ni("clientes", "Clientes", f"/dashboard/clientes{canal_qs}")
             + _ni("avaliacao", "Avaliação Agentes", f"/dashboard/avaliacao-agentes{canal_qs}")
+            + _ni("pdi", "PDI", f"/dashboard/pdi{canal_qs}")
             + _ni("evolucao", "Evolução", f"/dashboard/evolucao{canal_qs}")
             + _ni("mensagens", "Mensagens iniciais", f"/dashboard/mensagens{canal_qs}")
             + '</div>'
@@ -11168,6 +11170,310 @@ def dashboard_gestao_sistemas(request: Request, db: Session = Depends(get_db)):
 </div>
 </body></html>"""
     return HTMLResponse(page)
+
+
+# ══════════════ PDI — Plano de Desenvolvimento Individual dos assessores ══════
+_PDI_SETTING_KEY = "pdi_data"
+
+
+def _pdi_norm(agent: str) -> str:
+    return _norm_name(agent or "")
+
+
+def _get_pdi_all(db) -> dict:
+    try:
+        raw = get_setting(db, _PDI_SETTING_KEY)
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+
+def _save_pdi_all(db, data: dict) -> None:
+    set_setting(db, _PDI_SETTING_KEY, json.dumps(data, ensure_ascii=False))
+
+
+def _pdi_raiox_all(db, cycle: str) -> dict:
+    """Raio-X automático por assessor para o mês `cycle` (YYYY-MM), montado das
+    tabelas que a varredura de domingo já preenche — sem carregar eventos.
+    Cruza Score+Coverage por (phone,last_event_id) p/ atribuir nota/erros ao
+    assessor; oportunidades vêm direto da tabela (já tem agent)."""
+    from app.models import (ConversationScore as _CS, ConversationCoverage as _CC,
+                            ConversationOpportunity as _CO)
+    from collections import Counter, defaultdict
+    try:
+        y, mo = int(cycle[:4]), int(cycle[5:7])
+    except Exception:
+        nbr = datetime.now(BRASILIA); y, mo = nbr.year, nbr.month
+    start = datetime(y, mo, 1, tzinfo=BRASILIA).astimezone(timezone.utc)
+    ny, nmo = (y + 1, 1) if mo == 12 else (y, mo + 1)
+    end = datetime(ny, nmo, 1, tzinfo=BRASILIA).astimezone(timezone.utc)
+
+    cov_agent: dict = {}
+    prod: dict = defaultdict(set)
+    clients: dict = defaultdict(set)
+    try:
+        for c in db.query(_CC).filter(_CC.scored_at >= start, _CC.scored_at < end).all():
+            ag = (c.agent or "").strip()
+            if not ag:
+                continue
+            cov_agent[(c.phone, c.last_event_id)] = ag
+            prod[ag].update(c.produtos or [])
+            clients[ag].add(c.phone)
+    except Exception:
+        pass
+    notas: dict = defaultdict(list)
+    erros: dict = defaultdict(Counter)
+    try:
+        for s in db.query(_CS).filter(_CS.scored_at >= start, _CS.scored_at < end).all():
+            ag = cov_agent.get((s.phone, s.last_event_id))
+            if not ag:
+                continue
+            if s.avaliavel and s.nota is not None and s.nota >= 0:
+                notas[ag].append(s.nota)
+            for e in (s.erros or []):
+                if e and str(e).strip():
+                    erros[ag][str(e).strip()] += 1
+    except Exception:
+        pass
+    nopp: dict = defaultdict(int)
+    try:
+        for o in db.query(_CO).filter(_CO.has_opp == 1, _CO.last_msg_at >= start, _CO.last_msg_at < end).all():
+            ag = (o.agent or "").strip()
+            if ag:
+                nopp[ag] += (o.opp_count or 1)
+    except Exception:
+        pass
+    shelf = len(TOPIC_RULES) or 14
+    out: dict = {}
+    for ag in set(prod) | set(notas) | set(nopp) | set(clients):
+        nt = notas.get(ag, [])
+        out[ag] = {
+            "nota": round(sum(nt) / len(nt), 1) if nt else None,
+            "n_aval": len(nt),
+            "cobertura": len(prod.get(ag, set())),
+            "shelf": shelf,
+            "clientes": len(clients.get(ag, set())),
+            "oportunidades": nopp.get(ag, 0),
+            "top_erros": [e for e, _ in erros.get(ag, Counter()).most_common(3)],
+        }
+    return out
+
+
+_PDI_JS = """<script>
+(function(){
+  var P = window.PDI = Object.assign({competencias:[],metas:[],acoes:[],checkins:[],fortes:"",atencao:"",status_geral:""}, window.PDI||{});
+  function esc(s){return String(s==null?'':s).replace(/[&<>\\"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\\"':'&quot;'}[c];});}
+  function inp(list,i,f,val,ph){ return '<input value="'+esc(val)+'" placeholder="'+esc(ph||'')+'" oninput="pdiSet(\\''+list+'\\','+i+',\\''+f+'\\',this.value)" style="width:100%;background:#0b1120;border:1px solid #243152;border-radius:6px;color:#e8ecf1;padding:6px 8px;font-size:12px;font-family:inherit;box-sizing:border-box">'; }
+  function statusSel(list,i,val){ var o=['','a fazer','em andamento','concluído','atrasado'];
+    return '<select onchange="pdiSet(\\''+list+'\\','+i+',\\'status\\',this.value)" style="background:#0b1120;border:1px solid #243152;border-radius:6px;color:#c8d2e8;padding:6px;font-size:11px">'+o.map(function(x){return '<option value="'+x+'"'+(x===(val||'')?' selected':'')+'>'+(x||'status')+'</option>';}).join('')+'</select>'; }
+  function delBtn(list,i){ return '<button onclick="pdiDel(\\''+list+'\\','+i+')" title="remover" style="background:#2a1520;color:#ff8a94;border:1px solid #4a2535;border-radius:6px;padding:5px 9px;font-size:11px;cursor:pointer">✕</button>'; }
+  function empty(){ return '<div style="font-size:12px;color:#5a6a8a;padding:4px 0">Nada ainda — clique em + para adicionar.</div>'; }
+  window.pdiSet=function(l,i,f,v){ P[l][i][f]=v; };
+  window.pdiDel=function(l,i){ P[l].splice(i,1); pdiRender(); };
+  window.pdiAddComp=function(){ P.competencias.push({nome:'',atual:'',alvo:''}); pdiRender(); };
+  window.pdiAddMeta=function(){ P.metas.push({texto:'',prazo:'',status:''}); pdiRender(); };
+  window.pdiAddAcao=function(){ P.acoes.push({texto:'',resp:'',prazo:'',status:''}); pdiRender(); };
+  window.pdiAddCk=function(){ P.checkins.push({data:'',texto:''}); pdiRender(); };
+  function pdiRender(){
+    document.getElementById('pdi-comp').innerHTML = P.competencias.map(function(c,i){
+      return '<div style="display:grid;grid-template-columns:1fr 70px 70px 34px;gap:8px;margin-bottom:6px;align-items:center">'+inp('competencias',i,'nome',c.nome,'Competência')+inp('competencias',i,'atual',c.atual,'atual')+inp('competencias',i,'alvo',c.alvo,'alvo')+delBtn('competencias',i)+'</div>'; }).join('') || empty();
+    document.getElementById('pdi-metas').innerHTML = P.metas.map(function(m,i){
+      return '<div style="display:grid;grid-template-columns:1fr 110px 130px 34px;gap:8px;margin-bottom:6px;align-items:center">'+inp('metas',i,'texto',m.texto,'Meta (ex.: cobertura 8 → 11)')+inp('metas',i,'prazo',m.prazo,'prazo')+statusSel('metas',i,m.status)+delBtn('metas',i)+'</div>'; }).join('') || empty();
+    document.getElementById('pdi-acoes').innerHTML = P.acoes.map(function(a,i){
+      return '<div style="display:grid;grid-template-columns:1fr 130px 110px 130px 34px;gap:8px;margin-bottom:6px;align-items:center">'+inp('acoes',i,'texto',a.texto,'Ação de desenvolvimento')+inp('acoes',i,'resp',a.resp,'responsável')+inp('acoes',i,'prazo',a.prazo,'prazo')+statusSel('acoes',i,a.status)+delBtn('acoes',i)+'</div>'; }).join('') || empty();
+    document.getElementById('pdi-checkins').innerHTML = P.checkins.map(function(k,i){
+      return '<div style="display:grid;grid-template-columns:120px 1fr 34px;gap:8px;margin-bottom:6px;align-items:center">'+inp('checkins',i,'data',k.data,'data')+inp('checkins',i,'texto',k.texto,'o que foi conversado / evolução')+delBtn('checkins',i)+'</div>'; }).join('') || empty();
+  }
+  window.pdiSave=function(){
+    P.fortes=document.getElementById('pdi-fortes').value;
+    P.atencao=document.getElementById('pdi-atencao').value;
+    P.status_geral=document.getElementById('pdi-statusger').value;
+    var b=document.getElementById('pdi-savebtn'); if(b){b.disabled=true;b.textContent='Salvando…';}
+    fetch('/dashboard/pdi/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent:window.PDI_AGENT,ciclo:window.PDI_CYCLE,pdi:P})})
+      .then(function(r){return r.json();}).then(function(d){ pdiToast(d&&d.ok?'✅ PDI salvo':'⚠ '+((d&&d.error)||'erro ao salvar')); })
+      .catch(function(){ pdiToast('Erro de rede'); })
+      .finally(function(){ if(b){b.disabled=false;b.textContent='💾 Salvar PDI';} });
+  };
+  function pdiToast(msg){ var t=document.getElementById('pdiToast'); if(!t){t=document.createElement('div');t.id='pdiToast';t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#0fa968;color:#04150c;font-weight:700;font-size:13px;padding:10px 18px;border-radius:10px;z-index:9999;transition:opacity .3s';document.body.appendChild(t);} t.textContent=msg;t.style.opacity='1';clearTimeout(t._h);t._h=setTimeout(function(){t.style.opacity='0';},2600); }
+  if(document.readyState!=='loading') pdiRender(); else document.addEventListener('DOMContentLoaded', pdiRender);
+})();
+</script>"""
+
+
+@router.get("/dashboard/pdi", response_class=HTMLResponse, include_in_schema=False)
+def dashboard_pdi(request: Request, db: Session = Depends(get_db)):
+    """PDI — Plano de Desenvolvimento Individual por assessor, ciclo mensal, com
+    raio-X automático puxado dos dados do Grampo. Admin/gestor editam."""
+    from urllib.parse import quote_plus
+    access = _get_access(request, db)
+    if access is None:
+        return _auth_redirect()
+    if (access or {}).get("role") not in ("admin", "gestor"):
+        return HTMLResponse("<h3>Acesso restrito a admin/gestor.</h3>", status_code=403)
+    canal = _req_canal(request, default="")
+    nbr = datetime.now(BRASILIA)
+    cycle = (request.query_params.get("ciclo") or nbr.strftime("%Y-%m")).strip()
+    try:
+        cy, cm = int(cycle[:4]), int(cycle[5:7])
+    except Exception:
+        cy, cm = nbr.year, nbr.month
+        cycle = "%04d-%02d" % (cy, cm)
+
+    raiox = _cache.cached(("pdi-raiox", cycle), 300.0, lambda: _pdi_raiox_all(db, cycle))
+    pdi_all = _get_pdi_all(db)
+
+    cand = set(raiox.keys()) | set(AGENT_SEGMENT.keys())
+    advisors = sorted([a for a in cand if _get_segment(a) in _COBERTURA_SEGMENTS],
+                      key=lambda a: _short_agent_name(a).lower())
+    sel = (request.query_params.get("a") or "").strip()
+    if sel not in advisors:
+        sel = advisors[0] if advisors else ""
+    rx = raiox.get(sel, {}) if sel else {}
+    pdi_obj = (pdi_all.get(_pdi_norm(sel), {}) or {}).get(cycle, {}) if sel else {}
+    db.close()
+
+    _MESES = ["", "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
+    month_opts = ""
+    for k in range(6):
+        mm = cm - k; yy = cy
+        while mm <= 0:
+            mm += 12; yy -= 1
+        cv = "%04d-%02d" % (yy, mm)
+        sels = " selected" if cv == cycle else ""
+        month_opts += f'<option value="{cv}"{sels}>{_MESES[mm]}/{yy}</option>'
+
+    # ---- lista de assessores (esquerda) ----
+    def _notacolor(n):
+        if n is None:
+            return "#5a6a8a"
+        return "#0fa968" if n >= 7 else ("#f2b007" if n >= 5 else "#ef5a6a")
+    list_items = ""
+    for a in advisors:
+        arx = raiox.get(a, {})
+        n = arx.get("nota")
+        ns = (f"{n:.1f}" if n is not None else "—")
+        is_sel = (a == sel)
+        list_items += (
+            f'<a href="/dashboard/pdi?a={quote_plus(a)}&ciclo={cycle}&canal={canal}" '
+            f'style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;border-radius:9px;'
+            f'text-decoration:none;margin-bottom:3px;border-left:3px solid {"#5b9bff" if is_sel else "transparent"};'
+            f'background:{"rgba(91,155,255,.12)" if is_sel else "transparent"}">'
+            f'<span style="font-size:13px;font-weight:600;color:{"#ffffff" if is_sel else "#c8d2e8"};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{html_mod.escape(_short_agent_name(a))}</span>'
+            f'<span style="font-size:11px;font-weight:700;color:{_notacolor(n)};font-family:\'JetBrains Mono\',monospace">{ns}</span></a>'
+        )
+    list_items = list_items or '<div style="font-size:12px;color:#5a6a8a;padding:14px">Nenhum assessor de mesa com dados.</div>'
+
+    if not sel:
+        body = '<div style="font-size:13px;color:#6a7589;padding:40px;text-align:center">Sem assessores de mesa (Alta Renda / On Demand) para exibir.</div>'
+    else:
+        nota = rx.get("nota")
+        def _card(big, label, color, sub=""):
+            return (f'<div style="flex:1;min-width:120px;background:#0f1629;border:1px solid #1a2540;border-radius:11px;padding:14px 16px">'
+                    f'<div style="font-family:\'JetBrains Mono\',monospace;font-weight:700;font-size:23px;color:{color}">{big}</div>'
+                    f'<div style="font-size:10px;font-weight:600;letter-spacing:.07em;color:#8a96aa;text-transform:uppercase;margin-top:5px">{label}</div>{sub}</div>')
+        erros_html = ""
+        if rx.get("top_erros"):
+            erros_html = ('<div style="background:#0f1629;border:1px solid #1a2540;border-radius:11px;padding:14px 16px;margin-top:10px">'
+                          '<div style="font-size:10px;font-weight:600;letter-spacing:.07em;color:#8a96aa;text-transform:uppercase;margin-bottom:8px">Erros mais recorrentes (IA)</div>'
+                          + "".join(f'<div style="font-size:12.5px;color:#d2d8e4;padding:3px 0;border-top:1px solid #131c33">• {html_mod.escape(e)}</div>' for e in rx["top_erros"]) + '</div>')
+        raiox_html = (
+            '<div style="display:flex;gap:10px;flex-wrap:wrap">'
+            + _card((f"{nota:.1f}" if nota is not None else "—"), f"Nota média ({rx.get('n_aval',0)} aval.)", _notacolor(nota))
+            + _card(f"{rx.get('cobertura',0)}/{rx.get('shelf',14)}", "Produtos cobertos", "#7ccef5")
+            + _card(str(rx.get("clientes", 0)), "Clientes atendidos", "#c4b5fd")
+            + _card(str(rx.get("oportunidades", 0)), "Oportunidades", "#3ddc84")
+            + '</div>' + erros_html
+        )
+        _upd = pdi_obj.get("updated_at")
+        upd_html = f'<span style="font-size:11px;color:#6a7589;margin-left:auto">salvo em {html_mod.escape(_upd)}</span>' if _upd else ""
+
+        def _sec(title, hint, inner):
+            return (f'<div style="background:#0f1629;border:1px solid #1a2540;border-radius:12px;padding:16px 18px;margin-top:12px">'
+                    f'<div style="font-size:13px;font-weight:700;color:#e8ecf1;margin-bottom:2px">{title}</div>'
+                    f'<div style="font-size:11px;color:#6a7589;margin-bottom:10px">{hint}</div>{inner}</div>')
+        addbtn = lambda fn, lbl: f'<button onclick="{fn}" style="margin-top:8px;background:#16203a;color:#8fb6ff;border:1px solid #243152;border-radius:7px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">+ {lbl}</button>'
+        _ta = lambda elid, val, ph: f'<textarea id="{elid}" placeholder="{ph}" style="width:100%;min-height:60px;background:#0b1120;border:1px solid #243152;border-radius:8px;color:#e8ecf1;padding:9px 11px;font-size:12.5px;font-family:inherit;box-sizing:border-box;resize:vertical">{html_mod.escape(pdi_obj.get(val,""))}</textarea>'
+        _statuses = ["", "Em dia", "Atenção", "Atrasado"]
+        sg = pdi_obj.get("status_geral", "")
+        status_sel = ('<select id="pdi-statusger" style="background:#0b1120;border:1px solid #243152;border-radius:7px;color:#c8d2e8;padding:7px 10px;font-size:12px">'
+                      + "".join(f'<option value="{html_mod.escape(s)}"{" selected" if s==sg else ""}>{html_mod.escape(s) or "—"}</option>' for s in _statuses) + '</select>')
+
+        form = (
+            _sec("🎯 Competências em foco", "Escolha 2–3 por ciclo. Nível atual → alvo (ex.: 1 a 5).", '<div id="pdi-comp"></div>' + addbtn("pdiAddComp()", "competência"))
+            + _sec("📌 Metas do ciclo (SMART)", "Ancore nos números do raio-X acima. Ex.: cobertura 8 → 11.", '<div id="pdi-metas"></div>' + addbtn("pdiAddMeta()", "meta"))
+            + _sec("🛠 Plano de ação", "O que será feito, por quem, até quando.", '<div id="pdi-acoes"></div>' + addbtn("pdiAddAcao()", "ação"))
+            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">'
+            + f'<div style="background:#0f1629;border:1px solid #1a2540;border-radius:12px;padding:16px 18px"><div style="font-size:13px;font-weight:700;color:#3ddc84;margin-bottom:10px">💪 Pontos fortes</div>{_ta("pdi-fortes","fortes","O que o assessor faz bem (reconhecer)")}</div>'
+            + f'<div style="background:#0f1629;border:1px solid #1a2540;border-radius:12px;padding:16px 18px"><div style="font-size:13px;font-weight:700;color:#f2b007;margin-bottom:10px">⚠ Pontos de atenção</div>{_ta("pdi-atencao","atencao","O que precisa melhorar")}</div>'
+            + '</div>'
+            + _sec("🗓 Acompanhamento (1:1)", "Registro das conversas de desenvolvimento ao longo do mês.", '<div id="pdi-checkins"></div>' + addbtn("pdiAddCk()", "check-in"))
+        )
+        import json as _json
+        body = (
+            f'<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">'
+            f'<div><div style="font-size:19px;font-weight:700;color:#e8ecf1">{html_mod.escape(_short_agent_name(sel))}</div>'
+            f'<div style="font-size:12px;color:#8a96aa;margin-top:2px">{html_mod.escape(_get_segment(sel) or "—")} · raio-X de {_MESES[cm]}/{cy}</div></div>'
+            f'<button id="pdi-savebtn" onclick="pdiSave()" style="margin-left:auto;background:#0fa968;color:#04150c;font-weight:700;font-size:13px;border:none;border-radius:9px;padding:10px 20px;cursor:pointer;font-family:inherit">💾 Salvar PDI</button>{upd_html}</div>'
+            + raiox_html
+            + '<div style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#0b1120;border:1px solid #1a2540;border-radius:10px;padding:10px 14px">'
+            + '<span style="font-size:12px;color:#8a96aa">Status geral do PDI:</span>' + status_sel + '</div>'
+            + form
+            + f'<script>window.PDI={_json.dumps(pdi_obj, ensure_ascii=False)};window.PDI_AGENT={_json.dumps(sel, ensure_ascii=False)};window.PDI_CYCLE={_json.dumps(cycle, ensure_ascii=False)};</script>'
+        )
+
+    page = f"""<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">
+<title>PDI — Alto Valor</title>{COMMON_CSS}</head><body>
+{_nav_html("pdi", canal=canal, is_admin=(access or {}).get('role')=='admin', title="PDI", role=(access or {}).get('role',''))}
+<div class="container">
+  <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+    <div><h1 style="margin:0;font-size:20px;color:#e8ecf1">PDI · Plano de Desenvolvimento Individual</h1>
+    <p style="margin:4px 0 0;font-size:12px;color:#8a96aa">Ciclo mensal · só mesas Alta Renda e On Demand · o raio-X é preenchido pelos dados do Grampo</p></div>
+    <select onchange="location.href='/dashboard/pdi?a={quote_plus(sel)}&canal={canal}&ciclo='+this.value" style="margin-left:auto;background:#111a2e;color:#e8ecf1;border:1px solid #1a2540;padding:7px 12px;border-radius:8px;font-size:12px;font-weight:600">{month_opts}</select>
+  </div>
+  <div style="display:grid;grid-template-columns:280px 1fr;gap:16px;align-items:start">
+    <div style="background:#0b1120;border:1px solid #1a2540;border-radius:12px;padding:8px;max-height:75vh;overflow-y:auto">{list_items}</div>
+    <div>{body}</div>
+  </div>
+</div>
+{_PDI_JS}
+</body></html>"""
+    return HTMLResponse(page)
+
+
+@router.post("/dashboard/pdi/save", include_in_schema=False)
+def pdi_save(request: Request, body: dict = Body(default={}), db: Session = Depends(get_db)):
+    """Salva o PDI de um assessor para um ciclo (admin/gestor)."""
+    access = _get_access(request, db)
+    if access is None:
+        return JSONResponse({"error": "unauth"}, status_code=401)
+    if (access or {}).get("role") not in ("admin", "gestor"):
+        return JSONResponse({"error": "forbidden"}, status_code=403)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "bad json"}, status_code=400)
+    agent = (body.get("agent") or "").strip()
+    cycle = (body.get("ciclo") or "").strip()
+    pdi = body.get("pdi")
+    if not agent or not cycle or not isinstance(pdi, dict):
+        return JSONResponse({"error": "dados incompletos"}, status_code=400)
+
+    def _cap(v, n):
+        return v[:n] if isinstance(v, list) else []
+    clean = {
+        "competencias": _cap(pdi.get("competencias"), 12),
+        "metas": _cap(pdi.get("metas"), 20),
+        "acoes": _cap(pdi.get("acoes"), 30),
+        "checkins": _cap(pdi.get("checkins"), 60),
+        "fortes": str(pdi.get("fortes") or "")[:2000],
+        "atencao": str(pdi.get("atencao") or "")[:2000],
+        "status_geral": str(pdi.get("status_geral") or "")[:40],
+        "agent_nome": _short_agent_name(agent),
+        "updated_at": datetime.now(BRASILIA).strftime("%d/%m/%Y %H:%M"),
+    }
+    all_pdi = _get_pdi_all(db)
+    all_pdi.setdefault(_pdi_norm(agent), {})[cycle] = clean
+    _save_pdi_all(db, all_pdi)
+    db.close()
+    return JSONResponse({"ok": True})
 
 
 @router.get("/dashboard/diagnostico", response_class=HTMLResponse, include_in_schema=False)
