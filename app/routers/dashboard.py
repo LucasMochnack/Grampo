@@ -11259,52 +11259,305 @@ def _pdi_raiox_all(db, cycle: str) -> dict:
     return out
 
 
-_PDI_JS = """<script>
+def _pdi_hist_all(db, cycle: str) -> dict:
+    """Nota média por assessor, mês a mês, nos 6 ciclos terminando em `cycle`.
+    Retorna {agent: [{m, v|None} x6]} em ordem cronológica."""
+    from app.models import ConversationScore as _CS, ConversationCoverage as _CC
+    from collections import defaultdict
+    try:
+        y, mo = int(cycle[:4]), int(cycle[5:7])
+    except Exception:
+        nbr = datetime.now(BRASILIA); y, mo = nbr.year, nbr.month
+    months = []
+    yy, mm = y, mo
+    for _ in range(6):
+        months.append((yy, mm))
+        mm -= 1
+        if mm == 0:
+            mm = 12; yy -= 1
+    months.reverse()
+    start = datetime(months[0][0], months[0][1], 1, tzinfo=BRASILIA).astimezone(timezone.utc)
+    ey, em = (y + 1, 1) if mo == 12 else (y, mo + 1)
+    end = datetime(ey, em, 1, tzinfo=BRASILIA).astimezone(timezone.utc)
+    cov_agent = {}
+    try:
+        for c in db.query(_CC.phone, _CC.last_event_id, _CC.agent).filter(
+                _CC.scored_at >= start, _CC.scored_at < end).all():
+            if c.agent and c.agent.strip():
+                cov_agent[(c.phone, c.last_event_id)] = c.agent.strip()
+    except Exception:
+        pass
+    bucket = defaultdict(lambda: defaultdict(list))
+    try:
+        for s in db.query(_CS.phone, _CS.last_event_id, _CS.nota, _CS.avaliavel, _CS.scored_at).filter(
+                _CS.scored_at >= start, _CS.scored_at < end).all():
+            ag = cov_agent.get((s.phone, s.last_event_id))
+            if not ag:
+                continue
+            if s.avaliavel and s.nota is not None and s.nota >= 0 and s.scored_at:
+                bucket[ag][s.scored_at.astimezone(BRASILIA).strftime("%Y-%m")].append(s.nota)
+    except Exception:
+        pass
+    _ML = ["", "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
+    out = {}
+    for ag, mb in bucket.items():
+        series = []
+        for (yy2, mm2) in months:
+            vals = mb.get("%04d-%02d" % (yy2, mm2), [])
+            series.append({"m": _ML[mm2], "v": round(sum(vals) / len(vals), 1) if vals else None})
+        out[ag] = series
+    return out
+
+
+_PDI_CSS = """
+.pdiapp{--bg:#0a0f1e;--panel:#0f1629;--panel2:#141d33;--panel3:#1a2440;--line:rgba(255,255,255,.07);--line2:rgba(255,255,255,.13);--txt:#eaeff8;--mut:#8b95ad;--mut2:#5d667e;--green:#23b16e;--green2:#1a9460;--amber:#f0a800;--cyan:#56c9ec;--purple:#a78bfa;--blue:#5b8cf0;--red:#ef6a6a;font-family:'Manrope',system-ui,sans-serif;color:var(--txt);font-size:14px}
+.pdihdr{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:14px}
+.pdihdr h1{margin:0;font-size:20px;font-weight:800;color:#e8ecf1}
+.pdihdr .sub{font-size:12px;color:#8b95ad;margin-top:3px}
+.pdisel{background:#141d33;border:1px solid rgba(255,255,255,.13);border-radius:8px;padding:7px 12px;color:#eaeff8;font-family:inherit;font-size:12.5px;font-weight:600;cursor:pointer}
+.pdi-grid{display:grid;grid-template-columns:300px 1fr;gap:16px;align-items:start}
+.roster{background:var(--panel);border:1px solid var(--line);border-radius:14px;display:flex;flex-direction:column;overflow:hidden;position:sticky;top:74px;max-height:calc(100vh - 96px)}
+.rhead{padding:15px 16px 13px;border-bottom:1px solid var(--line)}
+.rtitle{font-weight:800;font-size:13px}
+.rsub{font-size:11px;color:var(--mut2);margin-top:2px}
+.rsearch{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 11px;color:var(--txt);font-family:inherit;font-size:12.5px;margin-top:9px}
+.rsearch::placeholder{color:var(--mut2)}
+.rlist{overflow-y:auto;flex:1;padding:6px}
+.advrow{display:flex;align-items:center;gap:11px;padding:10px 11px;border-radius:10px;cursor:pointer;border:1px solid transparent}
+.advrow:hover{background:var(--panel2)}
+.advrow.sel{background:linear-gradient(90deg,rgba(91,140,240,.16),rgba(91,140,240,.04));border-color:rgba(91,140,240,.4)}
+.adring{width:34px;height:34px;flex-shrink:0}
+.advmain{flex:1;min-width:0}
+.advname{font-weight:700;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.advmeta{margin-top:3px}
+.spill{font-size:9.5px;font-weight:700;padding:2px 7px;border-radius:20px}
+.sp-and{background:rgba(91,140,240,.16);color:#9bbcf7}.sp-ok{background:rgba(35,177,110,.16);color:#5fd39e}.sp-nao{background:rgba(255,255,255,.06);color:var(--mut2)}
+.advscore{font-weight:700;font-size:15px;flex-shrink:0;font-family:'JetBrains Mono',monospace}
+.detail{min-width:0}
+.dhead{display:flex;align-items:flex-start;justify-content:space-between;gap:20px;margin-bottom:4px}
+.dtitle{font-weight:800;font-size:23px;letter-spacing:-.4px}
+.dmeta{color:var(--mut);font-size:13px;margin-top:5px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.dtag{font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;background:rgba(86,201,236,.13);color:var(--cyan)}
+.btn-green{background:var(--green);color:#04130b;border:none;border-radius:9px;padding:11px 18px;font-weight:800;font-size:13.5px;font-family:inherit;cursor:pointer;box-shadow:0 6px 18px rgba(35,177,110,.28);white-space:nowrap}
+.btn-green:hover{background:#2bc77e}
+.raiox{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0 14px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:15px 16px;position:relative;overflow:hidden}
+.stat::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px}
+.stat.s-amber::before{background:var(--amber)}.stat.s-cyan::before{background:var(--cyan)}.stat.s-green::before{background:var(--green)}.stat.s-purple::before{background:var(--purple)}
+.statnum{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:28px;line-height:1;letter-spacing:-1px}
+.s-amber .statnum{color:var(--amber)}.s-cyan .statnum{color:var(--cyan)}.s-green .statnum{color:#46cf8e}.s-purple .statnum{color:var(--purple)}
+.statlab{font-size:10px;letter-spacing:.5px;color:var(--mut);font-weight:700;margin-top:8px}
+.statsub{font-size:11px;color:var(--mut2);margin-top:2px}
+.ia{background:linear-gradient(135deg,rgba(167,139,250,.08),var(--panel));border:1px solid rgba(167,139,250,.22);border-radius:13px;padding:15px 18px;margin-bottom:16px}
+.iahd{display:flex;align-items:center;gap:8px;font-weight:800;font-size:12px;letter-spacing:.5px;color:var(--purple);margin-bottom:9px}
+.iaitem{display:flex;gap:10px;padding:7px 0;font-size:13px;color:#c3cbdd;line-height:1.45;border-top:1px solid rgba(255,255,255,.04)}
+.iaitem:first-of-type{border-top:none}
+.iadot{color:var(--purple);font-weight:800}
+.tabs{display:flex;gap:6px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:5px;margin-bottom:16px;width:fit-content}
+.tab{padding:9px 18px;border-radius:8px;font-weight:700;font-size:13.5px;color:var(--mut);cursor:pointer}
+.tab:hover{color:var(--txt)}
+.tab.active{background:var(--panel3);color:#fff}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px;margin-bottom:16px}
+.chd{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:12px}
+.ctit{font-weight:800;font-size:15px}
+.csub{font-size:12px;color:var(--mut2);margin-top:3px}
+.btnadd{background:rgba(91,140,240,.13);color:#9bbcf7;border:1px solid rgba(91,140,240,.28);border-radius:8px;padding:8px 14px;font-weight:700;font-size:12.5px;font-family:inherit;cursor:pointer;white-space:nowrap}
+.btnadd:hover{background:rgba(91,140,240,.22)}
+.empty{color:var(--mut2);font-size:13px;padding:6px 0 4px;font-style:italic}
+.inp,.ta{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:9px 11px;color:var(--txt);font-family:inherit;font-size:13px;box-sizing:border-box}
+.inp:focus,.ta:focus{outline:none;border-color:rgba(91,140,240,.55);background:var(--panel3)}
+.inp::placeholder,.ta::placeholder{color:var(--mut2)}
+.ta{resize:vertical;min-height:78px;line-height:1.5}
+.comprow{display:grid;grid-template-columns:1fr auto auto auto;gap:14px;align-items:center;padding:13px 0;border-top:1px solid var(--line)}
+.comprow:first-of-type{border-top:none}
+.lvlbox{display:flex;flex-direction:column;gap:4px;align-items:center}
+.lvllab{font-size:9px;letter-spacing:.4px;color:var(--mut2);font-weight:700}
+.dots{display:flex;gap:5px}
+.dot{width:23px;height:23px;border-radius:6px;background:var(--panel3);border:1px solid var(--line2);cursor:pointer;display:flex;align-items:center;justify-content:center;font-family:'JetBrains Mono',monospace;font-size:11px;font-weight:700;color:var(--mut2)}
+.dot:hover{border-color:var(--mut);color:var(--txt)}
+.dot.on{background:var(--green);border-color:var(--green);color:#04130b}
+.dot.tgt{background:rgba(86,201,236,.12);border:1.5px solid var(--cyan);color:var(--cyan)}
+.cmpname{display:flex;flex-direction:column;gap:7px;min-width:0}
+.cmpread{font-size:11.5px;color:var(--mut);font-weight:600}
+.cmpread.ok{color:#5fd39e}
+.cmplegend{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;padding:10px 14px;margin-bottom:6px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;font-size:11.5px;color:var(--mut)}
+.cmplegend span{display:flex;align-items:center;gap:7px}
+.lgscale{color:var(--mut2);font-family:'JetBrains Mono',monospace;font-size:10.5px}
+.lg{width:14px;height:14px;border-radius:4px;display:inline-block}
+.lg-on{background:var(--green)}.lg-tgt{background:rgba(86,201,236,.12);border:1.5px solid var(--cyan)}
+.xbtn{width:28px;height:28px;border-radius:7px;border:1px solid var(--line);background:transparent;color:var(--mut2);cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.xbtn:hover{border-color:var(--red);color:var(--red);background:rgba(239,106,106,.08)}
+.metarow{display:flex;gap:13px;align-items:flex-start;padding:13px 0;border-top:1px solid var(--line)}
+.metarow:first-of-type{border-top:none}
+.metanum{width:24px;height:24px;border-radius:7px;background:var(--panel3);display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;color:var(--mut);flex-shrink:0;margin-top:5px;font-family:'JetBrains Mono',monospace}
+.metabody{flex:1;display:flex;flex-direction:column;gap:9px}
+.metafoot{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.prazo{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--mut)}
+.dateinp{background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:6px 9px;color:var(--txt);font-family:inherit;font-size:12px;color-scheme:dark}
+.chip{font-size:11px;font-weight:700;padding:5px 12px;border-radius:20px;cursor:pointer;border:1px solid transparent;user-select:none}
+.chip-dia{background:rgba(91,140,240,.16);color:#9bbcf7;border-color:rgba(91,140,240,.3)}
+.chip-atr{background:rgba(239,106,106,.16);color:#f59a9a;border-color:rgba(239,106,106,.32)}
+.chip-ok{background:rgba(35,177,110,.18);color:#5fd39e;border-color:rgba(35,177,110,.34)}
+.acaorow{display:flex;gap:12px;align-items:center;padding:12px 0;border-top:1px solid var(--line)}
+.acaorow:first-of-type{border-top:none}
+.chk{width:22px;height:22px;border-radius:6px;border:1.5px solid var(--line2);cursor:pointer;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:13px;color:transparent}
+.chk.done{background:var(--green);border-color:var(--green);color:#04130b}
+.acaorow .inp{flex:1}
+.amini{max-width:150px}
+.twocol{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.ptit{font-weight:800;font-size:14px;display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.pt-green{color:#46cf8e}.pt-amber{color:var(--amber)}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+.kpi{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:15px 16px}
+.kpinum{font-family:'JetBrains Mono',monospace;font-weight:700;font-size:24px;letter-spacing:-.5px}
+.kpilab{font-size:11px;color:var(--mut);font-weight:600;margin-top:6px}
+.kpibar{height:5px;border-radius:5px;background:var(--panel3);margin-top:10px;overflow:hidden}
+.kpifill{height:100%;border-radius:5px;background:var(--green)}
+.cbar{padding:12px 0;border-top:1px solid var(--line)}
+.cbar:first-of-type{border-top:none}
+.cbarhd{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px}
+.cbarname{font-weight:700;font-size:13.5px}
+.cbarval{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--mut);font-weight:600}
+.track{position:relative;height:10px;border-radius:6px;background:var(--panel3);overflow:visible}
+.tfill{height:100%;border-radius:6px;background:linear-gradient(90deg,var(--green2),var(--green))}
+.tflag{position:absolute;top:-4px;width:2px;height:18px;background:var(--cyan);border-radius:2px}
+.tflag::after{content:"";position:absolute;top:-4px;left:-3px;width:8px;height:8px;border-radius:50%;background:var(--cyan)}
+.mstat{display:flex;align-items:center;gap:12px;padding:11px 0;border-top:1px solid var(--line)}
+.mstat:first-of-type{border-top:none}
+.mstat .mtxt{flex:1;font-size:13.5px;line-height:1.4}
+.mstat .mtxt.dn{color:var(--mut2);text-decoration:line-through}
+.chartfoot{display:flex;justify-content:space-between;margin-top:8px}
+.cxlab{font-size:10px;color:var(--mut2);font-family:'JetBrains Mono',monospace}
+.tl{position:relative}
+.tlitem{position:relative;padding:0 0 18px 26px;border-left:2px solid var(--line2)}
+.tlitem:last-child{border-left-color:transparent;padding-bottom:0}
+.tldot{position:absolute;left:-9px;top:0;width:16px;height:16px;border-radius:50%;background:var(--panel);border:3px solid var(--green)}
+.tldate{margin-bottom:5px}
+.tladd{display:flex;gap:10px;align-items:flex-start;margin-top:6px}
+.toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:#23b16e;color:#04130b;font-weight:800;font-size:13.5px;padding:13px 22px;border-radius:11px;box-shadow:0 12px 34px rgba(0,0,0,.45);z-index:9999;display:flex;align-items:center;gap:9px;transition:opacity .3s}
+@media(max-width:1100px){.raiox,.kpis{grid-template-columns:repeat(2,1fr)}.pdi-grid{grid-template-columns:1fr}.roster{position:static;max-height:320px}}
+"""
+
+_PDI_JS = r"""<script>
 (function(){
-  var P = window.PDI = Object.assign({competencias:[],metas:[],acoes:[],checkins:[],fortes:"",atencao:"",status_geral:""}, window.PDI||{});
-  function esc(s){return String(s==null?'':s).replace(/[&<>\\"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','\\"':'&quot;'}[c];});}
-  function inp(list,i,f,val,ph){ return '<input value="'+esc(val)+'" placeholder="'+esc(ph||'')+'" oninput="pdiSet(\\''+list+'\\','+i+',\\''+f+'\\',this.value)" style="width:100%;background:#0b1120;border:1px solid #243152;border-radius:6px;color:#e8ecf1;padding:6px 8px;font-size:12px;font-family:inherit;box-sizing:border-box">'; }
-  function statusSel(list,i,val){ var o=['','a fazer','em andamento','concluído','atrasado'];
-    return '<select onchange="pdiSet(\\''+list+'\\','+i+',\\'status\\',this.value)" style="background:#0b1120;border:1px solid #243152;border-radius:6px;color:#c8d2e8;padding:6px;font-size:11px">'+o.map(function(x){return '<option value="'+x+'"'+(x===(val||'')?' selected':'')+'>'+(x||'status')+'</option>';}).join('')+'</select>'; }
-  function delBtn(list,i){ return '<button onclick="pdiDel(\\''+list+'\\','+i+')" title="remover" style="background:#2a1520;color:#ff8a94;border:1px solid #4a2535;border-radius:6px;padding:5px 9px;font-size:11px;cursor:pointer">✕</button>'; }
-  function empty(){ return '<div style="font-size:12px;color:#5a6a8a;padding:4px 0">Nada ainda — clique em + para adicionar.</div>'; }
-  window.pdiSet=function(l,i,f,v){ P[l][i][f]=v; };
-  window.pdiDel=function(l,i){ P[l].splice(i,1); pdiRender(); };
-  window.pdiAddComp=function(){ P.competencias.push({nome:'',atual:'',alvo:''}); pdiRender(); };
-  window.pdiAddMeta=function(){ P.metas.push({texto:'',prazo:'',status:''}); pdiRender(); };
-  window.pdiAddAcao=function(){ P.acoes.push({texto:'',resp:'',prazo:'',status:''}); pdiRender(); };
-  window.pdiAddCk=function(){ P.checkins.push({data:'',texto:''}); pdiRender(); };
-  function pdiRender(){
-    document.getElementById('pdi-comp').innerHTML = P.competencias.map(function(c,i){
-      return '<div style="display:grid;grid-template-columns:1fr 70px 70px 34px;gap:8px;margin-bottom:6px;align-items:center">'+inp('competencias',i,'nome',c.nome,'Competência')+inp('competencias',i,'atual',c.atual,'atual')+inp('competencias',i,'alvo',c.alvo,'alvo')+delBtn('competencias',i)+'</div>'; }).join('') || empty();
-    document.getElementById('pdi-metas').innerHTML = P.metas.map(function(m,i){
-      return '<div style="display:grid;grid-template-columns:1fr 110px 130px 34px;gap:8px;margin-bottom:6px;align-items:center">'+inp('metas',i,'texto',m.texto,'Meta (ex.: cobertura 8 → 11)')+inp('metas',i,'prazo',m.prazo,'prazo')+statusSel('metas',i,m.status)+delBtn('metas',i)+'</div>'; }).join('') || empty();
-    document.getElementById('pdi-acoes').innerHTML = P.acoes.map(function(a,i){
-      return '<div style="display:grid;grid-template-columns:1fr 130px 110px 130px 34px;gap:8px;margin-bottom:6px;align-items:center">'+inp('acoes',i,'texto',a.texto,'Ação de desenvolvimento')+inp('acoes',i,'resp',a.resp,'responsável')+inp('acoes',i,'prazo',a.prazo,'prazo')+statusSel('acoes',i,a.status)+delBtn('acoes',i)+'</div>'; }).join('') || empty();
-    document.getElementById('pdi-checkins').innerHTML = P.checkins.map(function(k,i){
-      return '<div style="display:grid;grid-template-columns:120px 1fr 34px;gap:8px;margin-bottom:6px;align-items:center">'+inp('checkins',i,'data',k.data,'data')+inp('checkins',i,'texto',k.texto,'o que foi conversado / evolução')+delBtn('checkins',i)+'</div>'; }).join('') || empty();
+  var D = window.PDI_DATA || {advisors:[],cycle:'',cycleLabel:'',prodTot:14,canal:'',selId:''};
+  D.advisors.forEach(function(a){ var p=a.pdi||{}; a.pdi={comps:p.comps||[],metas:p.metas||[],acoes:p.acoes||[],fortes:p.fortes||'',atencao:p.atencao||'',checkins:p.checkins||[],updated_at:p.updated_at||''}; });
+  var ST={selId: D.selId || (D.advisors[0]||{}).id, tab:'montar', search:'', mesa:''};
+  function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+  function cur(){ for(var i=0;i<D.advisors.length;i++) if(D.advisors[i].id===ST.selId) return D.advisors[i]; return D.advisors[0]||null; }
+  function nColor(n){ return n==null?'#5d667e':(n>=6?'#46cf8e':(n>=5.5?'#f0a800':'#ef6a6a')); }
+  function statusOf(a){ var p=a.pdi; if(!(p.comps.length||p.metas.length||p.acoes.length||p.checkins.length)) return 'naoiniciado';
+    var cOk=p.comps.length&&p.comps.every(function(c){return (+c.atual||0)>=(+c.alvo||0);});
+    var mOk=!p.metas.length||p.metas.every(function(m){return m.status==='ok';});
+    var aOk=!p.acoes.length||p.acoes.every(function(x){return x.done;});
+    if((p.metas.length||p.comps.length)&&cOk&&mOk&&aOk) return 'concluido'; return 'andamento'; }
+  var SMAP={andamento:{lab:'Em andamento',cls:'sp-and',ring:'#5b8cf0'},concluido:{lab:'Concluído',cls:'sp-ok',ring:'#23b16e'},naoiniciado:{lab:'Não iniciado',cls:'sp-nao',ring:'rgba(255,255,255,.18)'}};
+  function statusMeta(s){ return s==='ok'?{lab:'concluída',cls:'chip-ok'}:s==='atr'?{lab:'atrasada',cls:'chip-atr'}:{lab:'em dia',cls:'chip-dia'}; }
+  function nextStatus(s){ return s==='dia'?'atr':s==='atr'?'ok':'dia'; }
+  window.PDIH={};
+  PDIH.sel=function(id){ ST.selId=id; render(); };
+  PDIH.search=function(v){ ST.search=v; renderRoster(); };
+  PDIH.mesa=function(v){ ST.mesa=v; renderRoster(); };
+  PDIH.tab=function(t){ ST.tab=t; renderDetail(); };
+  PDIH.cAtual=function(i,l){ cur().pdi.comps[i].atual=l; renderDetail(); };
+  PDIH.cAlvo=function(i,l){ cur().pdi.comps[i].alvo=l; renderDetail(); };
+  PDIH.cName=function(i,v){ cur().pdi.comps[i].nome=v; };
+  PDIH.cDel=function(i){ cur().pdi.comps.splice(i,1); renderDetail(); };
+  PDIH.addComp=function(){ cur().pdi.comps.push({nome:'',atual:1,alvo:3}); renderDetail(); };
+  PDIH.mText=function(i,v){ cur().pdi.metas[i].texto=v; };
+  PDIH.mPrazo=function(i,v){ cur().pdi.metas[i].prazo=v; };
+  PDIH.mCycle=function(i){ var m=cur().pdi.metas[i]; m.status=nextStatus(m.status||'dia'); renderDetail(); };
+  PDIH.mDel=function(i){ cur().pdi.metas.splice(i,1); renderDetail(); };
+  PDIH.addMeta=function(){ cur().pdi.metas.push({texto:'',prazo:'',status:'dia'}); renderDetail(); };
+  PDIH.aToggle=function(i){ var a=cur().pdi.acoes[i]; a.done=!a.done; renderDetail(); };
+  PDIH.aText=function(i,v){ cur().pdi.acoes[i].texto=v; };
+  PDIH.aResp=function(i,v){ cur().pdi.acoes[i].resp=v; };
+  PDIH.aPrazo=function(i,v){ cur().pdi.acoes[i].prazo=v; };
+  PDIH.aDel=function(i){ cur().pdi.acoes.splice(i,1); renderDetail(); };
+  PDIH.addAcao=function(){ cur().pdi.acoes.push({texto:'',resp:'',prazo:'',done:false}); renderDetail(); };
+  PDIH.fortes=function(v){ cur().pdi.fortes=v; };
+  PDIH.atencao=function(v){ cur().pdi.atencao=v; };
+  PDIH.ckDate=function(i,v){ cur().pdi.checkins[i].data=v; };
+  PDIH.ckNota=function(i,v){ cur().pdi.checkins[i].nota=v; };
+  PDIH.ckDel=function(i){ cur().pdi.checkins.splice(i,1); renderDetail(); };
+  PDIH.addCk=function(){ cur().pdi.checkins.unshift({data:'',nota:''}); renderDetail(); };
+  PDIH.cycle=function(v){ var c=cur(); location.href='/dashboard/pdi?ciclo='+v+'&canal='+(D.canal||'')+'&a='+encodeURIComponent(c?c.id:''); };
+  PDIH.save=function(){ var c=cur(); if(!c) return; var b=document.getElementById('pdi-save'); if(b){b.disabled=true;b.innerHTML='Salvando…';}
+    fetch('/dashboard/pdi/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent:c.agent,ciclo:D.cycle,pdi:c.pdi})})
+      .then(function(r){return r.json();}).then(function(d){ if(d&&d.ok){c.pdi.updated_at=d.updated_at||'';toast('✓ PDI de '+c.nome+' salvo');renderDetail();renderRoster();} else toast('⚠ '+((d&&d.error)||'erro ao salvar')); })
+      .catch(function(){ toast('Erro de rede'); }).finally(function(){ if(b){b.disabled=false;b.innerHTML='⬇ Salvar PDI';} }); };
+  function toast(msg){ var t=document.getElementById('pdiToast'); if(!t){t=document.createElement('div');t.id='pdiToast';t.className='toast';document.body.appendChild(t);} t.textContent=msg;t.style.display='flex';t.style.opacity='1';clearTimeout(t._h);t._h=setTimeout(function(){t.style.opacity='0';},2400); }
+  function ring(color,prog){ var c=2*Math.PI*15; return '<svg class="adring" viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" fill="none" stroke="rgba(255,255,255,.08)" stroke-width="3"></circle><circle cx="18" cy="18" r="15" fill="none" stroke="'+color+'" stroke-width="3" stroke-linecap="round" stroke-dasharray="'+(c*prog).toFixed(1)+' '+c.toFixed(1)+'" transform="rotate(-90 18 18)"></circle></svg>'; }
+  function uniqueMesas(){ var s={}; D.advisors.forEach(function(a){if(a.mesa)s[a.mesa]=1;}); return Object.keys(s).sort(); }
+  function renderRoster(){
+    var lc=ST.search.trim().toLowerCase();
+    var rows=D.advisors.filter(function(a){ if(ST.mesa&&a.mesa!==ST.mesa) return false; if(lc&&a.nome.toLowerCase().indexOf(lc)<0) return false; return true; }).map(function(a){
+      var st=statusOf(a),sm=SMAP[st],prog=st==='concluido'?1:st==='naoiniciado'?0.04:0.6,n=a.raiox.nota;
+      return '<div class="advrow '+(a.id===ST.selId?'sel':'')+'" onclick="PDIH.sel(\''+a.id+'\')">'+ring(sm.ring,prog)+'<div class="advmain"><div class="advname">'+esc(a.nome)+'</div><div class="advmeta"><span class="spill '+sm.cls+'">'+sm.lab+'</span></div></div><div class="advscore" style="color:'+nColor(n)+'">'+(n==null?'—':n.toFixed(1))+'</div></div>';
+    }).join('') || '<div class="empty" style="padding:14px">Nenhum assessor.</div>';
+    var mopt=[''].concat(uniqueMesas()).map(function(m){return '<option value="'+esc(m)+'"'+(m===ST.mesa?' selected':'')+'>'+(m||'Todas as mesas')+'</option>';}).join('');
+    document.getElementById('pdi-roster').innerHTML='<div class="rhead"><div class="rtitle">Assessores</div><div class="rsub">Ciclo '+esc(D.cycleLabel)+' · '+D.advisors.length+' no time</div><select class="rsearch" style="cursor:pointer" onchange="PDIH.mesa(this.value)">'+mopt+'</select><input class="rsearch" placeholder="Buscar assessor..." value="'+esc(ST.search)+'" oninput="PDIH.search(this.value)"></div><div class="rlist">'+rows+'</div>';
   }
-  window.pdiSave=function(){
-    P.fortes=document.getElementById('pdi-fortes').value;
-    P.atencao=document.getElementById('pdi-atencao').value;
-    P.status_geral=document.getElementById('pdi-statusger').value;
-    var b=document.getElementById('pdi-savebtn'); if(b){b.disabled=true;b.textContent='Salvando…';}
-    fetch('/dashboard/pdi/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent:window.PDI_AGENT,ciclo:window.PDI_CYCLE,pdi:P})})
-      .then(function(r){return r.json();}).then(function(d){ pdiToast(d&&d.ok?'✅ PDI salvo':'⚠ '+((d&&d.error)||'erro ao salvar')); })
-      .catch(function(){ pdiToast('Erro de rede'); })
-      .finally(function(){ if(b){b.disabled=false;b.textContent='💾 Salvar PDI';} });
-  };
-  function pdiToast(msg){ var t=document.getElementById('pdiToast'); if(!t){t=document.createElement('div');t.id='pdiToast';t.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#0fa968;color:#04150c;font-weight:700;font-size:13px;padding:10px 18px;border-radius:10px;z-index:9999;transition:opacity .3s';document.body.appendChild(t);} t.textContent=msg;t.style.opacity='1';clearTimeout(t._h);t._h=setTimeout(function(){t.style.opacity='0';},2600); }
-  if(document.readyState!=='loading') pdiRender(); else document.addEventListener('DOMContentLoaded', pdiRender);
+  var LVL=['Iniciante','Básico','Intermediário','Avançado','Excelente'];
+  function dots(i,kind,val){ var h=''; for(var l=1;l<=5;l++){ var on=kind==='atual'?(l<=val?'on':''):(l===val?'tgt':''); h+='<div class="dot '+on+'" onclick="PDIH.'+(kind==='atual'?'cAtual':'cAlvo')+'('+i+','+l+')">'+l+'</div>'; } return h; }
+  function montarHTML(c){ var p=c.pdi;
+    var comps=p.comps.length?p.comps.map(function(cp,i){ var gap=(+cp.alvo||0)-(+cp.atual||0);
+      var read='Hoje: '+(LVL[(+cp.atual||1)-1]||'')+' ('+(cp.atual||1)+') → Meta: '+(LVL[(+cp.alvo||1)-1]||'')+' ('+(cp.alvo||1)+')'+(gap<=0?' · já no alvo ✓':' · faltam '+gap+' nível'+(gap>1?'eis':''));
+      return '<div class="comprow"><div class="cmpname"><input class="inp" placeholder="Nome da competência" value="'+esc(cp.nome)+'" onchange="PDIH.cName('+i+',this.value)"><div class="cmpread '+(gap<=0?'ok':'')+'">'+esc(read)+'</div></div><div class="lvlbox"><span class="lvllab">ATUAL · hoje</span><div class="dots">'+dots(i,'atual',+cp.atual||0)+'</div></div><div class="lvlbox"><span class="lvllab">ALVO · meta</span><div class="dots">'+dots(i,'alvo',+cp.alvo||0)+'</div></div><button class="xbtn" onclick="PDIH.cDel('+i+')">×</button></div>';
+    }).join(''):'<div class="empty">Nada ainda — clique em + competência.</div>';
+    var metas=p.metas.length?p.metas.map(function(m,i){ var sm=statusMeta(m.status);
+      return '<div class="metarow"><div class="metanum">'+(i+1)+'</div><div class="metabody"><textarea class="ta" style="min-height:52px" placeholder="Específica, mensurável, com prazo..." onchange="PDIH.mText('+i+',this.value)">'+esc(m.texto)+'</textarea><div class="metafoot"><span class="prazo">📅 prazo</span><input type="date" class="dateinp" value="'+esc(m.prazo)+'" onchange="PDIH.mPrazo('+i+',this.value)"><span class="chip '+sm.cls+'" onclick="PDIH.mCycle('+i+')">'+sm.lab+'</span></div></div><button class="xbtn" onclick="PDIH.mDel('+i+')">×</button></div>';
+    }).join(''):'<div class="empty">Nada ainda — clique em + meta.</div>';
+    var acoes=p.acoes.length?p.acoes.map(function(a,i){
+      return '<div class="acaorow"><div class="chk '+(a.done?'done':'')+'" onclick="PDIH.aToggle('+i+')">✓</div><input class="inp" placeholder="Ação a executar" value="'+esc(a.texto)+'" onchange="PDIH.aText('+i+',this.value)"><input class="inp amini" placeholder="Responsável" value="'+esc(a.resp)+'" onchange="PDIH.aResp('+i+',this.value)"><input type="date" class="dateinp" value="'+esc(a.prazo)+'" onchange="PDIH.aPrazo('+i+',this.value)"><button class="xbtn" onclick="PDIH.aDel('+i+')">×</button></div>';
+    }).join(''):'<div class="empty">Nada ainda — clique em + ação.</div>';
+    return '<div class="card"><div class="chd"><div><div class="ctit">🎯 Competências em foco</div><div class="csub">Escolha 2–3 por ciclo. 1 (Iniciante) a 5 (Excelente): marque onde está <b>hoje</b> e a <b>meta</b>.</div></div><button class="btnadd" onclick="PDIH.addComp()">+ competência</button></div><div class="cmplegend"><span><i class="lg lg-on"></i> nível atual</span><span><i class="lg lg-tgt"></i> alvo do ciclo</span><span class="lgscale">1 Iniciante · 2 Básico · 3 Intermediário · 4 Avançado · 5 Excelente</span></div>'+comps+'</div><div class="card"><div class="chd"><div><div class="ctit">📌 Metas do ciclo (SMART)</div><div class="csub">Ancore nos números do raio-X. Ex.: cobertura '+c.raiox.prodCob+'/'+c.raiox.prodTot+' → '+c.raiox.prodTot+'/'+c.raiox.prodTot+'.</div></div><button class="btnadd" onclick="PDIH.addMeta()">+ meta</button></div>'+metas+'</div><div class="card"><div class="chd"><div><div class="ctit">🔧 Plano de ação</div><div class="csub">O que será feito, por quem, até quando.</div></div><button class="btnadd" onclick="PDIH.addAcao()">+ ação</button></div>'+acoes+'</div><div class="twocol"><div class="card"><div class="ptit pt-green">💪 Pontos fortes</div><textarea class="ta" placeholder="O que o assessor faz bem (reconhecer)" onchange="PDIH.fortes(this.value)">'+esc(p.fortes)+'</textarea></div><div class="card"><div class="ptit pt-amber">⚠ Pontos de atenção</div><textarea class="ta" placeholder="O que precisa melhorar" onchange="PDIH.atencao(this.value)">'+esc(p.atencao)+'</textarea></div></div>';
+  }
+  function kpi(num,lab,col,pct,fill){ return '<div class="kpi"><div class="kpinum" style="color:'+col+'">'+num+'</div><div class="kpilab">'+lab+'</div><div class="kpibar"><div class="kpifill" style="width:'+pct+'%;background:'+fill+'"></div></div></div>'; }
+  function chartHTML(hist){ var h=hist||[]; var vals=h.filter(function(x){return x&&x.v!=null;}).map(function(x){return x.v;});
+    if(vals.length<1) return '<div class="empty">Sem histórico de nota ainda — a IA pontua a cada domingo.</div>';
+    var mn=Math.min.apply(null,vals)-0.3,mx=Math.max.apply(null,vals)+0.3; if(mx-mn<0.5) mx=mn+1;
+    var Bt=150,Tp=30,n=h.length||1;
+    var ds=h.map(function(p,i){ var x=40+i*(620/Math.max(1,n-1)); var y=(p&&p.v!=null)?Bt-((p.v-mn)/(mx-mn))*(Bt-Tp):null; return {x:Math.round(x),y:y==null?null:Math.round(y),v:(p&&p.v!=null)?p.v.toFixed(1):'',m:p?p.m:''}; });
+    var pts=ds.filter(function(d){return d.y!=null;});
+    var line=pts.map(function(d){return d.x+','+d.y;}).join(' ');
+    var circ=pts.map(function(d){return '<circle cx="'+d.x+'" cy="'+d.y+'" r="5" fill="#0a0f1e" stroke="#23b16e" stroke-width="3"></circle><text x="'+d.x+'" y="'+(d.y-14)+'" fill="#cfe8da" font-size="14" font-weight="700" text-anchor="middle" font-family="JetBrains Mono">'+d.v+'</text>';}).join('');
+    var foot=ds.map(function(d){return '<span class="cxlab">'+esc(d.m)+'</span>';}).join('');
+    return '<div><svg viewBox="0 0 700 180" style="width:100%;height:auto"><line x1="0" y1="45" x2="700" y2="45" stroke="rgba(255,255,255,.05)"></line><line x1="0" y1="90" x2="700" y2="90" stroke="rgba(255,255,255,.05)"></line><line x1="0" y1="135" x2="700" y2="135" stroke="rgba(255,255,255,.05)"></line><polyline points="'+line+'" fill="none" stroke="#23b16e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>'+circ+'</svg><div class="chartfoot">'+foot+'</div></div>';
+  }
+  function acompHTML(c){ var p=c.pdi;
+    var cOk=p.comps.filter(function(x){return (+x.atual||0)>=(+x.alvo||0);}).length, cPct=p.comps.length?Math.round(cOk/p.comps.length*100):0;
+    var mOk=p.metas.filter(function(m){return m.status==='ok';}).length, mPct=p.metas.length?Math.round(mOk/p.metas.length*100):0;
+    var aOk=p.acoes.filter(function(a){return a.done;}).length, aPct=p.acoes.length?Math.round(aOk/p.acoes.length*100):0;
+    var vv=(c.hist||[]).filter(function(x){return x&&x.v!=null;}); var delta=vv.length>=2?Math.round((vv[vv.length-1].v-vv[0].v)*10)/10:0;
+    var kpis='<div class="kpis">'+kpi(cPct+'%','competências no alvo','var(--green)',cPct,'var(--green)')+kpi(mOk+'/'+p.metas.length,'metas concluídas','var(--cyan)',mPct,'var(--cyan)')+kpi(aOk+'/'+p.acoes.length,'ações concluídas','var(--blue)',aPct,'var(--blue)')+kpi((delta>=0?'+':'')+delta.toFixed(1),'evolução da nota (6m)','var(--amber)',Math.min(100,Math.max(8,Math.abs(delta)*60)),'var(--amber)')+'</div>';
+    var ctrack=p.comps.length?p.comps.map(function(x){ var reach=Math.min(100,Math.round((+x.atual||0)/(+x.alvo||1)*100)); return '<div class="cbar"><div class="cbarhd"><span class="cbarname">'+esc(x.nome||'(sem nome)')+'</span><span class="cbarval">nível '+(x.atual||0)+' / alvo '+(x.alvo||0)+' · '+reach+'%</span></div><div class="track"><div class="tfill" style="width:'+((+x.atual||0)/5*100)+'%"></div><div class="tflag" style="left:'+((+x.alvo||0)/5*100)+'%"></div></div></div>'; }).join(''):'<div class="empty">Defina competências na aba Montar PDI.</div>';
+    var mstat=p.metas.length?p.metas.map(function(m){ var sm=statusMeta(m.status); return '<div class="mstat"><span class="chip '+sm.cls+'">'+sm.lab+'</span><span class="mtxt '+(m.status==='ok'?'dn':'')+'">'+esc(m.texto||'(meta)')+'</span></div>'; }).join(''):'<div class="empty">Sem metas.</div>';
+    var achk=p.acoes.length?p.acoes.map(function(a,i){ return '<div class="mstat"><div class="chk '+(a.done?'done':'')+'" onclick="PDIH.aToggle('+i+')">✓</div><span class="mtxt '+(a.done?'dn':'')+'">'+esc(a.texto||'(ação)')+' <span style="color:var(--mut2);font-size:11.5px">· '+esc(a.resp||'—')+'</span></span></div>'; }).join(''):'<div class="empty">Sem ações.</div>';
+    var ck=p.checkins.length?'<div class="tl">'+p.checkins.map(function(k,i){ return '<div class="tlitem"><div class="tldot"></div><div class="tldate"><input type="date" class="dateinp" value="'+esc(k.data)+'" onchange="PDIH.ckDate('+i+',this.value)"></div><div class="tladd"><textarea class="ta" style="min-height:46px" placeholder="O que foi conversado, combinados, próximos passos..." onchange="PDIH.ckNota('+i+',this.value)">'+esc(k.nota)+'</textarea><button class="xbtn" onclick="PDIH.ckDel('+i+')">×</button></div></div>'; }).join('')+'</div>':'<div class="empty">Nada ainda — clique em + check-in.</div>';
+    return kpis+'<div class="card"><div class="chd"><div><div class="ctit">📈 Evolução da nota · raio-X</div><div class="csub">Nota média mês a mês — últimos 6 ciclos.</div></div></div>'+chartHTML(c.hist||[])+'</div><div class="card"><div class="ctit">🎯 Progresso das competências</div><div class="csub" style="margin-bottom:14px">Barra = nível atual · marcador azul = alvo.</div>'+ctrack+'</div><div class="twocol"><div class="card"><div class="ctit" style="margin-bottom:6px">📌 Status das metas</div>'+mstat+'</div><div class="card"><div class="ctit" style="margin-bottom:6px">✅ Checklist do plano</div>'+achk+'</div></div><div class="card"><div class="chd"><div><div class="ctit">🗓 Acompanhamento (1:1)</div><div class="csub">Registro das conversas de desenvolvimento.</div></div><button class="btnadd" onclick="PDIH.addCk()">+ check-in</button></div>'+ck+'</div>';
+  }
+  function renderDetail(){ var c=cur(); var el=document.getElementById('pdi-detail');
+    if(!c){ el.innerHTML='<div class="empty" style="padding:40px;text-align:center">Sem assessores de mesa (Alta Renda / On Demand).</div>'; return; }
+    var rx=c.raiox;
+    var ia=(c.iaErros&&c.iaErros.length)?'<div class="ia"><div class="iahd">✦ ERROS MAIS RECORRENTES (IA)</div>'+c.iaErros.map(function(e){return '<div class="iaitem"><span class="iadot">•</span><span>'+esc(e)+'</span></div>';}).join('')+'</div>':'';
+    var upd=c.pdi.updated_at?'<span style="font-size:11px;color:var(--mut2)">salvo '+esc(c.pdi.updated_at)+'</span>':'';
+    var head='<div class="dhead"><div><div class="dtitle">'+esc(c.nome)+'</div><div class="dmeta"><span class="dtag">'+esc(c.mesa)+'</span><span>raio-X de '+esc(D.cycleLabel)+'</span>'+upd+'</div></div><button class="btn-green" id="pdi-save" onclick="PDIH.save()">⬇ Salvar PDI</button></div>';
+    var raiox='<div class="raiox"><div class="stat s-amber"><div class="statnum">'+(rx.nota==null?'—':rx.nota.toFixed(1))+'</div><div class="statlab">NOTA MÉDIA</div><div class="statsub">'+(rx.avals||0)+' avaliações</div></div><div class="stat s-cyan"><div class="statnum">'+rx.prodCob+'/'+rx.prodTot+'</div><div class="statlab">PRODUTOS COBERTOS</div><div class="statsub">do catálogo</div></div><div class="stat s-green"><div class="statnum">'+rx.clientes+'</div><div class="statlab">CLIENTES ATENDIDOS</div><div class="statsub">no ciclo</div></div><div class="stat s-purple"><div class="statnum">'+rx.oport+'</div><div class="statlab">OPORTUNIDADES</div><div class="statsub">mapeadas pela IA</div></div></div>';
+    var tabs='<div class="tabs"><div class="tab '+(ST.tab==='montar'?'active':'')+'" onclick="PDIH.tab(\'montar\')">✎ Montar PDI</div><div class="tab '+(ST.tab==='acomp'?'active':'')+'" onclick="PDIH.tab(\'acomp\')">◷ Acompanhamento</div></div>';
+    el.innerHTML=head+raiox+ia+tabs+(ST.tab==='montar'?montarHTML(c):acompHTML(c));
+  }
+  function render(){ renderRoster(); renderDetail(); }
+  document.getElementById('pdi-root').innerHTML='<div class="pdi-grid"><section class="roster" id="pdi-roster"></section><main class="detail" id="pdi-detail"></main></div>';
+  render();
 })();
 </script>"""
 
 
 @router.get("/dashboard/pdi", response_class=HTMLResponse, include_in_schema=False)
 def dashboard_pdi(request: Request, db: Session = Depends(get_db)):
-    """PDI — Plano de Desenvolvimento Individual por assessor, ciclo mensal, com
-    raio-X automático puxado dos dados do Grampo. Admin/gestor editam."""
-    from urllib.parse import quote_plus
+    """PDI — Plano de Desenvolvimento Individual por assessor (ciclo mensal),
+    com raio-X automático dos dados do Grampo. Admin/gestor."""
     access = _get_access(request, db)
     if access is None:
         return _auth_redirect()
@@ -11320,121 +11573,55 @@ def dashboard_pdi(request: Request, db: Session = Depends(get_db)):
         cycle = "%04d-%02d" % (cy, cm)
 
     raiox = _cache.cached(("pdi-raiox", cycle), 300.0, lambda: _pdi_raiox_all(db, cycle))
+    hist = _cache.cached(("pdi-hist", cycle), 300.0, lambda: _pdi_hist_all(db, cycle))
     pdi_all = _get_pdi_all(db)
 
     cand = set(raiox.keys()) | set(AGENT_SEGMENT.keys())
     advisors = sorted([a for a in cand if _get_segment(a) in _COBERTURA_SEGMENTS],
                       key=lambda a: _short_agent_name(a).lower())
+    shelf = len(TOPIC_RULES) or 14
+    _MES = ["", "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
+
+    adv_list = []
+    for a in advisors:
+        arx = raiox.get(a, {})
+        adv_list.append({
+            "id": _pdi_norm(a), "nome": _short_agent_name(a), "agent": a,
+            "mesa": _get_segment(a) or "—",
+            "raiox": {"nota": arx.get("nota"), "avals": arx.get("n_aval", 0),
+                      "prodCob": arx.get("cobertura", 0), "prodTot": arx.get("shelf", shelf),
+                      "clientes": arx.get("clientes", 0), "oport": arx.get("oportunidades", 0)},
+            "iaErros": arx.get("top_erros", []),
+            "hist": hist.get(a, []),
+            "pdi": (pdi_all.get(_pdi_norm(a), {}) or {}).get(cycle, {}),
+        })
     sel = (request.query_params.get("a") or "").strip()
-    if sel not in advisors:
-        sel = advisors[0] if advisors else ""
-    rx = raiox.get(sel, {}) if sel else {}
-    pdi_obj = (pdi_all.get(_pdi_norm(sel), {}) or {}).get(cycle, {}) if sel else {}
+    ids = {x["id"] for x in adv_list}
+    sel_id = sel if sel in ids else (adv_list[0]["id"] if adv_list else "")
+    D = {"cycle": cycle, "cycleLabel": f"{_MES[cm]}/{cy}", "prodTot": shelf,
+         "canal": canal, "selId": sel_id, "advisors": adv_list}
     db.close()
 
-    _MESES = ["", "jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
     month_opts = ""
     for k in range(6):
         mm = cm - k; yy = cy
         while mm <= 0:
             mm += 12; yy -= 1
         cv = "%04d-%02d" % (yy, mm)
-        sels = " selected" if cv == cycle else ""
-        month_opts += f'<option value="{cv}"{sels}>{_MESES[mm]}/{yy}</option>'
+        month_opts += f'<option value="{cv}"{" selected" if cv==cycle else ""}>{_MES[mm]}/{yy}</option>'
 
-    # ---- lista de assessores (esquerda) ----
-    def _notacolor(n):
-        if n is None:
-            return "#5a6a8a"
-        return "#0fa968" if n >= 7 else ("#f2b007" if n >= 5 else "#ef5a6a")
-    list_items = ""
-    for a in advisors:
-        arx = raiox.get(a, {})
-        n = arx.get("nota")
-        ns = (f"{n:.1f}" if n is not None else "—")
-        is_sel = (a == sel)
-        list_items += (
-            f'<a href="/dashboard/pdi?a={quote_plus(a)}&ciclo={cycle}&canal={canal}" '
-            f'style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;border-radius:9px;'
-            f'text-decoration:none;margin-bottom:3px;border-left:3px solid {"#5b9bff" if is_sel else "transparent"};'
-            f'background:{"rgba(91,155,255,.12)" if is_sel else "transparent"}">'
-            f'<span style="font-size:13px;font-weight:600;color:{"#ffffff" if is_sel else "#c8d2e8"};white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{html_mod.escape(_short_agent_name(a))}</span>'
-            f'<span style="font-size:11px;font-weight:700;color:{_notacolor(n)};font-family:\'JetBrains Mono\',monospace">{ns}</span></a>'
-        )
-    list_items = list_items or '<div style="font-size:12px;color:#5a6a8a;padding:14px">Nenhum assessor de mesa com dados.</div>'
-
-    if not sel:
-        body = '<div style="font-size:13px;color:#6a7589;padding:40px;text-align:center">Sem assessores de mesa (Alta Renda / On Demand) para exibir.</div>'
-    else:
-        nota = rx.get("nota")
-        def _card(big, label, color, sub=""):
-            return (f'<div style="flex:1;min-width:120px;background:#0f1629;border:1px solid #1a2540;border-radius:11px;padding:14px 16px">'
-                    f'<div style="font-family:\'JetBrains Mono\',monospace;font-weight:700;font-size:23px;color:{color}">{big}</div>'
-                    f'<div style="font-size:10px;font-weight:600;letter-spacing:.07em;color:#8a96aa;text-transform:uppercase;margin-top:5px">{label}</div>{sub}</div>')
-        erros_html = ""
-        if rx.get("top_erros"):
-            erros_html = ('<div style="background:#0f1629;border:1px solid #1a2540;border-radius:11px;padding:14px 16px;margin-top:10px">'
-                          '<div style="font-size:10px;font-weight:600;letter-spacing:.07em;color:#8a96aa;text-transform:uppercase;margin-bottom:8px">Erros mais recorrentes (IA)</div>'
-                          + "".join(f'<div style="font-size:12.5px;color:#d2d8e4;padding:3px 0;border-top:1px solid #131c33">• {html_mod.escape(e)}</div>' for e in rx["top_erros"]) + '</div>')
-        raiox_html = (
-            '<div style="display:flex;gap:10px;flex-wrap:wrap">'
-            + _card((f"{nota:.1f}" if nota is not None else "—"), f"Nota média ({rx.get('n_aval',0)} aval.)", _notacolor(nota))
-            + _card(f"{rx.get('cobertura',0)}/{rx.get('shelf',14)}", "Produtos cobertos", "#7ccef5")
-            + _card(str(rx.get("clientes", 0)), "Clientes atendidos", "#c4b5fd")
-            + _card(str(rx.get("oportunidades", 0)), "Oportunidades", "#3ddc84")
-            + '</div>' + erros_html
-        )
-        _upd = pdi_obj.get("updated_at")
-        upd_html = f'<span style="font-size:11px;color:#6a7589;margin-left:auto">salvo em {html_mod.escape(_upd)}</span>' if _upd else ""
-
-        def _sec(title, hint, inner):
-            return (f'<div style="background:#0f1629;border:1px solid #1a2540;border-radius:12px;padding:16px 18px;margin-top:12px">'
-                    f'<div style="font-size:13px;font-weight:700;color:#e8ecf1;margin-bottom:2px">{title}</div>'
-                    f'<div style="font-size:11px;color:#6a7589;margin-bottom:10px">{hint}</div>{inner}</div>')
-        addbtn = lambda fn, lbl: f'<button onclick="{fn}" style="margin-top:8px;background:#16203a;color:#8fb6ff;border:1px solid #243152;border-radius:7px;padding:6px 12px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">+ {lbl}</button>'
-        _ta = lambda elid, val, ph: f'<textarea id="{elid}" placeholder="{ph}" style="width:100%;min-height:60px;background:#0b1120;border:1px solid #243152;border-radius:8px;color:#e8ecf1;padding:9px 11px;font-size:12.5px;font-family:inherit;box-sizing:border-box;resize:vertical">{html_mod.escape(pdi_obj.get(val,""))}</textarea>'
-        _statuses = ["", "Em dia", "Atenção", "Atrasado"]
-        sg = pdi_obj.get("status_geral", "")
-        status_sel = ('<select id="pdi-statusger" style="background:#0b1120;border:1px solid #243152;border-radius:7px;color:#c8d2e8;padding:7px 10px;font-size:12px">'
-                      + "".join(f'<option value="{html_mod.escape(s)}"{" selected" if s==sg else ""}>{html_mod.escape(s) or "—"}</option>' for s in _statuses) + '</select>')
-
-        form = (
-            _sec("🎯 Competências em foco", "Escolha 2–3 por ciclo. Nível atual → alvo (ex.: 1 a 5).", '<div id="pdi-comp"></div>' + addbtn("pdiAddComp()", "competência"))
-            + _sec("📌 Metas do ciclo (SMART)", "Ancore nos números do raio-X acima. Ex.: cobertura 8 → 11.", '<div id="pdi-metas"></div>' + addbtn("pdiAddMeta()", "meta"))
-            + _sec("🛠 Plano de ação", "O que será feito, por quem, até quando.", '<div id="pdi-acoes"></div>' + addbtn("pdiAddAcao()", "ação"))
-            + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">'
-            + f'<div style="background:#0f1629;border:1px solid #1a2540;border-radius:12px;padding:16px 18px"><div style="font-size:13px;font-weight:700;color:#3ddc84;margin-bottom:10px">💪 Pontos fortes</div>{_ta("pdi-fortes","fortes","O que o assessor faz bem (reconhecer)")}</div>'
-            + f'<div style="background:#0f1629;border:1px solid #1a2540;border-radius:12px;padding:16px 18px"><div style="font-size:13px;font-weight:700;color:#f2b007;margin-bottom:10px">⚠ Pontos de atenção</div>{_ta("pdi-atencao","atencao","O que precisa melhorar")}</div>'
-            + '</div>'
-            + _sec("🗓 Acompanhamento (1:1)", "Registro das conversas de desenvolvimento ao longo do mês.", '<div id="pdi-checkins"></div>' + addbtn("pdiAddCk()", "check-in"))
-        )
-        import json as _json
-        body = (
-            f'<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px">'
-            f'<div><div style="font-size:19px;font-weight:700;color:#e8ecf1">{html_mod.escape(_short_agent_name(sel))}</div>'
-            f'<div style="font-size:12px;color:#8a96aa;margin-top:2px">{html_mod.escape(_get_segment(sel) or "—")} · raio-X de {_MESES[cm]}/{cy}</div></div>'
-            f'<button id="pdi-savebtn" onclick="pdiSave()" style="margin-left:auto;background:#0fa968;color:#04150c;font-weight:700;font-size:13px;border:none;border-radius:9px;padding:10px 20px;cursor:pointer;font-family:inherit">💾 Salvar PDI</button>{upd_html}</div>'
-            + raiox_html
-            + '<div style="margin-top:10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#0b1120;border:1px solid #1a2540;border-radius:10px;padding:10px 14px">'
-            + '<span style="font-size:12px;color:#8a96aa">Status geral do PDI:</span>' + status_sel + '</div>'
-            + form
-            + f'<script>window.PDI={_json.dumps(pdi_obj, ensure_ascii=False)};window.PDI_AGENT={_json.dumps(sel, ensure_ascii=False)};window.PDI_CYCLE={_json.dumps(cycle, ensure_ascii=False)};</script>'
-        )
-
+    _dj = json.dumps(D, ensure_ascii=False)
     page = f"""<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">
-<title>PDI — Alto Valor</title>{COMMON_CSS}</head><body>
+<title>PDI — Alto Valor</title>{COMMON_CSS}
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>{_PDI_CSS}</style></head><body>
 {_nav_html("pdi", canal=canal, is_admin=(access or {}).get('role')=='admin', title="PDI", role=(access or {}).get('role',''))}
-<div class="container">
-  <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;margin-bottom:14px">
-    <div><h1 style="margin:0;font-size:20px;color:#e8ecf1">PDI · Plano de Desenvolvimento Individual</h1>
-    <p style="margin:4px 0 0;font-size:12px;color:#8a96aa">Ciclo mensal · só mesas Alta Renda e On Demand · o raio-X é preenchido pelos dados do Grampo</p></div>
-    <select onchange="location.href='/dashboard/pdi?a={quote_plus(sel)}&canal={canal}&ciclo='+this.value" style="margin-left:auto;background:#111a2e;color:#e8ecf1;border:1px solid #1a2540;padding:7px 12px;border-radius:8px;font-size:12px;font-weight:600">{month_opts}</select>
-  </div>
-  <div style="display:grid;grid-template-columns:280px 1fr;gap:16px;align-items:start">
-    <div style="background:#0b1120;border:1px solid #1a2540;border-radius:12px;padding:8px;max-height:75vh;overflow-y:auto">{list_items}</div>
-    <div>{body}</div>
-  </div>
-</div>
+<div class="container"><div class="pdiapp">
+  <div class="pdihdr"><div><h1>PDI · Plano de Desenvolvimento Individual</h1><div class="sub">Ciclo mensal · mesas Alta Renda e On Demand · raio-X automático dos dados do Grampo</div></div>
+  <select class="pdisel" style="margin-left:auto" onchange="PDIH.cycle(this.value)">{month_opts}</select></div>
+  <div id="pdi-root"></div>
+</div></div>
+<script>window.PDI_DATA={_dj};</script>
 {_PDI_JS}
 </body></html>"""
     return HTMLResponse(page)
@@ -11458,22 +11645,22 @@ def pdi_save(request: Request, body: dict = Body(default={}), db: Session = Depe
 
     def _cap(v, n):
         return v[:n] if isinstance(v, list) else []
+    upd = datetime.now(BRASILIA).strftime("%d/%m %H:%M")
     clean = {
-        "competencias": _cap(pdi.get("competencias"), 12),
-        "metas": _cap(pdi.get("metas"), 20),
-        "acoes": _cap(pdi.get("acoes"), 30),
-        "checkins": _cap(pdi.get("checkins"), 60),
-        "fortes": str(pdi.get("fortes") or "")[:2000],
-        "atencao": str(pdi.get("atencao") or "")[:2000],
-        "status_geral": str(pdi.get("status_geral") or "")[:40],
+        "comps": _cap(pdi.get("comps"), 12),
+        "metas": _cap(pdi.get("metas"), 24),
+        "acoes": _cap(pdi.get("acoes"), 40),
+        "checkins": _cap(pdi.get("checkins"), 80),
+        "fortes": str(pdi.get("fortes") or "")[:3000],
+        "atencao": str(pdi.get("atencao") or "")[:3000],
         "agent_nome": _short_agent_name(agent),
-        "updated_at": datetime.now(BRASILIA).strftime("%d/%m/%Y %H:%M"),
+        "updated_at": upd,
     }
     all_pdi = _get_pdi_all(db)
     all_pdi.setdefault(_pdi_norm(agent), {})[cycle] = clean
     _save_pdi_all(db, all_pdi)
     db.close()
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "updated_at": upd})
 
 
 @router.get("/dashboard/diagnostico", response_class=HTMLResponse, include_in_schema=False)
