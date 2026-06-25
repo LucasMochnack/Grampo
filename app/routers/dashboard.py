@@ -14098,7 +14098,57 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
                 f'font-size:12px;font-weight:600;{st}">{lbl}</a>')
     period_btns = _pbtn(7, "7 dias") + _pbtn(30, "30 dias") + _pbtn(90, "90 dias")
 
-    rate = data["rate"]
+    # ── Filtro por campanha (template + dia) ──────────────────────────────────
+    camp_param = (request.query_params.get("camp", "") or "").strip()
+    sel_row = None
+    if camp_param:
+        for r in data["rows"]:
+            if f'{r["tid"]}__{r["date"]}' == camp_param:
+                sel_row = r
+                break
+
+    if sel_row is not None:
+        def _rec_stage(rr):
+            if rr["avanco"] or rr["engaged"]:
+                return "em_conversa"
+            if rr["replied"]:
+                return "respondeu"
+            return "aguardando"
+        kanban_source = [{
+            "phone": rr["phone"], "name": rr["name"], "agent": rr["agent"],
+            "replied": rr["replied"], "reply_mins": rr["reply_mins"],
+            "engaged": rr["engaged"], "avanco": rr["avanco"],
+            "templates": [sel_row["name"]], "last_date": sel_row["date"],
+            "last_ts_iso": (rr["disp_ts"].isoformat() if rr.get("disp_ts") else ""),
+            "auto_stage": _rec_stage(rr),
+        } for rr in sel_row["recipients"]]
+        kpi_sent, kpi_recip = sel_row["sent"], sel_row["sent"]
+        kpi_repl, kpi_rate = sel_row["replied"], sel_row["rate"]
+        kpi_avg, kpi_avanco = sel_row["avg_reply"], sel_row["avanco"]
+        table_rows_render = [sel_row]
+    else:
+        kanban_source = data["kanban_cards"]
+        kpi_sent, kpi_recip = data["send_events"], data["recipients"]
+        kpi_repl, kpi_rate = data["replied"], data["rate"]
+        kpi_avg, kpi_avanco = data["avg_reply"], data["avanco"]
+        table_rows_render = data["rows"]
+
+    # Dropdown de campanhas (sempre lista todas as campanhas/batches)
+    camp_opts_html = '<option value="">Todas as campanhas</option>'
+    for r in data["rows"]:
+        _ck = f'{r["tid"]}__{r["date"]}'
+        _sel = " selected" if (sel_row is not None and _ck == camp_param) else ""
+        _lbl = html_mod.escape(f'{r["name"]} — {r["date"]} ({r["sent"]} env · {r["rate"]}%)')
+        camp_opts_html += f'<option value="{html_mod.escape(_ck)}"{_sel}>{_lbl}</option>'
+    camp_select = (
+        '<select onchange="location.href=\'/dashboard/disparos?canal=' + canal +
+        '&dias=' + str(dias) + '&camp=\'+encodeURIComponent(this.value)" '
+        'style="background:#111a2e;border:1px solid #1a2540;color:#e8ecf1;padding:6px 11px;'
+        'border-radius:8px;font-size:12px;font-family:inherit;max-width:380px;cursor:pointer">'
+        + camp_opts_html + '</select>'
+    )
+
+    rate = kpi_rate
     rate_color = "#0fa968" if rate >= 30 else "#f59e0b" if rate >= 15 else "#ef4444"
 
     tpl_html = ""
@@ -14113,7 +14163,7 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
         tpl_html = '<tr><td colspan="4" style="text-align:center;color:#4a5a7a;padding:24px">Nenhum disparo no período.</td></tr>'
 
     camp_html = ""
-    for i, r in enumerate(data["rows"]):
+    for i, r in enumerate(table_rows_render):
         rc = "#0fa968" if r["rate"] >= 30 else "#f59e0b" if r["rate"] >= 15 else "#ef4444"
         did = f"disp_{i}"
         rec_rows = ""
@@ -14160,7 +14210,7 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
         ("perdido", "Sem interesse / perdido", "#ef6b73"),
     ]
     _buckets = {s[0]: [] for s in _STAGE_DEFS}
-    for c in sorted(data["kanban_cards"], key=lambda x: x["last_ts_iso"], reverse=True):
+    for c in sorted(kanban_source, key=lambda x: x["last_ts_iso"], reverse=True):
         st = (stages_map.get(_real_phone(c["phone"])) or {}).get("stage") or c["auto_stage"]
         if st not in _buckets:
             st = c["auto_stage"]
@@ -14194,6 +14244,23 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
                         f'<div class="kcol-body">{body}</div></div>')
     total_cards = sum(len(v) for v in _buckets.values())
 
+    # Ranking por template só faz sentido na visão geral (Todas as campanhas)
+    if sel_row is None:
+        tpl_section = (
+            '<div class="card" style="margin-bottom:20px">'
+            '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="width:8px;height:8px;border-radius:50%;background:#c4a3ff;display:inline-block"></span><h2 style="margin:0;font-size:15px">Taxa de resposta por template</h2></div>'
+            '<p style="color:#5a6a8a;font-size:11px;margin-bottom:12px">Acumulado no período — qual template de campanha mais engaja.</p>'
+            '<table><thead><tr><th>Template</th><th style="text-align:center">Enviados</th><th style="text-align:center">Responderam</th><th style="text-align:center">Taxa</th></tr></thead><tbody>'
+            + tpl_html + '</tbody></table></div>'
+        )
+    else:
+        tpl_section = (
+            f'<div class="card" style="margin-bottom:20px;border-left:3px solid #c4a3ff">'
+            f'<div style="font-size:13px;color:#e8ecf1;font-weight:600">📢 {html_mod.escape(sel_row["name"])} <span style="color:#5a6a8a;font-weight:400">— {sel_row["date"]}</span></div>'
+            f'<div style="font-size:11px;color:#8a96aa;margin-top:3px">Mostrando só esta campanha. Use o seletor acima para trocar ou voltar a "Todas as campanhas".</div>'
+            f'</div>'
+        )
+
     nav = _nav_html("disparos", canal=canal, is_admin=(access or {}).get('role') == 'admin', title="Disparos")
     return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo — Disparos</title>{COMMON_CSS}<style>{_DISPAROS_CSS}</style></head><body>
 {nav}
@@ -14202,15 +14269,19 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
     <p style="color:#5a6a8a;font-size:12px;margin:0;max-width:560px">Performance dos <b>disparos em massa</b> (Ferramenta de Campanhas da Zenvia). <b>Resposta</b> = o cliente respondeu em até 7 dias após o disparo.</p>
     <div style="display:flex;gap:6px">{period_btns}</div>
   </div>
-  <div style="background:#0d1a2e;border:1px solid #1a2540;border-left:3px solid #c4a3ff;border-radius:0 8px 8px 0;padding:8px 14px;font-size:11.5px;color:#8a96aa;margin-bottom:16px">
+  <div style="background:#0d1a2e;border:1px solid #1a2540;border-left:3px solid #c4a3ff;border-radius:0 8px 8px 0;padding:8px 14px;font-size:11.5px;color:#8a96aa;margin-bottom:14px">
     🔎 Dados a partir de <b>24/06/2026</b> (início da captura). Disparos anteriores a essa data não foram registrados e não aparecem aqui.
   </div>
+  <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+    <span style="font-size:12px;color:#8a96aa;font-weight:600">🎯 Campanha:</span>
+    {camp_select}
+  </div>
   <div class="kpi-row">
-    <div class="kpi" style="border-top:3px solid #c4a3ff"><div class="val">{data["send_events"]}</div><div class="label">Disparos enviados</div></div>
-    <div class="kpi" style="border-top:3px solid #4a9eff"><div class="val" style="color:#4a9eff">{data["recipients"]}</div><div class="label">Destinatários únicos</div></div>
-    <div class="kpi" style="border-top:3px solid {rate_color}"><div class="val" style="color:{rate_color}">{data["replied"]}</div><div class="label">Responderam ({rate}%)</div></div>
-    <div class="kpi" style="border-top:3px solid #0fa968"><div class="val" style="color:#0fa968">{_fmt_mins(data["avg_reply"])}</div><div class="label">Tempo médio até resposta</div></div>
-    <div class="kpi" style="border-top:3px solid #c4a3ff"><div class="val" style="color:#c4a3ff">{data["avanco"]}</div><div class="label">Avanço (indício)</div></div>
+    <div class="kpi" style="border-top:3px solid #c4a3ff"><div class="val">{kpi_sent}</div><div class="label">Disparos enviados</div></div>
+    <div class="kpi" style="border-top:3px solid #4a9eff"><div class="val" style="color:#4a9eff">{kpi_recip}</div><div class="label">Destinatários únicos</div></div>
+    <div class="kpi" style="border-top:3px solid {rate_color}"><div class="val" style="color:{rate_color}">{kpi_repl}</div><div class="label">Responderam ({rate}%)</div></div>
+    <div class="kpi" style="border-top:3px solid #0fa968"><div class="val" style="color:#0fa968">{_fmt_mins(kpi_avg)}</div><div class="label">Tempo médio até resposta</div></div>
+    <div class="kpi" style="border-top:3px solid #c4a3ff"><div class="val" style="color:#c4a3ff">{kpi_avanco}</div><div class="label">Avanço (indício)</div></div>
   </div>
 
   <div style="display:flex;gap:8px;margin:4px 0 16px">
@@ -14219,11 +14290,7 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
   </div>
 
   <div id="disp-tabela">
-    <div class="card" style="margin-bottom:20px">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="width:8px;height:8px;border-radius:50%;background:#c4a3ff;display:inline-block"></span><h2 style="margin:0;font-size:15px">Taxa de resposta por template</h2></div>
-      <p style="color:#5a6a8a;font-size:11px;margin-bottom:12px">Acumulado no período — qual template de campanha mais engaja.</p>
-      <table><thead><tr><th>Template</th><th style="text-align:center">Enviados</th><th style="text-align:center">Responderam</th><th style="text-align:center">Taxa</th></tr></thead><tbody>{tpl_html}</tbody></table>
-    </div>
+    {tpl_section}
 
     <div class="card">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="width:8px;height:8px;border-radius:50%;background:#c4a3ff;display:inline-block"></span><h2 style="margin:0;font-size:15px">Campanhas / disparos em massa</h2></div>
