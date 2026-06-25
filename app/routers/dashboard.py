@@ -14071,9 +14071,7 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
         dias = 30
     if dias not in (7, 30, 90):
         dias = 30
-    origem = (request.query_params.get("origem", "campanha") or "campanha").lower()
-    if origem not in ("todos", "campanha", "atendimento"):
-        origem = "campanha"
+    origem = "campanha"  # página dedicada exclusivamente a disparos em massa
     data = _disparos_data(db, canal, dias, access, origem)
     stages_map = _get_disparo_stages(db)
     db.close()
@@ -14091,21 +14089,10 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
         on = (d == dias)
         st = ("background:#0fa968;color:#fff;border-color:#0fa968" if on
               else "background:#111a2e;color:#8a96aa;border-color:#1a2540")
-        return (f'<a href="/dashboard/disparos?canal={canal}&dias={d}&origem={origem}" '
+        return (f'<a href="/dashboard/disparos?canal={canal}&dias={d}" '
                 f'style="text-decoration:none;padding:5px 13px;border:1px solid;border-radius:7px;'
                 f'font-size:12px;font-weight:600;{st}">{lbl}</a>')
     period_btns = _pbtn(7, "7 dias") + _pbtn(30, "30 dias") + _pbtn(90, "90 dias")
-
-    def _obtn(o, lbl, color):
-        on = (o == origem)
-        st = (f'background:{color};color:#fff;border-color:{color}' if on
-              else "background:#111a2e;color:#8a96aa;border-color:#1a2540")
-        return (f'<a href="/dashboard/disparos?canal={canal}&dias={dias}&origem={o}" '
-                f'style="text-decoration:none;padding:5px 13px;border:1px solid;border-radius:7px;'
-                f'font-size:12px;font-weight:600;{st}">{lbl}</a>')
-    origem_btns = (_obtn("todos", "Todos", "#0fa968")
-                   + _obtn("campanha", "Campanhas em massa", "#a855f7")
-                   + _obtn("atendimento", "Atendimento", "#4a9eff"))
 
     rate = data["rate"]
     rate_color = "#0fa968" if rate >= 30 else "#f59e0b" if rate >= 15 else "#ef4444"
@@ -14124,8 +14111,6 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
     camp_html = ""
     for i, r in enumerate(data["rows"]):
         rc = "#0fa968" if r["rate"] >= 30 else "#f59e0b" if r["rate"] >= 15 else "#ef4444"
-        src_color = "#c4a3ff" if r["source"] == "Campanha" else "#4a9eff"
-        src_bg = "#241a3d" if r["source"] == "Campanha" else "#0d1f3a"
         did = f"disp_{i}"
         rec_rows = ""
         for rr in r["recipients"][:200]:
@@ -14146,7 +14131,6 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
                 if len(r["recipients"]) > 200 else "")
         camp_html += (
             f'<tr onclick="toggleDisp(\'{did}\')" style="cursor:pointer">'
-            f'<td><span style="background:{src_bg};color:{src_color};font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px">{r["source"]}</span></td>'
             f'<td style="font-weight:600">{html_mod.escape(r["name"])}</td>'
             f'<td style="color:#5a6a8a">{r["date"]}</td>'
             f'<td style="text-align:center">{r["sent"]}</td>'
@@ -14155,11 +14139,11 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
             f'<td style="text-align:center;color:#8a96aa">{_fmt_mins(r["avg_reply"])}</td>'
             f'<td style="text-align:center;color:#c4a3ff">{r["avanco"]}</td>'
             f'</tr>'
-            f'<tr id="{did}" style="display:none"><td colspan="8" style="padding:0;background:#0b1120">'
+            f'<tr id="{did}" style="display:none"><td colspan="7" style="padding:0;background:#0b1120">'
             f'<table style="width:100%;font-size:12px;border:none"><tbody>{rec_rows}</tbody></table>{more}</td></tr>'
         )
     if not camp_html:
-        camp_html = ('<tr><td colspan="8" style="text-align:center;color:#4a5a7a;padding:30px">'
+        camp_html = ('<tr><td colspan="7" style="text-align:center;color:#4a5a7a;padding:30px">'
                      'Nenhum disparo em massa no período. As campanhas começam a aparecer a partir de 24/06/2026.</td></tr>')
 
     # ── Kanban: tratativa por cliente que recebeu disparo ─────────────────────
@@ -14211,11 +14195,8 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
 {nav}
 <div class="container">
   <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:8px">
-    <p style="color:#5a6a8a;font-size:12px;margin:0;max-width:520px">Performance dos disparos. <b>Resposta</b> = o cliente respondeu em até 7 dias após o disparo.</p>
-    <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">
-      <div style="display:flex;gap:6px">{origem_btns}</div>
-      <div style="display:flex;gap:6px">{period_btns}</div>
-    </div>
+    <p style="color:#5a6a8a;font-size:12px;margin:0;max-width:560px">Performance dos <b>disparos em massa</b> (Ferramenta de Campanhas da Zenvia). <b>Resposta</b> = o cliente respondeu em até 7 dias após o disparo.</p>
+    <div style="display:flex;gap:6px">{period_btns}</div>
   </div>
   <div style="background:#0d1a2e;border:1px solid #1a2540;border-left:3px solid #c4a3ff;border-radius:0 8px 8px 0;padding:8px 14px;font-size:11.5px;color:#8a96aa;margin-bottom:16px">
     🔎 Dados a partir de <b>24/06/2026</b> (início da captura). Disparos anteriores a essa data não foram registrados e não aparecem aqui.
@@ -14236,15 +14217,15 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
   <div id="disp-tabela">
     <div class="card" style="margin-bottom:20px">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="width:8px;height:8px;border-radius:50%;background:#c4a3ff;display:inline-block"></span><h2 style="margin:0;font-size:15px">Taxa de resposta por template</h2></div>
-      <p style="color:#5a6a8a;font-size:11px;margin-bottom:12px">Acumulado no período — qual template mais engaja (todos os envios, incl. individuais).</p>
+      <p style="color:#5a6a8a;font-size:11px;margin-bottom:12px">Acumulado no período — qual template de campanha mais engaja.</p>
       <table><thead><tr><th>Template</th><th style="text-align:center">Enviados</th><th style="text-align:center">Responderam</th><th style="text-align:center">Taxa</th></tr></thead><tbody>{tpl_html}</tbody></table>
     </div>
 
     <div class="card">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="width:8px;height:8px;border-radius:50%;background:#c4a3ff;display:inline-block"></span><h2 style="margin:0;font-size:15px">Campanhas / disparos em massa</h2></div>
-      <p style="color:#5a6a8a;font-size:11px;margin-bottom:12px">Cada linha = um template enviado num dia (2+ destinatários). Clique pra ver quem recebeu e quem respondeu. <span style="color:#c4a3ff">■</span> Campanha em massa · <span style="color:#4a9eff">■</span> Atendimento. <b>Avanço</b> = indício de reunião/movimentação na conversa (aproximado).</p>
+      <p style="color:#5a6a8a;font-size:11px;margin-bottom:12px">Cada linha = um template disparado num dia (2+ destinatários). Clique pra ver quem recebeu e quem respondeu. <b>Avanço</b> = indício de reunião/movimentação na conversa (aproximado).</p>
       <table>
-        <thead><tr><th>Origem</th><th>Template</th><th>Data</th><th style="text-align:center">Enviados</th><th style="text-align:center">Resp.</th><th style="text-align:center">Taxa</th><th style="text-align:center">Tempo méd.</th><th style="text-align:center">Avanço</th></tr></thead>
+        <thead><tr><th>Template</th><th>Data</th><th style="text-align:center">Enviados</th><th style="text-align:center">Resp.</th><th style="text-align:center">Taxa</th><th style="text-align:center">Tempo méd.</th><th style="text-align:center">Avanço</th></tr></thead>
         <tbody>{camp_html}</tbody>
       </table>
     </div>
