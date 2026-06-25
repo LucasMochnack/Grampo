@@ -11684,11 +11684,11 @@ _PDI_JS = r"""<script>
   function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
   function cur(){ for(var i=0;i<D.advisors.length;i++) if(D.advisors[i].id===ST.selId) return D.advisors[i]; return D.advisors[0]||null; }
   function nColor(n){ return n==null?'#5d667e':(n>=6?'#46cf8e':(n>=5.5?'#f0a800':'#ef6a6a')); }
-  function statusOf(a){ var p=a.pdi; if(!(p.comps.length||p.metas.length||p.acoes.length||p.checkins.length)) return 'naoiniciado';
-    var cOk=p.comps.length&&p.comps.every(function(c){return (+c.atual||0)>=(+c.alvo||0);});
+  function statusOf(a){ var p=a.pdi;
+    if(!(p.metas.length||p.acoes.length||p.checkins.length||(p.fortes&&p.fortes.length)||(p.atencao&&p.atencao.length)||(p.desafios&&p.desafios.length))) return 'naoiniciado';
     var mOk=!p.metas.length||p.metas.every(function(m){return m.status==='ok';});
     var aOk=!p.acoes.length||p.acoes.every(function(x){return x.done;});
-    if((p.metas.length||p.comps.length)&&cOk&&mOk&&aOk) return 'concluido'; return 'andamento'; }
+    if(p.metas.length&&mOk&&aOk) return 'concluido'; return 'andamento'; }
   var SMAP={andamento:{lab:'Em andamento',cls:'sp-and',ring:'#5b8cf0'},concluido:{lab:'Concluído',cls:'sp-ok',ring:'#23b16e'},naoiniciado:{lab:'Não iniciado',cls:'sp-nao',ring:'rgba(255,255,255,.18)'}};
   function statusMeta(s){ return s==='ok'?{lab:'concluída',cls:'chip-ok'}:s==='atr'?{lab:'atrasada',cls:'chip-atr'}:{lab:'em dia',cls:'chip-dia'}; }
   function nextStatus(s){ return s==='dia'?'atr':s==='atr'?'ok':'dia'; }
@@ -11763,15 +11763,10 @@ _PDI_JS = r"""<script>
   }
   function motf(lab,key,val){ return '<div class="motfield"><label>'+lab+'</label><textarea class="ta" style="min-height:60px" onchange="PDIH.mot'+key+'(this.value)">'+esc(val||'')+'</textarea></div>'; }
   function montarHTML(c){ var p=c.pdi; var m=p.motivacao||{};
-    var comps=p.comps.length?p.comps.map(function(cp,i){ var gap=(+cp.alvo||0)-(+cp.atual||0);
-      var read='Hoje: '+(LVL[(+cp.atual||1)-1]||'')+' ('+(cp.atual||1)+') → Meta: '+(LVL[(+cp.alvo||1)-1]||'')+' ('+(cp.alvo||1)+')'+(gap<=0?' · já no alvo ✓':' · faltam '+gap+' nível'+(gap>1?'eis':''));
-      return '<div class="comprow"><div class="cmpname"><input class="inp" placeholder="Nome da competência" value="'+esc(cp.nome)+'" onchange="PDIH.cName('+i+',this.value)"><div class="cmpread '+(gap<=0?'ok':'')+'">'+esc(read)+'</div></div><div class="lvlbox"><span class="lvllab">ATUAL · hoje</span><div class="dots">'+dots(i,'atual',+cp.atual||0)+'</div></div><div class="lvlbox"><span class="lvllab">ALVO · meta</span><div class="dots">'+dots(i,'alvo',+cp.alvo||0)+'</div></div><button class="xbtn" onclick="PDIH.cDel('+i+')">×</button></div>';
-    }).join(''):'<div class="empty">Nada ainda — clique em + competência.</div>';
     var metas=p.metas.length?p.metas.map(function(mm,i){ var sm=statusMeta(mm.status);
       return '<div class="metarow"><div class="metanum">'+(i+1)+'</div><div class="metabody"><textarea class="ta" style="min-height:52px" placeholder="Específica, mensurável, com prazo... (vira Objetivo no plano abaixo)" onchange="PDIH.mText('+i+',this.value)">'+esc(mm.texto)+'</textarea><div class="metafoot"><span class="prazo">📅 prazo</span><input type="date" class="dateinp" value="'+esc(mm.prazo)+'" onchange="PDIH.mPrazo('+i+',this.value)"><span class="chip '+sm.cls+'" onclick="PDIH.mCycle('+i+')">'+sm.lab+'</span></div></div><button class="xbtn" onclick="PDIH.mDel('+i+')">×</button></div>';
     }).join(''):'<div class="empty">Nada ainda — clique em + objetivo.</div>';
     var SEC1='<div class="card"><div class="ctit">🧭 Autoavaliação — Onde estou?</div><div class="csub" style="margin-bottom:12px">Apoie-se no raio-X acima (nota, cobertura, oportunidades).</div><div class="twocol"><div><div class="ptit pt-green">💪 Pontos fortes</div>'+listCard(p.fortes,'fo','Habilidade/competência forte')+'<div style="margin-top:10px"><button class="btnadd" onclick="PDIH.addFo()">+ ponto forte</button></div></div><div><div class="ptit pt-amber">⚠ Áreas de melhoria</div>'+listCard(p.atencao,'at','Área que precisa desenvolver')+'<div style="margin-top:10px"><button class="btnadd" onclick="PDIH.addAt()">+ área</button></div></div></div></div>';
-    var SECc='<div class="card"><div class="chd"><div><div class="ctit">🎯 Competências em foco</div><div class="csub">1 (Iniciante) a 5 (Excelente): marque onde está <b>hoje</b> e a <b>meta</b>.</div></div><button class="btnadd" onclick="PDIH.addComp()">+ competência</button></div><div class="cmplegend"><span><i class="lg lg-on"></i> nível atual</span><span><i class="lg lg-tgt"></i> alvo do ciclo</span><span class="lgscale">1 Iniciante · 2 Básico · 3 Intermediário · 4 Avançado · 5 Excelente</span></div>'+comps+'</div>';
     var SEC2='<div class="card"><div class="chd"><div><div class="ctit">🎯 Objetivos — Onde quero chegar?</div><div class="csub">Metas de desenvolvimento (SMART). Ex.: cobertura '+c.raiox.prodCob+'/'+c.raiox.prodTot+' → '+c.raiox.prodTot+'/'+c.raiox.prodTot+'. Cada meta vira um Objetivo no plano.</div></div><button class="btnadd" onclick="PDIH.addMeta()">+ objetivo</button></div>'+metas+'</div>';
     var motFilled=!!(m.a||m.b||m.c||m.d);
     var motHdr='<div class="chd" style="cursor:pointer;margin-bottom:'+(ST.motOpen?'12px':'0')+'" onclick="PDIH.motToggle()"><div><div class="ctit">💗 Motivação pessoal <span style="font-size:11px;color:var(--mut2);font-weight:500">· opcional</span>'+(motFilled?' <span style="color:var(--green);font-size:11px;font-weight:700">• preenchida</span>':'')+'</div>'+(ST.motOpen?'<div class="csub">Por que essas metas importam.</div>':'')+'</div><span style="font-size:12.5px;color:var(--mut);white-space:nowrap">'+(ST.motOpen?'▾ ocultar':'▸ preencher')+'</span></div>';
@@ -11779,7 +11774,7 @@ _PDI_JS = r"""<script>
     var SEC3='<div class="card">'+motHdr+motBody+'</div>';
     var SEC4='<div class="card"><div class="chd"><div><div class="ctit">🧱 Desafios atuais</div><div class="csub">Principais obstáculos no trabalho hoje.</div></div><button class="btnadd" onclick="PDIH.addDe()">+ desafio</button></div>'+listCard(p.desafios,'de','Obstáculo no trabalho atual')+'</div>';
     var SEC5='<div class="card"><div class="ctit">🔧 Construção do plano de desenvolvimento</div><div class="csub" style="margin-bottom:12px">Para cada objetivo: o que fazer, como, início, fim e a métrica de sucesso.</div>'+planoHTML(p)+'</div>';
-    return SEC1+SECc+SEC2+SEC3+SEC4+SEC5;
+    return SEC1+SEC2+SEC3+SEC4+SEC5;
   }
   function kpi(num,lab,col,pct,fill){ return '<div class="kpi"><div class="kpinum" style="color:'+col+'">'+num+'</div><div class="kpilab">'+lab+'</div><div class="kpibar"><div class="kpifill" style="width:'+pct+'%;background:'+fill+'"></div></div></div>'; }
   function chartHTML(hist){ var h=hist||[]; var vals=h.filter(function(x){return x&&x.v!=null;}).map(function(x){return x.v;});
@@ -11798,12 +11793,12 @@ _PDI_JS = r"""<script>
     var mOk=p.metas.filter(function(m){return m.status==='ok';}).length, mPct=p.metas.length?Math.round(mOk/p.metas.length*100):0;
     var aOk=p.acoes.filter(function(a){return a.done;}).length, aPct=p.acoes.length?Math.round(aOk/p.acoes.length*100):0;
     var vv=(c.hist||[]).filter(function(x){return x&&x.v!=null;}); var delta=vv.length>=2?Math.round((vv[vv.length-1].v-vv[0].v)*10)/10:0;
-    var kpis='<div class="kpis">'+kpi(cPct+'%','competências no alvo','var(--green)',cPct,'var(--green)')+kpi(mOk+'/'+p.metas.length,'metas concluídas','var(--cyan)',mPct,'var(--cyan)')+kpi(aOk+'/'+p.acoes.length,'ações concluídas','var(--blue)',aPct,'var(--blue)')+kpi((delta>=0?'+':'')+delta.toFixed(1),'evolução da nota (6m)','var(--amber)',Math.min(100,Math.max(8,Math.abs(delta)*60)),'var(--amber)')+'</div>';
+    var kpis='<div class="kpis" style="grid-template-columns:repeat(3,1fr)">'+kpi(mOk+'/'+p.metas.length,'metas concluídas','var(--cyan)',mPct,'var(--cyan)')+kpi(aOk+'/'+p.acoes.length,'ações concluídas','var(--blue)',aPct,'var(--blue)')+kpi((delta>=0?'+':'')+delta.toFixed(1),'evolução da nota (6m)','var(--amber)',Math.min(100,Math.max(8,Math.abs(delta)*60)),'var(--amber)')+'</div>';
     var ctrack=p.comps.length?p.comps.map(function(x){ var reach=Math.min(100,Math.round((+x.atual||0)/(+x.alvo||1)*100)); return '<div class="cbar"><div class="cbarhd"><span class="cbarname">'+esc(x.nome||'(sem nome)')+'</span><span class="cbarval">nível '+(x.atual||0)+' / alvo '+(x.alvo||0)+' · '+reach+'%</span></div><div class="track"><div class="tfill" style="width:'+((+x.atual||0)/5*100)+'%"></div><div class="tflag" style="left:'+((+x.alvo||0)/5*100)+'%"></div></div></div>'; }).join(''):'<div class="empty">Defina competências na aba Montar PDI.</div>';
     var mstat=p.metas.length?p.metas.map(function(m){ var sm=statusMeta(m.status); return '<div class="mstat"><span class="chip '+sm.cls+'">'+sm.lab+'</span><span class="mtxt '+(m.status==='ok'?'dn':'')+'">'+esc(m.texto||'(meta)')+'</span></div>'; }).join(''):'<div class="empty">Sem metas.</div>';
     var achk=p.acoes.length?p.acoes.map(function(a,i){ return '<div class="mstat"><div class="chk '+(a.done?'done':'')+'" onclick="PDIH.aToggle('+i+')">✓</div><span class="mtxt '+(a.done?'dn':'')+'">'+esc(a.o_que||'(ação)')+'</span></div>'; }).join(''):'<div class="empty">Sem ações.</div>';
     var ck=p.checkins.length?'<div class="tl">'+p.checkins.map(function(k,i){ return '<div class="tlitem"><div class="tldot"></div><div class="tldate"><input type="date" class="dateinp" value="'+esc(k.data)+'" onchange="PDIH.ckDate('+i+',this.value)"></div><div class="tladd"><textarea class="ta" style="min-height:46px" placeholder="O que foi conversado, combinados, próximos passos..." onchange="PDIH.ckNota('+i+',this.value)">'+esc(k.nota)+'</textarea><button class="xbtn" onclick="PDIH.ckDel('+i+')">×</button></div></div>'; }).join('')+'</div>':'<div class="empty">Nada ainda — clique em + check-in.</div>';
-    return kpis+'<div class="card"><div class="chd"><div><div class="ctit">📈 Evolução da nota · raio-X</div><div class="csub">Nota média mês a mês — últimos 6 ciclos.</div></div></div>'+chartHTML(c.hist||[])+'</div><div class="card"><div class="ctit">🎯 Progresso das competências</div><div class="csub" style="margin-bottom:14px">Barra = nível atual · marcador azul = alvo.</div>'+ctrack+'</div><div class="twocol"><div class="card"><div class="ctit" style="margin-bottom:6px">📌 Status das metas</div>'+mstat+'</div><div class="card"><div class="ctit" style="margin-bottom:6px">✅ Checklist do plano</div>'+achk+'</div></div><div class="card"><div class="chd"><div><div class="ctit">🗓 Acompanhamento (1:1)</div><div class="csub">Registro das conversas de desenvolvimento.</div></div><button class="btnadd" onclick="PDIH.addCk()">+ check-in</button></div>'+ck+'</div>';
+    return kpis+'<div class="card"><div class="chd"><div><div class="ctit">📈 Evolução da nota · raio-X</div><div class="csub">Nota média mês a mês — últimos 6 ciclos.</div></div></div>'+chartHTML(c.hist||[])+'</div><div class="twocol"><div class="card"><div class="ctit" style="margin-bottom:6px">📌 Status das metas</div>'+mstat+'</div><div class="card"><div class="ctit" style="margin-bottom:6px">✅ Checklist do plano</div>'+achk+'</div></div><div class="card"><div class="chd"><div><div class="ctit">🗓 Acompanhamento (1:1)</div><div class="csub">Registro das conversas de desenvolvimento.</div></div><button class="btnadd" onclick="PDIH.addCk()">+ check-in</button></div>'+ck+'</div>';
   }
   function _pdiCss(){ return '<style>'
     +'*{box-sizing:border-box}'
@@ -11828,13 +11823,11 @@ _PDI_JS = r"""<script>
     +'@media print{body{margin:0;max-width:none}}'
     +'</style>'; }
   function acompPrint(c){ var p=c.pdi;
-    var cOk=(p.comps||[]).filter(function(x){return (+x.atual||0)>=(+x.alvo||0);}).length, cPct=(p.comps||[]).length?Math.round(cOk/p.comps.length*100):0;
     var mOk=(p.metas||[]).filter(function(x){return x.status==='ok';}).length;
     var aOk=(p.acoes||[]).filter(function(a){return a.done;}).length;
     var vv=(c.hist||[]).filter(function(x){return x&&x.v!=null;}); var delta=vv.length>=2?Math.round((vv[vv.length-1].v-vv[0].v)*10)/10:0;
-    var kp='<div class="rx"><span><b>'+cPct+'%</b> competências no alvo</span><span><b>'+mOk+'/'+((p.metas||[]).length)+'</b> metas concluídas</span><span><b>'+aOk+'/'+((p.acoes||[]).length)+'</b> ações concluídas</span><span><b>'+(delta>=0?'+':'')+delta.toFixed(1)+'</b> evolução da nota</span></div>';
+    var kp='<div class="rx"><span><b>'+mOk+'/'+((p.metas||[]).length)+'</b> metas concluídas</span><span><b>'+aOk+'/'+((p.acoes||[]).length)+'</b> ações concluídas</span><span><b>'+(delta>=0?'+':'')+delta.toFixed(1)+'</b> evolução da nota</span></div>';
     var hist=(c.hist||[]).length?('<table class="ptab"><tr>'+(c.hist.map(function(h){return '<th style="text-align:center">'+esc(h.m||'')+'</th>';}).join(''))+'</tr><tr>'+(c.hist.map(function(h){return '<td style="text-align:center">'+(h.v!=null?h.v.toFixed(1):'—')+'</td>';}).join(''))+'</tr></table>'):'<div class="empty">Sem histórico de nota.</div>';
-    var cprog=(p.comps||[]).filter(function(x){return (x.nome||'').trim();}).map(function(x){ var reach=Math.min(100,Math.round((+x.atual||0)/(+x.alvo||1)*100)); return '<li>'+esc(x.nome)+' — nível '+(x.atual||0)+'/'+(x.alvo||0)+' ('+reach+'%)</li>'; }).join('');
     function smLab(s){ return s==='ok'?'concluída':s==='atr'?'atrasada':'em dia'; }
     var mstat=(p.metas||[]).filter(function(x){return (x.texto||'').trim();}).map(function(x){ return '<li><b>['+smLab(x.status)+']</b> '+esc(x.texto)+'</li>'; }).join('');
     var chk=(p.acoes||[]).filter(function(a){return (a.o_que||'').trim();}).map(function(a){ return '<li>'+(a.done?'✓':'○')+' '+esc(a.o_que)+'</li>'; }).join('');
@@ -11842,14 +11835,12 @@ _PDI_JS = r"""<script>
     return '<h1 style="page-break-before:always;margin-top:0">Acompanhamento</h1>'
       +kp
       +'<div class="sec"><h2>Evolução da nota (últimos ciclos)</h2>'+hist+'</div>'
-      +'<div class="sec"><h2>Progresso das competências</h2>'+(cprog?'<ul>'+cprog+'</ul>':'<div class="empty">—</div>')+'</div>'
       +'<div class="sec"><h2>Status das metas</h2>'+(mstat?'<ul>'+mstat+'</ul>':'<div class="empty">—</div>')+'</div>'
       +'<div class="sec"><h2>Checklist do plano</h2>'+(chk?'<ul style="list-style:none;padding-left:2px">'+chk+'</ul>':'<div class="empty">—</div>')+'</div>'
       +'<div class="sec"><h2>Acompanhamento (1:1)</h2>'+(ck||'<div class="empty">Sem check-ins registrados.</div>')+'</div>';
   }
   function pdiPrintHTML(c){ var p=c.pdi, rx=c.raiox||{}, m=p.motivacao||{};
     function ul(items){ items=(items||[]).filter(function(x){return (x||'').toString().trim();}); return items.length?('<ol>'+items.map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ol>'):'<div class="empty">—</div>'; }
-    var comps=(p.comps||[]).filter(function(x){return (x.nome||'').trim();}).map(function(x){ return '<li><b>'+esc(x.nome)+'</b> — nível atual '+(x.atual||0)+' → meta '+(x.alvo||0)+'</li>'; }).join('');
     var metas=(p.metas||[]).filter(function(x){return (x.texto||'').trim();}).map(function(x){ return '<li>'+esc(x.texto)+(x.prazo?' <span class="muted">(prazo '+esc(x.prazo)+')</span>':'')+'</li>'; }).join('');
     var plano='';
     (p.metas||[]).forEach(function(mm,mi){ var rows=(p.acoes||[]).filter(function(a){return a.obj===mi;});
@@ -11863,7 +11854,6 @@ _PDI_JS = r"""<script>
       +'<div class="hd"><div><div class="nm">'+esc(c.nome)+'</div><div class="mt">'+esc(c.mesa||'')+' · Ciclo '+esc(D.cycleLabel||'')+'</div></div></div>'
       +'<div class="rx"><span><b>'+(rx.nota==null?'—':rx.nota.toFixed(1))+'</b> nota média</span><span><b>'+(rx.prodCob||0)+'/'+(rx.prodTot||0)+'</b> produtos cobertos</span><span><b>'+(rx.clientes||0)+'</b> clientes</span><span><b>'+(rx.oport||0)+'</b> oportunidades</span></div>'
       +'<div class="sec"><h2>Autoavaliação — Onde estou?</h2><div class="two"><div><h3>Pontos fortes</h3>'+ul(p.fortes)+'</div><div><h3>Áreas de melhoria</h3>'+ul(p.atencao)+'</div></div></div>'
-      +(comps?'<div class="sec"><h2>Competências em foco</h2><ul>'+comps+'</ul></div>':'')
       +'<div class="sec"><h2>Objetivos — Onde quero chegar?</h2>'+(metas?'<ol>'+metas+'</ol>':'<div class="empty">—</div>')+'</div>'
       +mot
       +'<div class="sec"><h2>Desafios atuais</h2>'+ul(p.desafios)+'</div>'
