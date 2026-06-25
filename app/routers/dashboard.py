@@ -4346,6 +4346,12 @@ Critérios (avalie só o que está sob controle do ASSESSOR):
 pergunta sobre taxa do CDB", "Demorou 2 dias para retornar"
 - pontos_melhoria: sugestões acionáveis para o assessor melhorar (mesmo em notas boas)
 
+NÃO considere como erro do assessor (não liste em "erros" nem baixe a nota por isso):
+- Usar o WhatsApp para atender — é o canal oficial e seguro da empresa (criptografia ponta-a-ponta); o assessor NÃO escolhe o canal.
+- Tratar dados pessoais/sensíveis do cliente (saúde, documentos, valores, CPF) pelo WhatsApp no atendimento normal — é o canal sancionado. Só vira erro se o assessor vazou para a pessoa ERRADA, encaminhou para fora da empresa, ou expôs publicamente.
+- NUNCA afirme questões técnicas de segurança/criptografia ("sem criptografia", "canal inseguro", "risco de conformidade pelo canal") — isso foge do escopo e não é responsabilidade do assessor.
+Avalie SÓ a qualidade do atendimento (clareza, agilidade, cordialidade, resolução), não a política de canal/compliance da empresa.
+
 Use frases curtas e PADRONIZADAS (reaproveitáveis entre conversas), não descrições longas.
 
 O campo "motivo" deve ser o MOTIVO DO CONTATO em 2-5 palavras (o que o cliente queria). \
@@ -10802,6 +10808,23 @@ window.META = __META_JSON__;
 </html>'''
 
 
+def _drop_channel_false_positives(erros: list) -> list:
+    """Remove 'erros' que NÃO são culpa do assessor (política da empresa): usar
+    o WhatsApp — canal oficial e criptografado — ou tratar dados do cliente nele.
+    Aplica-se aos dados já pontuados; o prompt já evita gerar novos."""
+    out = []
+    for e in erros:
+        low = (e or "").lower()
+        if "criptograf" in low:
+            continue
+        if ("whatsapp" in low or "canal" in low) and any(
+            w in low for w in ("conformidade", "segur", "lgpd", "criptog", "privacidade")
+        ):
+            continue
+        out.append(e)
+    return out
+
+
 @router.get("/dashboard/avaliacao-agentes", response_class=HTMLResponse, include_in_schema=False)
 def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db)):
     """Avaliação de qualidade por agente — redesign (Claude Design handoff).
@@ -10914,7 +10937,7 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
             })
 
         # legacy fallback for erros (v1 rows without structured erros)
-        erros = _aggregate(slist, "erros", 6)
+        erros = _drop_channel_false_positives(_aggregate(slist, "erros", 8))[:6]
         if not erros:
             _legacy = [s.resumo.strip() for s in slist if s.nota is not None and 0 <= s.nota <= 4 and s.resumo]
             erros = list(dict.fromkeys(_legacy))[:4]
