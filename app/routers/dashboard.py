@@ -838,17 +838,18 @@ def _extract_direction(payload: dict) -> str:
 # NOT in the payload. We resolve it from the template catalog (GET /v2/templates)
 # and substitute the fields, so the disparo shows up inside the client's
 # conversation just like any other outbound message.
-_TPL_CACHE: dict = {"map": {}, "at": None}
+_TPL_CACHE: dict = {"map": {}, "names": {}, "at": None}
 _TPL_TTL_OK = timedelta(hours=1)        # refresh hourly once we have data
 _TPL_TTL_EMPTY = timedelta(minutes=2)   # retry quickly while we still have nothing
 
 
-def _fetch_zenvia_templates() -> dict:
-    """Fetch {templateId: text} from the Zenvia API. Returns {} on any error."""
+def _fetch_zenvia_templates() -> tuple[dict, dict]:
+    """Fetch ({templateId: text}, {templateId: name}) from the Zenvia API.
+    Returns ({}, {}) on any error."""
     import urllib.request
     tok = (settings.ZENVIA_API_TOKEN or "").strip()
     if not tok:
-        return {}
+        return {}, {}
     try:
         req = urllib.request.Request(
             "https://api.zenvia.com/v2/templates",
@@ -856,31 +857,50 @@ def _fetch_zenvia_templates() -> dict:
         )
         with urllib.request.urlopen(req, timeout=12) as r:
             arr = json.loads(r.read().decode("utf-8", "ignore"))
-        out: dict = {}
+        text_map: dict = {}
+        name_map: dict = {}
         for t in (arr if isinstance(arr, list) else []):
             tid = t.get("id")
+            if not tid:
+                continue
             txt = t.get("text") or ""
-            if tid and txt:
-                out[tid] = txt
-        return out
+            if txt:
+                text_map[tid] = txt
+            nm = t.get("name") or ""
+            if nm:
+                name_map[tid] = nm
+        return text_map, name_map
     except Exception:
-        return {}
+        return {}, {}
 
 
-def _zenvia_template_map() -> dict:
-    """Cached {templateId: text}. Refreshes hourly on success; while we have no
-    data yet it retries every couple of minutes instead of waiting the full hour.
-    A transient fetch failure never discards a previously good map (only runs in
-    the dashboard render path — never in the webhook ingestion path)."""
+def _zenvia_refresh_templates() -> None:
+    """Refresh the cached template catalog. Refreshes hourly on success; while
+    we have no data yet it retries every couple of minutes. A transient fetch
+    failure never discards a previously good catalog. Only runs in the dashboard
+    render path — never in the webhook ingestion path."""
     now = datetime.now(timezone.utc)
     have = bool(_TPL_CACHE["map"])
     ttl = _TPL_TTL_OK if have else _TPL_TTL_EMPTY
     if _TPL_CACHE["at"] is None or (now - _TPL_CACHE["at"]) >= ttl:
-        fetched = _fetch_zenvia_templates()
+        tmap, nmap = _fetch_zenvia_templates()
         _TPL_CACHE["at"] = now
-        if fetched:
-            _TPL_CACHE["map"] = fetched
+        if tmap:
+            _TPL_CACHE["map"] = tmap
+        if nmap:
+            _TPL_CACHE["names"] = nmap
+
+
+def _zenvia_template_map() -> dict:
+    """Cached {templateId: text}."""
+    _zenvia_refresh_templates()
     return _TPL_CACHE["map"]
+
+
+def _zenvia_template_names() -> dict:
+    """Cached {templateId: name} (the human-readable template name)."""
+    _zenvia_refresh_templates()
+    return _TPL_CACHE["names"]
 
 
 def _render_template_text(content: dict, max_len: int = 300) -> str:
@@ -2708,6 +2728,7 @@ _PAGE_TITLES: dict[str, str] = {
     "sem-resposta": "Sem Resposta",
     "copiloto":   "Copiloto IA",
     "oportunidades": "Oportunidades",
+    "disparos":   "Disparos",
     "temas":      "Temas",
     "evolucao":   "Evolução",
     "acessos":    "Acessos",
@@ -2786,6 +2807,7 @@ def _nav_html(active: str, extra: str = "", canal: str = "", unacked_alerts: int
             + _ni("pdi", "PDI", f"/dashboard/pdi{canal_qs}")
             + _ni("evolucao", "Evolução", f"/dashboard/evolucao{canal_qs}")
             + _ni("mensagens", "Mensagens iniciais", f"/dashboard/mensagens{canal_qs}")
+            + _ni("disparos", "Disparos", f"/dashboard/disparos{canal_qs}")
             + '</div>'
             + admin_group
         )
@@ -13740,6 +13762,298 @@ def dashboard_mensagens(request: Request, db: Session = Depends(get_db)):
         </div>
     </div>
     </body></html>""")
+
+
+# ── Disparos / Campanhas Dashboard ────────────────────────────────────────────
+
+_DISP_REPLY_WINDOW = timedelta(days=7)
+
+
+def _disparo_template_id(payload: dict) -> str:
+    """Extract the templateId of a template message (campaign MESSAGE or inbox HSM)."""
+    try:
+        for c in ((payload.get("message") or {}).get("contents") or []):
+            if not isinstance(c, dict):
+                continue
+            if c.get("templateId"):
+                return c["templateId"]
+            inner = c.get("payload")
+            if (isinstance(inner, dict) and isinstance(inner.get("json"), dict)
+                    and inner["json"].get("templateId")):
+                return inner["json"]["templateId"]
+        return ""
+    except Exception:
+        return ""
+
+
+def _disparos_data(db: Session, canal: str, dias: int, access: dict) -> dict:
+    """Aggregate template-send (disparo) performance for the period.
+
+    Groups disparos by (templateId, day, source) and computes, per campaign,
+    how many recipients were reached / replied (≤7d) / engaged (2+ replies) /
+    showed a progress signal (meeting/movement keywords), plus reply time.
+    Result cached 60s, keyed by canal+period+permission scope.
+    """
+    perm_key = (
+        "disparos", canal, dias,
+        (access or {}).get("role", ""),
+        tuple(sorted((access or {}).get("agents") or [])),
+    )
+
+    def _compute():
+        since = (datetime.now(BRASILIA) - timedelta(days=dias)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        ).astimezone(timezone.utc)
+        _limit = 50000 if dias >= 90 else 30000
+        all_events, groups, phone_learned, client_agent_map, client_name_map = _load_period_pipeline(
+            db, canal, since, _limit
+        )
+        names = _zenvia_template_names()
+        tmap = _zenvia_template_map()
+        cp = _real_phone(canal)
+
+        import unicodedata
+
+        def _n(s: str) -> str:
+            s = (s or "").lower()
+            return "".join(ch for ch in unicodedata.normalize("NFD", s)
+                           if unicodedata.category(ch) != "Mn")
+
+        KW = ("reuni", "agendar", "agendamos", "agendado", "marcar", "marcamos",
+              "videochamada", "video chamada", "ligacao", "te ligo", "podemos falar",
+              "podemos conversar", "aporte", "aportar", "transferi", "portabilidade",
+              "abrir conta", "abertura de conta", "trazer o recurso", "trazer recurso")
+
+        campaigns: dict = {}
+        send_events = 0
+        for phone, evs in groups.items():
+            if _real_phone(phone) == cp:
+                continue
+            agent = client_agent_map.get(phone) or phone_learned.get(phone) or ""
+            if not _user_sees(access, agent):
+                continue
+            evs_sorted = sorted(evs, key=lambda e: e.received_at or datetime.min.replace(tzinfo=timezone.utc))
+            ins = [e.received_at for e in evs_sorted
+                   if e.received_at and _extract_direction(e.raw_payload or {}) == "IN"]
+            for e in evs_sorted:
+                p = e.raw_payload or {}
+                ts = e.received_at
+                if not ts or not _is_template_msg(p) or _extract_direction(p) != "OUT":
+                    continue
+                send_events += 1
+                tid = _disparo_template_id(p)
+                source = "Campanha" if (p.get("type", "") or "").upper() == "MESSAGE" else "Atendimento"
+                date_br = ts.astimezone(BRASILIA).strftime("%d/%m")
+                key = (tid or "—", date_br, source)
+                camp = campaigns.setdefault(key, {"tid": tid, "date": date_br, "source": source, "recipients": {}})
+                if phone in camp["recipients"]:
+                    continue
+                reply_ts = None
+                reply_count = 0
+                for in_ts in ins:
+                    if ts < in_ts <= ts + _DISP_REPLY_WINDOW:
+                        reply_count += 1
+                        if reply_ts is None:
+                            reply_ts = in_ts
+                avanco = False
+                for e2 in evs_sorted:
+                    if e2.received_at and ts < e2.received_at <= ts + _DISP_REPLY_WINDOW:
+                        tx = _n(_extract_content_preview(e2.raw_payload or {}) or "")
+                        if any(k in tx for k in KW):
+                            avanco = True
+                            break
+                camp["recipients"][phone] = {
+                    "phone": phone,
+                    "name": client_name_map.get(phone, ""),
+                    "agent": agent,
+                    "replied": reply_ts is not None,
+                    "reply_mins": (int((reply_ts - ts).total_seconds() // 60) if reply_ts else None),
+                    "engaged": reply_count >= 2,
+                    "avanco": avanco,
+                }
+
+        rows = []
+        g_recip, g_repl, g_eng, g_av = set(), set(), set(), set()
+        reply_mins_all = []
+        tpl_roll: dict = {}
+        for (tid, date_br, source), camp in campaigns.items():
+            recs = list(camp["recipients"].values())
+            sent = len(recs)
+            repl = sum(1 for r in recs if r["replied"])
+            eng = sum(1 for r in recs if r["engaged"])
+            av = sum(1 for r in recs if r["avanco"])
+            rmins = [r["reply_mins"] for r in recs if r["reply_mins"] is not None]
+            for r in recs:
+                g_recip.add(r["phone"])
+                if r["replied"]:
+                    g_repl.add(r["phone"])
+                if r["engaged"]:
+                    g_eng.add(r["phone"])
+                if r["avanco"]:
+                    g_av.add(r["phone"])
+            reply_mins_all.extend(rmins)
+            name = names.get(tid) or (tmap.get(tid, "")[:48]) or "(template não identificado)"
+            tr = tpl_roll.setdefault(tid, {"name": name, "sent": 0, "replied": 0})
+            tr["sent"] += sent
+            tr["replied"] += repl
+            rows.append({
+                "tid": tid, "name": name, "date": date_br, "source": source,
+                "sent": sent, "replied": repl, "engaged": eng, "avanco": av,
+                "rate": (round(repl / sent * 100) if sent else 0),
+                "avg_reply": (sum(rmins) // len(rmins) if rmins else None),
+                "recipients": sorted(recs, key=lambda r: (not r["replied"], r["reply_mins"] if r["reply_mins"] is not None else 10**9)),
+            })
+
+        # Campaign table: focus on batches (2+ recipients), most recent / biggest first
+        table_rows = [r for r in rows if r["sent"] >= 2]
+        table_rows.sort(key=lambda r: (r["date"], r["sent"]), reverse=True)
+        table_rows = table_rows[:150]
+
+        tpl_rows = sorted(
+            [{"name": v["name"], "sent": v["sent"], "replied": v["replied"],
+              "rate": (round(v["replied"] / v["sent"] * 100) if v["sent"] else 0)}
+             for v in tpl_roll.values()],
+            key=lambda x: x["sent"], reverse=True,
+        )
+
+        return {
+            "rows": table_rows,
+            "tpl_rows": tpl_rows,
+            "send_events": send_events,
+            "recipients": len(g_recip),
+            "replied": len(g_repl),
+            "engaged": len(g_eng),
+            "avanco": len(g_av),
+            "rate": (round(len(g_repl) / len(g_recip) * 100) if g_recip else 0),
+            "avg_reply": (sum(reply_mins_all) // len(reply_mins_all) if reply_mins_all else None),
+        }
+
+    return _cache.cached(perm_key, 60.0, _compute)
+
+
+@router.get("/dashboard/disparos", response_class=HTMLResponse, include_in_schema=False)
+def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
+    access = _get_access(request, db)
+    if access is None:
+        return _auth_redirect()
+    canal = _req_canal(request)
+    try:
+        dias = int(request.query_params.get("dias", "30"))
+    except Exception:
+        dias = 30
+    if dias not in (7, 30, 90):
+        dias = 30
+    data = _disparos_data(db, canal, dias, access)
+    db.close()
+
+    def _fmt_mins(m):
+        if m is None:
+            return "—"
+        if m < 60:
+            return f"{m}min"
+        if m < 1440:
+            return f"{m // 60}h{m % 60:02d}"
+        return f"{m // 1440}d{(m % 1440) // 60:02d}h"
+
+    def _pbtn(d, lbl):
+        on = (d == dias)
+        st = ("background:#0fa968;color:#fff;border-color:#0fa968" if on
+              else "background:#111a2e;color:#8a96aa;border-color:#1a2540")
+        return (f'<a href="/dashboard/disparos?canal={canal}&dias={d}" '
+                f'style="text-decoration:none;padding:5px 13px;border:1px solid;border-radius:7px;'
+                f'font-size:12px;font-weight:600;{st}">{lbl}</a>')
+    period_btns = _pbtn(7, "7 dias") + _pbtn(30, "30 dias") + _pbtn(90, "90 dias")
+
+    rate = data["rate"]
+    rate_color = "#0fa968" if rate >= 30 else "#f59e0b" if rate >= 15 else "#ef4444"
+
+    tpl_html = ""
+    for t in data["tpl_rows"][:25]:
+        tr = t["rate"]
+        tc = "#0fa968" if tr >= 30 else "#f59e0b" if tr >= 15 else "#ef4444"
+        tpl_html += (f'<tr><td>{html_mod.escape(t["name"])}</td>'
+                     f'<td style="text-align:center">{t["sent"]}</td>'
+                     f'<td style="text-align:center">{t["replied"]}</td>'
+                     f'<td style="text-align:center;color:{tc};font-weight:700">{tr}%</td></tr>')
+    if not tpl_html:
+        tpl_html = '<tr><td colspan="4" style="text-align:center;color:#4a5a7a;padding:24px">Nenhum disparo no período.</td></tr>'
+
+    camp_html = ""
+    for i, r in enumerate(data["rows"]):
+        rc = "#0fa968" if r["rate"] >= 30 else "#f59e0b" if r["rate"] >= 15 else "#ef4444"
+        src_color = "#c4a3ff" if r["source"] == "Campanha" else "#4a9eff"
+        src_bg = "#241a3d" if r["source"] == "Campanha" else "#0d1f3a"
+        did = f"disp_{i}"
+        rec_rows = ""
+        for rr in r["recipients"][:200]:
+            disp_name = (html_mod.escape(rr["name"]) if rr["name"]
+                         else f'<span style="color:#4a5a7a">{html_mod.escape(_real_phone(rr["phone"]))}</span>')
+            if rr["replied"]:
+                stt = f'<span style="color:#0fa968">✓ respondeu · {_fmt_mins(rr["reply_mins"])}</span>'
+            else:
+                stt = '<span style="color:#ef6b73">✗ sem resposta</span>'
+            extra = ' <span style="color:#c4a3ff;font-size:10px">· avanço</span>' if rr["avanco"] else ""
+            conv_link = f'/dashboard/conversa?phone={_url_quote(rr["phone"], safe="")}&canal={canal}'
+            ag = html_mod.escape(_short_agent_name(rr["agent"])) if rr["agent"] else "—"
+            rec_rows += (f'<tr><td style="padding:4px 12px">{disp_name}</td>'
+                         f'<td style="padding:4px 12px;color:#5a6a8a;font-size:11px">{ag}</td>'
+                         f'<td style="padding:4px 12px;font-size:11px">{stt}{extra}</td>'
+                         f'<td style="padding:4px 12px"><a href="{conv_link}" target="_blank" style="color:#0fa968;font-size:11px">abrir →</a></td></tr>')
+        more = (f'<div style="padding:6px 12px;color:#5a6a8a;font-size:11px">… e mais {len(r["recipients"]) - 200} destinatários</div>'
+                if len(r["recipients"]) > 200 else "")
+        camp_html += (
+            f'<tr onclick="toggleDisp(\'{did}\')" style="cursor:pointer">'
+            f'<td><span style="background:{src_bg};color:{src_color};font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px">{r["source"]}</span></td>'
+            f'<td style="font-weight:600">{html_mod.escape(r["name"])}</td>'
+            f'<td style="color:#5a6a8a">{r["date"]}</td>'
+            f'<td style="text-align:center">{r["sent"]}</td>'
+            f'<td style="text-align:center">{r["replied"]}</td>'
+            f'<td style="text-align:center;color:{rc};font-weight:700">{r["rate"]}%</td>'
+            f'<td style="text-align:center;color:#8a96aa">{_fmt_mins(r["avg_reply"])}</td>'
+            f'<td style="text-align:center;color:#c4a3ff">{r["avanco"]}</td>'
+            f'</tr>'
+            f'<tr id="{did}" style="display:none"><td colspan="8" style="padding:0;background:#0b1120">'
+            f'<table style="width:100%;font-size:12px;border:none"><tbody>{rec_rows}</tbody></table>{more}</td></tr>'
+        )
+    if not camp_html:
+        camp_html = ('<tr><td colspan="8" style="text-align:center;color:#4a5a7a;padding:30px">'
+                     'Nenhum disparo em massa no período. As campanhas começam a aparecer a partir de 24/06/2026.</td></tr>')
+
+    nav = _nav_html("disparos", canal=canal, is_admin=(access or {}).get('role') == 'admin', title="Disparos")
+    return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo — Disparos</title>{COMMON_CSS}</head><body>
+{nav}
+<div class="container">
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
+    <p style="color:#5a6a8a;font-size:12px;margin:0;max-width:640px">Performance dos envios em massa (Ferramenta de Campanhas) e templates do atendimento. <b>Resposta</b> = o cliente respondeu em até 7 dias após o disparo.</p>
+    <div style="display:flex;gap:6px">{period_btns}</div>
+  </div>
+  <div class="kpi-row">
+    <div class="kpi" style="border-top:3px solid #c4a3ff"><div class="val">{data["send_events"]}</div><div class="label">Disparos enviados</div></div>
+    <div class="kpi" style="border-top:3px solid #4a9eff"><div class="val" style="color:#4a9eff">{data["recipients"]}</div><div class="label">Destinatários únicos</div></div>
+    <div class="kpi" style="border-top:3px solid {rate_color}"><div class="val" style="color:{rate_color}">{data["replied"]}</div><div class="label">Responderam ({rate}%)</div></div>
+    <div class="kpi" style="border-top:3px solid #0fa968"><div class="val" style="color:#0fa968">{_fmt_mins(data["avg_reply"])}</div><div class="label">Tempo médio até resposta</div></div>
+    <div class="kpi" style="border-top:3px solid #c4a3ff"><div class="val" style="color:#c4a3ff">{data["avanco"]}</div><div class="label">Avanço (indício)</div></div>
+  </div>
+
+  <div class="card" style="margin-bottom:20px">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="width:8px;height:8px;border-radius:50%;background:#c4a3ff;display:inline-block"></span><h2 style="margin:0;font-size:15px">Taxa de resposta por template</h2></div>
+    <p style="color:#5a6a8a;font-size:11px;margin-bottom:12px">Acumulado no período — qual template mais engaja (todos os envios, incl. individuais).</p>
+    <table><thead><tr><th>Template</th><th style="text-align:center">Enviados</th><th style="text-align:center">Responderam</th><th style="text-align:center">Taxa</th></tr></thead><tbody>{tpl_html}</tbody></table>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="width:8px;height:8px;border-radius:50%;background:#c4a3ff;display:inline-block"></span><h2 style="margin:0;font-size:15px">Campanhas / disparos em massa</h2></div>
+    <p style="color:#5a6a8a;font-size:11px;margin-bottom:12px">Cada linha = um template enviado num dia (2+ destinatários). Clique pra ver quem recebeu e quem respondeu. <span style="color:#c4a3ff">■</span> Campanha em massa · <span style="color:#4a9eff">■</span> Atendimento. <b>Avanço</b> = indício de reunião/movimentação na conversa (aproximado).</p>
+    <table>
+      <thead><tr><th>Origem</th><th>Template</th><th>Data</th><th style="text-align:center">Enviados</th><th style="text-align:center">Resp.</th><th style="text-align:center">Taxa</th><th style="text-align:center">Tempo méd.</th><th style="text-align:center">Avanço</th></tr></thead>
+      <tbody>{camp_html}</tbody>
+    </table>
+  </div>
+</div>
+<script>
+function toggleDisp(id){{var r=document.getElementById(id);if(r){{r.style.display=(r.style.display==='none'?'table-row':'none');}}}}
+</script>
+</body></html>""")
 
 
 # ── Evolução Dashboard ────────────────────────────────────────────────────────
