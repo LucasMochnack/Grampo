@@ -5972,6 +5972,7 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         '<div class="sb-sec"><div class="sb-sec-h">Admin</div>'
         '<a class="sb-item" href="/dashboard/acessos"><span>Acessos</span></a>'
         f'<a class="sb-item" href="/dashboard/diagnostico{_cq}"><span>Diagnóstico</span></a>'
+        '<a class="sb-item" href="/dashboard/gestao-sistemas"><span>Gestão de Sistemas</span></a>'
         '</div>'
     ) if is_admin else ""
     sidebar_html = (
@@ -5984,14 +5985,18 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         f'<a class="sb-item" href="/dashboard{_cq}"><span>Conversas</span></a>'
         f'<a class="sb-item" href="/dashboard/alertas{_cq}"><span>Alertas</span></a>'
         f'<a class="sb-item" href="/dashboard/sem-resposta{_cq}"><span>Sem resposta</span></a>'
+        f'<a class="sb-item" href="/dashboard/copiloto{_cq}"><span>Copiloto IA</span></a>'
         f'<a class="sb-item on" href="/dashboard/oportunidades{_cq}"><span>Oportunidades</span></a>'
         f'<a class="sb-item" href="/dashboard/agentes{_cq}"><span>Agentes</span></a>'
         '</div>'
         '<div class="sb-sec"><div class="sb-sec-h">Análise</div>'
         f'<a class="sb-item" href="/dashboard/temas{_cq}"><span>Temas</span></a>'
+        f'<a class="sb-item" href="/dashboard/clientes{_cq}"><span>Clientes</span></a>'
         f'<a class="sb-item" href="/dashboard/avaliacao-agentes{_cq}"><span>Avaliação agentes</span></a>'
+        f'<a class="sb-item" href="/dashboard/pdi{_cq}"><span>PDI</span></a>'
         f'<a class="sb-item" href="/dashboard/evolucao{_cq}"><span>Evolução</span></a>'
         f'<a class="sb-item" href="/dashboard/mensagens{_cq}"><span>Mensagens iniciais</span></a>'
+        f'<a class="sb-item" href="/dashboard/disparos{_cq}"><span>Disparos</span></a>'
         '</div>'
         + _admin_sec +
         '</nav>'
@@ -7037,7 +7042,8 @@ function pautaExcluir(id){
             '<div class="spaced" style="font-size:9.5px;font-weight:600;letter-spacing:0.22em;color:#4a5369;padding:0 6px 10px;">ADMIN</div>'
             '<nav style="display:flex;flex-direction:column;gap:1px;">'
             + _v2nav("Acessos", "/dashboard/acessos")
-            + _v2nav("Diagnóstico", "/dashboard/diagnostico" + _cq) + '</nav>'
+            + _v2nav("Diagnóstico", "/dashboard/diagnostico" + _cq)
+            + _v2nav("Gestão de Sistemas", "/dashboard/gestao-sistemas") + '</nav>'
         )
     sidebar_html = (
         '<aside style="width:248px;flex:none;background:#0a0e1a;border-right:1px solid rgba(255,255,255,0.06);display:flex;flex-direction:column;padding:26px 18px;position:sticky;top:0;height:100vh;overflow-y:auto;">'
@@ -7049,12 +7055,14 @@ function pautaExcluir(id){
         '<nav style="display:flex;flex-direction:column;gap:1px;margin-bottom:22px;">'
         + _v2nav("Visão geral", "/dashboard/overview" + _cq) + _v2nav("Conversas", "/dashboard" + _cq)
         + _v2nav("Alertas", "/dashboard/alertas" + _cq) + _v2nav("Sem resposta", "/dashboard/sem-resposta" + _cq)
+        + _v2nav("Copiloto IA", "/dashboard/copiloto" + _cq)
         + _v2nav("Oportunidades", "/dashboard/oportunidades" + _cq) + _v2nav("Agentes", "/dashboard/agentes" + _cq) + '</nav>'
         '<div class="spaced" style="font-size:9.5px;font-weight:600;letter-spacing:0.22em;color:#4a5369;padding:0 6px 10px;">ANÁLISE</div>'
         '<nav style="display:flex;flex-direction:column;gap:1px;margin-bottom:22px;">'
         + _v2nav("Temas", "/dashboard/temas" + _cq, active=True) + _v2nav("Clientes", "/dashboard/clientes" + _cq)
-        + _v2nav("Avaliação agentes", "/dashboard/avaliacao-agentes" + _cq) + _v2nav("Evolução", "/dashboard/evolucao" + _cq)
-        + _v2nav("Mensagens iniciais", "/dashboard/mensagens" + _cq) + '</nav>'
+        + _v2nav("Avaliação agentes", "/dashboard/avaliacao-agentes" + _cq) + _v2nav("PDI", "/dashboard/pdi" + _cq)
+        + _v2nav("Evolução", "/dashboard/evolucao" + _cq)
+        + _v2nav("Mensagens iniciais", "/dashboard/mensagens" + _cq) + _v2nav("Disparos", "/dashboard/disparos" + _cq) + '</nav>'
         + admin_nav +
         '<div style="margin-top:auto;display:flex;align-items:center;gap:11px;padding:12px 8px 0;border-top:1px solid rgba(255,255,255,0.06);">'
         '<div class="spaced" style="width:32px;height:32px;border-radius:50%;background:#13301f;border:1px solid #1f6b40;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#3ddc84;">AV</div>'
@@ -10127,16 +10135,24 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
         + _sr_nav("Conversas", "/dashboard" + canal_qs)
         + _sr_nav("Alertas", "/dashboard/alertas" + canal_qs)
         + _sr_nav("Sem resposta", "/dashboard/sem-resposta" + canal_qs, active=True)
+        + _sr_nav("Copiloto IA", "/dashboard/copiloto" + canal_qs)
+        + _sr_nav("Oportunidades", "/dashboard/oportunidades" + canal_qs)
         + _sr_nav("Agentes", "/dashboard/agentes" + canal_qs)
         + '<div class="nav-group">Análise</div>'
         + _sr_nav("Temas", "/dashboard/temas" + canal_qs)
+        + _sr_nav("Clientes", "/dashboard/clientes" + canal_qs)
         + _sr_nav("Avaliação agentes", "/dashboard/avaliacao-agentes" + canal_qs)
+        + _sr_nav("PDI", "/dashboard/pdi" + canal_qs)
+        + _sr_nav("Evolução", "/dashboard/evolucao" + canal_qs)
+        + _sr_nav("Mensagens iniciais", "/dashboard/mensagens" + canal_qs)
+        + _sr_nav("Disparos", "/dashboard/disparos" + canal_qs)
     )
     if is_admin:
         nav_links += (
             '<div class="nav-group">Admin</div>'
             + _sr_nav("Acessos", "/dashboard/acessos")
             + _sr_nav("Diagnóstico", "/dashboard/diagnostico" + canal_qs)
+            + _sr_nav("Gestão de Sistemas", "/dashboard/gestao-sistemas")
         )
 
     ds_options = ""
