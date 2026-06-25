@@ -13786,16 +13786,18 @@ def _disparo_template_id(payload: dict) -> str:
         return ""
 
 
-def _disparos_data(db: Session, canal: str, dias: int, access: dict) -> dict:
+def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str = "todos") -> dict:
     """Aggregate template-send (disparo) performance for the period.
 
     Groups disparos by (templateId, day, source) and computes, per campaign,
     how many recipients were reached / replied (≤7d) / engaged (2+ replies) /
     showed a progress signal (meeting/movement keywords), plus reply time.
-    Result cached 60s, keyed by canal+period+permission scope.
+    `origem` filters the source: "campanha" (mass sends only), "atendimento"
+    (chat templates only) or "todos". Result cached 60s, keyed by
+    canal+period+origem+permission scope.
     """
     perm_key = (
-        "disparos", canal, dias,
+        "disparos", canal, dias, origem,
         (access or {}).get("role", ""),
         tuple(sorted((access or {}).get("agents") or [])),
     )
@@ -13840,9 +13842,11 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict) -> dict:
                 ts = e.received_at
                 if not ts or not _is_template_msg(p) or _extract_direction(p) != "OUT":
                     continue
+                source = "Campanha" if (p.get("type", "") or "").upper() == "MESSAGE" else "Atendimento"
+                if origem in ("campanha", "atendimento") and source.lower() != origem:
+                    continue
                 send_events += 1
                 tid = _disparo_template_id(p)
-                source = "Campanha" if (p.get("type", "") or "").upper() == "MESSAGE" else "Atendimento"
                 date_br = ts.astimezone(BRASILIA).strftime("%d/%m")
                 key = (tid or "—", date_br, source)
                 camp = campaigns.setdefault(key, {"tid": tid, "date": date_br, "source": source, "recipients": {}})
@@ -13943,7 +13947,10 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
         dias = 30
     if dias not in (7, 30, 90):
         dias = 30
-    data = _disparos_data(db, canal, dias, access)
+    origem = (request.query_params.get("origem", "todos") or "todos").lower()
+    if origem not in ("todos", "campanha", "atendimento"):
+        origem = "todos"
+    data = _disparos_data(db, canal, dias, access, origem)
     db.close()
 
     def _fmt_mins(m):
@@ -13959,10 +13966,21 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
         on = (d == dias)
         st = ("background:#0fa968;color:#fff;border-color:#0fa968" if on
               else "background:#111a2e;color:#8a96aa;border-color:#1a2540")
-        return (f'<a href="/dashboard/disparos?canal={canal}&dias={d}" '
+        return (f'<a href="/dashboard/disparos?canal={canal}&dias={d}&origem={origem}" '
                 f'style="text-decoration:none;padding:5px 13px;border:1px solid;border-radius:7px;'
                 f'font-size:12px;font-weight:600;{st}">{lbl}</a>')
     period_btns = _pbtn(7, "7 dias") + _pbtn(30, "30 dias") + _pbtn(90, "90 dias")
+
+    def _obtn(o, lbl, color):
+        on = (o == origem)
+        st = (f'background:{color};color:#fff;border-color:{color}' if on
+              else "background:#111a2e;color:#8a96aa;border-color:#1a2540")
+        return (f'<a href="/dashboard/disparos?canal={canal}&dias={dias}&origem={o}" '
+                f'style="text-decoration:none;padding:5px 13px;border:1px solid;border-radius:7px;'
+                f'font-size:12px;font-weight:600;{st}">{lbl}</a>')
+    origem_btns = (_obtn("todos", "Todos", "#0fa968")
+                   + _obtn("campanha", "Campanhas em massa", "#a855f7")
+                   + _obtn("atendimento", "Atendimento", "#4a9eff"))
 
     rate = data["rate"]
     rate_color = "#0fa968" if rate >= 30 else "#f59e0b" if rate >= 15 else "#ef4444"
@@ -14024,8 +14042,11 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
 {nav}
 <div class="container">
   <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
-    <p style="color:#5a6a8a;font-size:12px;margin:0;max-width:640px">Performance dos envios em massa (Ferramenta de Campanhas) e templates do atendimento. <b>Resposta</b> = o cliente respondeu em até 7 dias após o disparo.</p>
-    <div style="display:flex;gap:6px">{period_btns}</div>
+    <p style="color:#5a6a8a;font-size:12px;margin:0;max-width:560px">Performance dos envios em massa (Ferramenta de Campanhas) e templates do atendimento. <b>Resposta</b> = o cliente respondeu em até 7 dias após o disparo.</p>
+    <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">
+      <div style="display:flex;gap:6px">{origem_btns}</div>
+      <div style="display:flex;gap:6px">{period_btns}</div>
+    </div>
   </div>
   <div class="kpi-row">
     <div class="kpi" style="border-top:3px solid #c4a3ff"><div class="val">{data["send_events"]}</div><div class="label">Disparos enviados</div></div>
