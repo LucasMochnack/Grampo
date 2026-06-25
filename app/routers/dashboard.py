@@ -13767,6 +13767,9 @@ def dashboard_mensagens(request: Request, db: Session = Depends(get_db)):
 # ── Disparos / Campanhas Dashboard ────────────────────────────────────────────
 
 _DISP_REPLY_WINDOW = timedelta(days=7)
+# "Curto período": sends of the same template within this window of the first
+# send count as one mass-campaign blast.
+_DISP_CAMPAIGN_WINDOW = timedelta(hours=1)
 # Capture of mass-campaign (MESSAGE OUT) disparos started when the webhook
 # subscription was created. Nothing before this is reliably measurable, so the
 # Disparos page floors everything at this date.
@@ -13836,7 +13839,8 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
               "podemos conversar", "aporte", "aportar", "transferi", "portabilidade",
               "abrir conta", "abertura de conta", "trazer o recurso", "trazer recurso")
 
-        campaigns: dict = {}
+        # Pass 1: collect every disparo (per phone) with its reply info.
+        disparo_recs = []
         for phone, evs in groups.items():
             if _real_phone(phone) == cp:
                 continue
@@ -13855,11 +13859,6 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
                 if origem in ("campanha", "atendimento") and source.lower() != origem:
                     continue
                 tid = _disparo_template_id(p)
-                date_br = ts.astimezone(BRASILIA).strftime("%d/%m")
-                key = (tid or "—", date_br, source)
-                camp = campaigns.setdefault(key, {"tid": tid, "date": date_br, "source": source, "recipients": {}})
-                if phone in camp["recipients"]:
-                    continue
                 reply_ts = None
                 reply_count = 0
                 for in_ts in ins:
@@ -13868,8 +13867,7 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
                         if reply_ts is None:
                             reply_ts = in_ts
                 # "Avanço" = sinal de reunião/movimentação dito PELO CLIENTE
-                # (mensagem IN). Não conta follow-up do assessor — senão um
-                # cliente que nunca respondeu apareceria como "em conversa".
+                # (mensagem IN). Não conta follow-up do assessor.
                 avanco = False
                 for e2 in evs_sorted:
                     if (e2.received_at and ts < e2.received_at <= ts + _DISP_REPLY_WINDOW
@@ -13878,16 +13876,35 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
                         if any(k in tx for k in KW):
                             avanco = True
                             break
-                camp["recipients"][phone] = {
-                    "phone": phone,
+                disparo_recs.append({
+                    "phone": phone, "ts": ts, "tid": tid, "source": source, "agent": agent,
                     "name": client_name_map.get(phone, ""),
-                    "agent": agent,
                     "replied": reply_ts is not None,
                     "reply_mins": (int((reply_ts - ts).total_seconds() // 60) if reply_ts else None),
                     "engaged": reply_count >= 2,
-                    "avanco": avanco,
-                    "disp_ts": ts,
-                }
+                    "avanco": avanco, "disp_ts": ts,
+                })
+
+        # Pass 2: cluster into campaigns. A campaign = same template, sends within
+        # 1 hour of the first send ("mesma hora" — short period). Clustering by
+        # window-from-first avoids splitting a blast that straddles a clock hour.
+        _by_tpl: dict = defaultdict(list)
+        for r in disparo_recs:
+            _by_tpl[(r["tid"], r["source"])].append(r)
+        campaigns = []
+        for (tid, source), recs in _by_tpl.items():
+            recs.sort(key=lambda x: x["ts"])
+            cluster = None
+            for r in recs:
+                if cluster is None or (r["ts"] - cluster["start"]) > _DISP_CAMPAIGN_WINDOW:
+                    cluster = {"tid": tid, "source": source, "start": r["ts"], "recipients": {}}
+                    campaigns.append(cluster)
+                if r["phone"] not in cluster["recipients"]:
+                    cluster["recipients"][r["phone"]] = {
+                        "phone": r["phone"], "name": r["name"], "agent": r["agent"],
+                        "replied": r["replied"], "reply_mins": r["reply_mins"],
+                        "engaged": r["engaged"], "avanco": r["avanco"], "disp_ts": r["ts"],
+                    }
 
         rows = []
         g_recip, g_repl, g_eng, g_av = set(), set(), set(), set()
@@ -13895,11 +13912,15 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
         tpl_roll: dict = {}
         phone_cards: dict = {}
         send_events = 0
-        for (tid, date_br, source), camp in campaigns.items():
+        for camp in campaigns:
             recs = list(camp["recipients"].values())
             sent = len(recs)
             if sent < _DISPARO_MASSA_MIN:   # não é disparo em massa (mais de 10 clientes)
                 continue
+            tid = camp["tid"]
+            source = camp["source"]
+            when = camp["start"].astimezone(BRASILIA).strftime("%d/%m %Hh%M")
+            ckey = f'{tid}__{camp["start"].astimezone(BRASILIA).strftime("%Y%m%d%H%M")}'
             send_events += sent
             repl = sum(1 for r in recs if r["replied"])
             eng = sum(1 for r in recs if r["engaged"])
@@ -13938,7 +13959,8 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
                 if dts and (pc["last_ts"] is None or dts > pc["last_ts"]):
                     pc["last_ts"] = dts
             rows.append({
-                "tid": tid, "name": name, "date": date_br, "source": source,
+                "tid": tid, "ckey": ckey, "name": name, "when": when,
+                "start_iso": camp["start"].isoformat(), "source": source,
                 "sent": sent, "replied": repl, "engaged": eng, "avanco": av,
                 "rate": (round(repl / sent * 100) if sent else 0),
                 "avg_reply": (sum(rmins) // len(rmins) if rmins else None),
@@ -13946,7 +13968,7 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
             })
 
         # Todas as linhas já são disparos em massa (>10 destinatários); só ordena.
-        table_rows = sorted(rows, key=lambda r: (r["date"], r["sent"]), reverse=True)[:150]
+        table_rows = sorted(rows, key=lambda r: (r["start_iso"], r["sent"]), reverse=True)[:150]
 
         tpl_rows = sorted(
             [{"name": v["name"], "sent": v["sent"], "replied": v["replied"],
@@ -13968,7 +13990,7 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
                 "replied": pc["replied"], "reply_mins": pc["reply_mins"],
                 "engaged": pc["engaged"], "avanco": pc["avanco"],
                 "templates": sorted(pc["templates"])[:3],
-                "last_date": (pc["last_ts"].astimezone(BRASILIA).strftime("%d/%m") if pc["last_ts"] else ""),
+                "last_date": (pc["last_ts"].astimezone(BRASILIA).strftime("%d/%m %Hh") if pc["last_ts"] else ""),
                 "last_ts_iso": (pc["last_ts"].isoformat() if pc["last_ts"] else ""),
                 "auto_stage": auto,
             })
@@ -14107,7 +14129,7 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
     sel_row = None
     if camp_param:
         for r in data["rows"]:
-            if f'{r["tid"]}__{r["date"]}' == camp_param:
+            if r["ckey"] == camp_param:
                 sel_row = r
                 break
 
@@ -14122,7 +14144,7 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
             "phone": rr["phone"], "name": rr["name"], "agent": rr["agent"],
             "replied": rr["replied"], "reply_mins": rr["reply_mins"],
             "engaged": rr["engaged"], "avanco": rr["avanco"],
-            "templates": [sel_row["name"]], "last_date": sel_row["date"],
+            "templates": [sel_row["name"]], "last_date": sel_row["when"],
             "last_ts_iso": (rr["disp_ts"].isoformat() if rr.get("disp_ts") else ""),
             "auto_stage": _rec_stage(rr),
         } for rr in sel_row["recipients"]]
@@ -14140,9 +14162,9 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
     # Dropdown de campanhas (sempre lista todas as campanhas/batches)
     camp_opts_html = '<option value="">Todas as campanhas</option>'
     for r in data["rows"]:
-        _ck = f'{r["tid"]}__{r["date"]}'
+        _ck = r["ckey"]
         _sel = " selected" if (sel_row is not None and _ck == camp_param) else ""
-        _lbl = html_mod.escape(f'{r["name"]} — {r["date"]} ({r["sent"]} env · {r["rate"]}%)')
+        _lbl = html_mod.escape(f'{r["name"]} — {r["when"]} ({r["sent"]} env · {r["rate"]}%)')
         camp_opts_html += f'<option value="{html_mod.escape(_ck)}"{_sel}>{_lbl}</option>'
     camp_select = (
         '<select onchange="location.href=\'/dashboard/disparos?canal=' + canal +
@@ -14190,7 +14212,7 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
         camp_html += (
             f'<tr onclick="toggleDisp(\'{did}\')" style="cursor:pointer">'
             f'<td style="font-weight:600">{html_mod.escape(r["name"])}</td>'
-            f'<td style="color:#5a6a8a">{r["date"]}</td>'
+            f'<td style="color:#5a6a8a">{r["when"]}</td>'
             f'<td style="text-align:center">{r["sent"]}</td>'
             f'<td style="text-align:center">{r["replied"]}</td>'
             f'<td style="text-align:center;color:{rc};font-weight:700">{r["rate"]}%</td>'
@@ -14260,7 +14282,7 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
     else:
         tpl_section = (
             f'<div class="card" style="margin-bottom:20px;border-left:3px solid #c4a3ff">'
-            f'<div style="font-size:13px;color:#e8ecf1;font-weight:600">📢 {html_mod.escape(sel_row["name"])} <span style="color:#5a6a8a;font-weight:400">— {sel_row["date"]}</span></div>'
+            f'<div style="font-size:13px;color:#e8ecf1;font-weight:600">📢 {html_mod.escape(sel_row["name"])} <span style="color:#5a6a8a;font-weight:400">— {sel_row["when"]}</span></div>'
             f'<div style="font-size:11px;color:#8a96aa;margin-top:3px">Mostrando só esta campanha. Use o seletor acima para trocar ou voltar a "Todas as campanhas".</div>'
             f'</div>'
         )
@@ -14270,7 +14292,7 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
 {nav}
 <div class="container">
   <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:8px">
-    <p style="color:#5a6a8a;font-size:12px;margin:0;max-width:560px">Performance dos <b>disparos em massa</b> — mesmo template enviado a <b>mais de 10 clientes</b> num mesmo dia (Ferramenta de Campanhas). <b>Resposta</b> = o cliente respondeu em até 7 dias.</p>
+    <p style="color:#5a6a8a;font-size:12px;margin:0;max-width:560px">Performance dos <b>disparos em massa</b> — mesmo template enviado a <b>mais de 10 clientes</b> dentro da <b>mesma hora</b> (Ferramenta de Campanhas). <b>Resposta</b> = o cliente respondeu em até 7 dias.</p>
     <div style="display:flex;gap:6px">{period_btns}</div>
   </div>
   <div style="background:#0d1a2e;border:1px solid #1a2540;border-left:3px solid #c4a3ff;border-radius:0 8px 8px 0;padding:8px 14px;font-size:11.5px;color:#8a96aa;margin-bottom:14px">
@@ -14298,9 +14320,9 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
 
     <div class="card">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="width:8px;height:8px;border-radius:50%;background:#c4a3ff;display:inline-block"></span><h2 style="margin:0;font-size:15px">Campanhas / disparos em massa</h2></div>
-      <p style="color:#5a6a8a;font-size:11px;margin-bottom:12px">Cada linha = um disparo em massa (mesmo template, 11+ clientes, num dia). Clique pra ver quem recebeu e quem respondeu. <b>Avanço</b> = indício de reunião/movimentação na conversa (aproximado).</p>
+      <p style="color:#5a6a8a;font-size:11px;margin-bottom:12px">Cada linha = um disparo em massa (mesmo template, 11+ clientes, na mesma hora). Clique pra ver quem recebeu e quem respondeu. <b>Avanço</b> = indício de reunião/movimentação na conversa (aproximado).</p>
       <table>
-        <thead><tr><th>Template</th><th>Data</th><th style="text-align:center">Enviados</th><th style="text-align:center">Resp.</th><th style="text-align:center">Taxa</th><th style="text-align:center">Tempo méd.</th><th style="text-align:center">Avanço</th></tr></thead>
+        <thead><tr><th>Template</th><th>Quando</th><th style="text-align:center">Enviados</th><th style="text-align:center">Resp.</th><th style="text-align:center">Taxa</th><th style="text-align:center">Tempo méd.</th><th style="text-align:center">Avanço</th></tr></thead>
         <tbody>{camp_html}</tbody>
       </table>
     </div>
