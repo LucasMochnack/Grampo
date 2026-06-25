@@ -10396,6 +10396,15 @@ body[data-density="compact"] .ag-glimpse{display:none}
 .atend-table th.th-nota,.atend-table .t-nota{text-align:center}
 .atend-table td{padding:11px 16px;border-top:1px solid var(--line);vertical-align:top;color:#c6cee0}
 .atend-table tbody tr:hover{background:var(--panel-2)}
+.atd-row.atd-clickable{cursor:pointer}
+.atd-caret{display:inline-block;color:var(--muted-2);font-size:10px;margin-left:5px;transition:.12s}
+.atd-row.atd-open .atd-caret{transform:rotate(90deg);color:var(--accent)}
+.atd-detail td{padding:0 !important;border-top:none !important;background:#0c1322}
+.atd-detailbox{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;padding:14px 18px;border-top:1px solid var(--line)}
+.atd-mini-h{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;font-weight:700;margin-bottom:7px}
+.atd-mini-i{font-size:12px;color:#c6cee0;line-height:1.45;padding:4px 0;border-top:1px solid var(--line)}
+.atd-mini-i:first-of-type{border-top:none}
+@media(max-width:900px){.atd-detailbox{grid-template-columns:1fr}}
 .t-cliente{font-weight:600;color:var(--text);white-space:nowrap}
 .t-motivo{width:24%}
 .t-link{color:#7cb0ff}
@@ -10610,13 +10619,22 @@ window.META = __META_JSON__;
       var cli = r.url
         ? '<a class="t-link" href="' + r.url + '" target="_blank" rel="noopener">' + esc(r.cliente) + ' ↗</a>'
         : esc(r.cliente);
-      rows += '<tr>' +
+      function mini(label, color, items){ if(!items||!items.length) return ''; return '<div><div class="atd-mini-h" style="color:'+color+'">'+label+'</div>'+items.map(function(x){return '<div class="atd-mini-i">'+esc(x)+'</div>';}).join('')+'</div>'; }
+      var hasB = (r.positivos&&r.positivos.length)||(r.erros&&r.erros.length)||(r.melhorias&&r.melhorias.length);
+      rows += '<tr class="atd-row' + (hasB?' atd-clickable':'') + '">' +
         '<td class="t-cliente">' + cli + '</td>' +
         '<td class="t-motivo">' + motivo + '</td>' +
-        '<td class="t-resumo">' + (r.resumo ? esc(r.resumo) : '<span class="t-empty">—</span>') + '</td>' +
+        '<td class="t-resumo">' + (r.resumo ? esc(r.resumo) : '<span class="t-empty">—</span>') + (hasB?' <span class="atd-caret">▶</span>':'') + '</td>' +
         '<td class="t-data">' + esc(r.data) + '</td>' +
         '<td class="t-nota"><span class="nota-chip" style="color:' + noteColor(nota) + ';border-color:' + noteColor(nota) + '33">' + nota + '</span></td>' +
       '</tr>';
+      if (hasB) {
+        rows += '<tr class="atd-detail" style="display:none"><td colspan="5"><div class="atd-detailbox">' +
+          mini('✓ Pontos positivos', '#16c784', r.positivos) +
+          mini('! Erros identificados', '#ef6b73', r.erros) +
+          mini('→ Pontos de melhoria', '#f0a800', r.melhorias) +
+        '</div></td></tr>';
+      }
     });
     if (!rows) rows = '<tr><td colspan="5" class="t-empty" style="padding:18px 16px">Nenhum atendimento avaliado.</td></tr>';
     return '<div class="atend-wrap">' +
@@ -10775,6 +10793,16 @@ window.META = __META_JSON__;
         var tn = tog.getAttribute('data-table');
         state.showTable[tn] = !state.showTable[tn];
         render();
+        return;
+      }
+      var arow = e.target.closest('.atd-clickable');
+      if (arow && !e.target.closest('a')) {
+        var det = arow.nextElementSibling;
+        if (det && det.className.indexOf('atd-detail') >= 0) {
+          var hide = det.style.display !== 'none';
+          det.style.display = hide ? 'none' : '';
+          arow.classList.toggle('atd-open', !hide);
+        }
       }
     });
 
@@ -10950,6 +10978,9 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
                 "data":    _dt.astimezone(BRASILIA).strftime("%d/%m/%Y") if _dt else "—",
                 "nota":    int(sc.nota),
                 "url":     "/dashboard/conversa?phone=" + _uq_av(sc.phone, safe="") + "&canal=" + _uq_av(canal, safe=""),
+                "positivos": [str(x) for x in (sc.pontos_positivos or [])][:6],
+                "erros":     _drop_channel_false_positives([str(x) for x in (sc.erros or [])])[:6],
+                "melhorias": [str(x) for x in (sc.pontos_melhoria or [])][:6],
             })
 
         # legacy fallback for erros (v1 rows without structured erros)
