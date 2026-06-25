@@ -3399,7 +3399,7 @@ function selectConv(id){{
   var phone=panel.getAttribute('data-phone');
   var canal=panel.getAttribute('data-canal');
   m.innerHTML='<div style="text-align:center;color:#3a4a6a;font-size:12px;margin-top:60px">⏳ Carregando...</div>';
-  fetch('/dashboard/conv-messages?phone='+encodeURIComponent(phone)+'&canal='+encodeURIComponent(canal))
+  fetch('/dashboard/conv-messages?phone='+encodeURIComponent(phone)+'&canal='+encodeURIComponent(canal),{{cache:'no-store'}})
     .then(function(r){{return r.text();}})
     .then(function(html){{
       m.innerHTML=html;
@@ -3414,7 +3414,7 @@ function loadFullHistory(btn,url){{
   var m=btn.closest('.gp-chat-msgs');
   if(!m)return;
   btn.disabled=true;btn.textContent='⏳ Carregando...';
-  fetch(url).then(function(r){{return r.text();}}).then(function(html){{
+  fetch(url,{{cache:'no-store'}}).then(function(r){{return r.text();}}).then(function(html){{
     m.innerHTML=html;
     _scrollToBottom(m);
   }}).catch(function(){{btn.disabled=false;btn.textContent='Erro — tentar novamente';}});
