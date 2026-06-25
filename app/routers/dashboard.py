@@ -832,6 +832,76 @@ def _extract_direction(payload: dict) -> str:
         return ""
 
 
+# ── Zenvia template catalog ───────────────────────────────────────────────────
+# Campaign disparos (Ferramenta de Campanhas) arrive as MESSAGE OUT events whose
+# content is only {type:'template', templateId, fields} — the rendered text is
+# NOT in the payload. We resolve it from the template catalog (GET /v2/templates)
+# and substitute the fields, so the disparo shows up inside the client's
+# conversation just like any other outbound message.
+_TPL_CACHE: dict = {"map": {}, "at": None}
+_TPL_TTL_OK = timedelta(hours=1)        # refresh hourly once we have data
+_TPL_TTL_EMPTY = timedelta(minutes=2)   # retry quickly while we still have nothing
+
+
+def _fetch_zenvia_templates() -> dict:
+    """Fetch {templateId: text} from the Zenvia API. Returns {} on any error."""
+    import urllib.request
+    tok = (settings.ZENVIA_API_TOKEN or "").strip()
+    if not tok:
+        return {}
+    try:
+        req = urllib.request.Request(
+            "https://api.zenvia.com/v2/templates",
+            headers={"X-API-TOKEN": tok, "Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=12) as r:
+            arr = json.loads(r.read().decode("utf-8", "ignore"))
+        out: dict = {}
+        for t in (arr if isinstance(arr, list) else []):
+            tid = t.get("id")
+            txt = t.get("text") or ""
+            if tid and txt:
+                out[tid] = txt
+        return out
+    except Exception:
+        return {}
+
+
+def _zenvia_template_map() -> dict:
+    """Cached {templateId: text}. Refreshes hourly on success; while we have no
+    data yet it retries every couple of minutes instead of waiting the full hour.
+    A transient fetch failure never discards a previously good map (only runs in
+    the dashboard render path — never in the webhook ingestion path)."""
+    now = datetime.now(timezone.utc)
+    have = bool(_TPL_CACHE["map"])
+    ttl = _TPL_TTL_OK if have else _TPL_TTL_EMPTY
+    if _TPL_CACHE["at"] is None or (now - _TPL_CACHE["at"]) >= ttl:
+        fetched = _fetch_zenvia_templates()
+        _TPL_CACHE["at"] = now
+        if fetched:
+            _TPL_CACHE["map"] = fetched
+    return _TPL_CACHE["map"]
+
+
+def _render_template_text(content: dict, max_len: int = 300) -> str:
+    """Render a campaign template content {templateId, fields} → substituted text.
+    Returns '' if the template id is unknown (caller falls back to '[TEMPLATE]')."""
+    try:
+        tid = content.get("templateId") or ""
+        if not tid:
+            return ""
+        text = _zenvia_template_map().get(tid, "")
+        if not text:
+            return ""
+        fields = content.get("fields") or {}
+        if isinstance(fields, dict):
+            for k, v in fields.items():
+                text = text.replace("{{%s}}" % k, str(v))
+        return text[:max_len]
+    except Exception:
+        return ""
+
+
 def _extract_content_preview(payload: dict, max_len: int = 300) -> str:
     """Extract the readable text/etiqueta from a payload.
 
@@ -875,6 +945,13 @@ def _extract_content_preview(payload: dict, max_len: int = 300) -> str:
                             return f"[ARQUIVO] {fcaption}"[:max_len]
                         if fname_inner:
                             return f"[ARQUIVO] {fname_inner}"[:max_len]
+                # Campaign (MESSAGE OUT) template: payload carries only
+                # {type:'template', templateId, fields}. Resolve the real text
+                # from the Zenvia template catalog and substitute the fields.
+                if c.get("templateId"):
+                    rendered = _render_template_text(c, max_len)
+                    if rendered:
+                        return rendered
                 ctype = (c.get("type", "") or "").lower()
                 if "template" in ctype:
                     return "[TEMPLATE]"
@@ -1380,6 +1457,18 @@ def _group_events(events, client_agent_map):
         ev_type = (p.get("type", "") or "").upper()
         if ev_type in ("CONVERSATION_STATUS", "MESSAGE_STATUS"):
             continue
+        # The MESSAGE OUT stream (campaign webhook) also carries high-volume
+        # internal automation (free-text alerts / files to advisors). Only
+        # campaign templates belong in client conversations — skip the rest so
+        # they don't show up as bogus "client" groups. (Inbound MESSAGE, if any,
+        # is left alone.)
+        if ev_type == "MESSAGE" and _extract_direction(p) == "OUT":
+            _conts = (p.get("message") or {}).get("contents") or []
+            if not any(
+                isinstance(c, dict) and (c.get("type") == "template" or c.get("templateId"))
+                for c in _conts
+            ):
+                continue
         client_num = _extract_client_number(p)
         conv_id = _extract_conversation_id(p)
         direction = _extract_direction(p)

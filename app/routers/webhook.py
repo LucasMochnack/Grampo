@@ -27,6 +27,36 @@ router = APIRouter(tags=["webhook"])
 logger = logging.getLogger("webhook")
 
 
+def _should_persist(payload: dict) -> bool:
+    """Decide whether to store this event.
+
+    We subscribe to MESSAGE OUT to capture campaign (template) disparos, but that
+    same stream also carries high-volume internal automation (free-text alerts and
+    files sent via the messaging API) that would bloat the DB and slow every
+    dashboard render. So for MESSAGE *OUT* events we persist ONLY when the content
+    is a template (a campaign). Every other event — any other type
+    (CONVERSATION_MESSAGE, CONVERSATION_STATUS, SUPPORT_EXPERT_AGENT, …) and any
+    inbound MESSAGE — is always persisted.
+
+    On ANY error we default to persisting — we never silently drop an event
+    because of a parsing edge case.
+    """
+    try:
+        if (payload.get("type") or "").upper() != "MESSAGE":
+            return True
+        msg = payload.get("message") or {}
+        direction = (msg.get("direction") or payload.get("direction") or "").upper()
+        # Only the OUT stream carries the campaign + internal-automation firehose.
+        if direction != "OUT":
+            return True
+        for c in (msg.get("contents") or []):
+            if isinstance(c, dict) and (c.get("type") == "template" or c.get("templateId")):
+                return True
+        return False
+    except Exception:
+        return True
+
+
 def _persist_event(payload: dict, request: Request) -> str | None:
     """Try to persist the event using the dedicated webhook session.
     Returns the new event_id on success, or None on failure (already logged)."""
@@ -81,6 +111,10 @@ def receive_webhook(
     swallowed (logged to stdout) and a 200 response is always returned so
     Zenvia never disables the webhook subscription.
     """
+    # Drop the internal-automation noise from the MESSAGE OUT stream before it
+    # touches the DB (campaign templates are kept — see _should_persist).
+    if not _should_persist(payload):
+        return JSONResponse({"status": "ignored"}, status_code=200)
     event_id = _persist_event(payload, request)
     if event_id:
         return JSONResponse({"status": "received", "event_id": event_id}, status_code=200)
