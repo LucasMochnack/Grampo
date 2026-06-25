@@ -11827,6 +11827,26 @@ _PDI_JS = r"""<script>
     +'.foot{margin-top:26px;border-top:1px solid #e2e8e4;padding-top:8px;color:#99a;font-size:10px}'
     +'@media print{body{margin:0;max-width:none}}'
     +'</style>'; }
+  function acompPrint(c){ var p=c.pdi;
+    var cOk=(p.comps||[]).filter(function(x){return (+x.atual||0)>=(+x.alvo||0);}).length, cPct=(p.comps||[]).length?Math.round(cOk/p.comps.length*100):0;
+    var mOk=(p.metas||[]).filter(function(x){return x.status==='ok';}).length;
+    var aOk=(p.acoes||[]).filter(function(a){return a.done;}).length;
+    var vv=(c.hist||[]).filter(function(x){return x&&x.v!=null;}); var delta=vv.length>=2?Math.round((vv[vv.length-1].v-vv[0].v)*10)/10:0;
+    var kp='<div class="rx"><span><b>'+cPct+'%</b> competências no alvo</span><span><b>'+mOk+'/'+((p.metas||[]).length)+'</b> metas concluídas</span><span><b>'+aOk+'/'+((p.acoes||[]).length)+'</b> ações concluídas</span><span><b>'+(delta>=0?'+':'')+delta.toFixed(1)+'</b> evolução da nota</span></div>';
+    var hist=(c.hist||[]).length?('<table class="ptab"><tr>'+(c.hist.map(function(h){return '<th style="text-align:center">'+esc(h.m||'')+'</th>';}).join(''))+'</tr><tr>'+(c.hist.map(function(h){return '<td style="text-align:center">'+(h.v!=null?h.v.toFixed(1):'—')+'</td>';}).join(''))+'</tr></table>'):'<div class="empty">Sem histórico de nota.</div>';
+    var cprog=(p.comps||[]).filter(function(x){return (x.nome||'').trim();}).map(function(x){ var reach=Math.min(100,Math.round((+x.atual||0)/(+x.alvo||1)*100)); return '<li>'+esc(x.nome)+' — nível '+(x.atual||0)+'/'+(x.alvo||0)+' ('+reach+'%)</li>'; }).join('');
+    function smLab(s){ return s==='ok'?'concluída':s==='atr'?'atrasada':'em dia'; }
+    var mstat=(p.metas||[]).filter(function(x){return (x.texto||'').trim();}).map(function(x){ return '<li><b>['+smLab(x.status)+']</b> '+esc(x.texto)+'</li>'; }).join('');
+    var chk=(p.acoes||[]).filter(function(a){return (a.o_que||'').trim();}).map(function(a){ return '<li>'+(a.done?'✓':'○')+' '+esc(a.o_que)+'</li>'; }).join('');
+    var ck=(p.checkins||[]).filter(function(k){return (k.data||'')||(k.nota||'');}).map(function(k){ return '<div class="obj"><div class="objh">'+esc(k.data||'(sem data)')+'</div><p>'+esc(k.nota||'')+'</p></div>'; }).join('');
+    return '<h1 style="page-break-before:always;margin-top:0">Acompanhamento</h1>'
+      +kp
+      +'<div class="sec"><h2>Evolução da nota (últimos ciclos)</h2>'+hist+'</div>'
+      +'<div class="sec"><h2>Progresso das competências</h2>'+(cprog?'<ul>'+cprog+'</ul>':'<div class="empty">—</div>')+'</div>'
+      +'<div class="sec"><h2>Status das metas</h2>'+(mstat?'<ul>'+mstat+'</ul>':'<div class="empty">—</div>')+'</div>'
+      +'<div class="sec"><h2>Checklist do plano</h2>'+(chk?'<ul style="list-style:none;padding-left:2px">'+chk+'</ul>':'<div class="empty">—</div>')+'</div>'
+      +'<div class="sec"><h2>Acompanhamento (1:1)</h2>'+(ck||'<div class="empty">Sem check-ins registrados.</div>')+'</div>';
+  }
   function pdiPrintHTML(c){ var p=c.pdi, rx=c.raiox||{}, m=p.motivacao||{};
     function ul(items){ items=(items||[]).filter(function(x){return (x||'').toString().trim();}); return items.length?('<ol>'+items.map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ol>'):'<div class="empty">—</div>'; }
     var comps=(p.comps||[]).filter(function(x){return (x.nome||'').trim();}).map(function(x){ return '<li><b>'+esc(x.nome)+'</b> — nível atual '+(x.atual||0)+' → meta '+(x.alvo||0)+'</li>'; }).join('');
@@ -11848,6 +11868,7 @@ _PDI_JS = r"""<script>
       +mot
       +'<div class="sec"><h2>Desafios atuais</h2>'+ul(p.desafios)+'</div>'
       +'<div class="sec"><h2>Construção do plano de desenvolvimento</h2>'+(plano||'<div class="empty">—</div>')+'</div>'
+      +acompPrint(c)
       +'<div class="foot">Gerado pelo Grampo · Alto Valor Investimentos · PDI '+esc(D.cycleLabel||'')+'</div>'
       +'</body></html>';
   }
