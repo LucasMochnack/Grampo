@@ -11528,6 +11528,7 @@ def _pdi_hist_all(db, cycle: str) -> dict:
 
 
 _PDI_CSS = """
+#refresh-timer{display:none !important}
 .pdiapp{--bg:#0a0f1e;--panel:#0f1629;--panel2:#141d33;--panel3:#1a2440;--line:rgba(255,255,255,.07);--line2:rgba(255,255,255,.13);--txt:#eaeff8;--mut:#8b95ad;--mut2:#5d667e;--green:#23b16e;--green2:#1a9460;--amber:#f0a800;--cyan:#56c9ec;--purple:#a78bfa;--blue:#5b8cf0;--red:#ef6a6a;font-family:'Manrope',system-ui,sans-serif;color:var(--txt);font-size:14px}
 .pdihdr{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:14px}
 .pdihdr h1{margin:0;font-size:20px;font-weight:800;color:#e8ecf1}
@@ -11736,7 +11737,7 @@ _PDI_JS = r"""<script>
   PDIH.cycle=function(v){ var c=cur(); location.href='/dashboard/pdi?ciclo='+v+'&canal='+(D.canal||'')+'&a='+encodeURIComponent(c?c.id:''); };
   PDIH.save=function(){ var c=cur(); if(!c) return; var b=document.getElementById('pdi-save'); if(b){b.disabled=true;b.innerHTML='Salvando…';}
     fetch('/dashboard/pdi/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({agent:c.agent,ciclo:D.cycle,pdi:c.pdi})})
-      .then(function(r){return r.json();}).then(function(d){ if(d&&d.ok){c.pdi.updated_at=d.updated_at||'';toast('✓ PDI de '+c.nome+' salvo');renderDetail();renderRoster();} else toast('⚠ '+((d&&d.error)||'erro ao salvar')); })
+      .then(function(r){return r.json();}).then(function(d){ if(d&&d.ok){_pdiDirty=false;c.pdi.updated_at=d.updated_at||'';toast('✓ PDI de '+c.nome+' salvo');renderDetail();renderRoster();} else toast('⚠ '+((d&&d.error)||'erro ao salvar')); })
       .catch(function(){ toast('Erro de rede'); }).finally(function(){ if(b){b.disabled=false;b.innerHTML='⬇ Salvar PDI';} }); };
   function toast(msg){ var t=document.getElementById('pdiToast'); if(!t){t=document.createElement('div');t.id='pdiToast';t.className='toast';document.body.appendChild(t);} t.textContent=msg;t.style.display='flex';t.style.opacity='1';clearTimeout(t._h);t._h=setTimeout(function(){t.style.opacity='0';},2400); }
   function ring(color,prog){ var c=2*Math.PI*15; return '<svg class="adring" viewBox="0 0 36 36"><circle cx="18" cy="18" r="15" fill="none" stroke="rgba(255,255,255,.08)" stroke-width="3"></circle><circle cx="18" cy="18" r="15" fill="none" stroke="'+color+'" stroke-width="3" stroke-linecap="round" stroke-dasharray="'+(c*prog).toFixed(1)+' '+c.toFixed(1)+'" transform="rotate(-90 18 18)"></circle></svg>'; }
@@ -11876,6 +11877,13 @@ _PDI_JS = r"""<script>
   function render(){ renderRoster(); renderDetail(); }
   document.getElementById('pdi-root').innerHTML='<div class="pdi-grid"><section class="roster" id="pdi-roster"></section><main class="detail" id="pdi-detail"></main></div>';
   render();
+  // Rede de segurança: a pagina do PDI NAO recarrega sozinha; mas avisa se o
+  // usuario tentar sair/recarregar com edicoes nao salvas (so apos salvar limpa).
+  var _pdiDirty=false;
+  function _markDirty(e){ if(e&&e.target&&e.target.closest&&e.target.closest('#pdi-root')) _pdiDirty=true; }
+  document.addEventListener('input', _markDirty);
+  document.addEventListener('change', _markDirty);
+  window.addEventListener('beforeunload', function(e){ if(_pdiDirty){ e.preventDefault(); e.returnValue=''; return ''; } });
 })();
 </script>"""
 
@@ -11938,7 +11946,7 @@ def dashboard_pdi(request: Request, db: Session = Depends(get_db)):
 
     _dj = json.dumps(D, ensure_ascii=False)
     page = f"""<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">
-<title>PDI — Alto Valor</title>{COMMON_CSS}
+<title>PDI — Alto Valor</title>{COMMON_CSS.replace('<meta http-equiv="refresh" content="600">', '')}
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>{_PDI_CSS}</style></head><body>
 {_nav_html("pdi", canal=canal, is_admin=(access or {}).get('role')=='admin', title="PDI", role=(access or {}).get('role',''))}
