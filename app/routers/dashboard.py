@@ -902,6 +902,36 @@ def _render_template_text(content: dict, max_len: int = 300) -> str:
         return ""
 
 
+def _is_template_msg(payload: dict) -> bool:
+    """True when this message is a template send — a campaign disparo (MESSAGE
+    OUT whose content type is 'template' / carries a templateId) or a manual
+    HSM/template via the inbox (CONVERSATION_MESSAGE whose content type contains
+    'template')."""
+    try:
+        for c in ((payload.get("message") or {}).get("contents") or []):
+            if not isinstance(c, dict):
+                continue
+            if c.get("templateId") or "template" in (c.get("type") or "").lower():
+                return True
+            inner = c.get("payload")
+            if (isinstance(inner, dict) and isinstance(inner.get("json"), dict)
+                    and inner["json"].get("templateId")):
+                return True
+        return False
+    except Exception:
+        return False
+
+
+# Inline style + badge marking a template/disparo bubble (violet) so it stands
+# out from normal green (OUT) / blue (IN) messages in any chat view. Applied
+# inline so it works regardless of which page's CSS renders the bubble.
+_TEMPLATE_BUBBLE_STYLE = "background:#241a3d;color:#e7dcff;border:1px solid #6d4fd0;"
+_TEMPLATE_BADGE = (
+    '<div style="font-size:9px;font-weight:700;letter-spacing:.6px;color:#c4a3ff;'
+    'margin-bottom:5px;text-transform:uppercase">📢 disparo · template</div>'
+)
+
+
 def _extract_content_preview(payload: dict, max_len: int = 300) -> str:
     """Extract the readable text/etiqueta from a payload.
 
@@ -1083,7 +1113,8 @@ def _render_msg_content(payload: dict) -> str:
     """Return HTML for message content: inline image, audio player, file link, or escaped text."""
     from urllib.parse import quote as _uq
     media_url, mime = _extract_media_url(payload)
-    raw_text = _extract_content_preview(payload) or ""
+    # Full bubble view — show the whole message (templates can be ~1k chars).
+    raw_text = _extract_content_preview(payload, max_len=1500) or ""
     if media_url:
         # Infer type from mime, url extension, AND filename in raw_text
         _url_base = media_url.lower().split("?")[0]
@@ -3770,7 +3801,10 @@ def conv_messages_api(request: Request, db: Session = Depends(get_db)):
             and direction == "IN"
         )
         if direction == "OUT":
-            msgs_html += f'<div class="gp-msg out">{content}<div class="gp-msg-t">{msg_ts} ↑</div></div>'
+            if _is_template_msg(p):
+                msgs_html += f'<div class="gp-msg out" style="{_TEMPLATE_BUBBLE_STYLE}">{_TEMPLATE_BADGE}{content}<div class="gp-msg-t">{msg_ts} ↑</div></div>'
+            else:
+                msgs_html += f'<div class="gp-msg out">{content}<div class="gp-msg-t">{msg_ts} ↑</div></div>'
         else:
             msgs_html += f'<div class="gp-msg in">{content}<div class="gp-msg-t">{msg_ts} ↓</div></div>'
 
@@ -6197,7 +6231,10 @@ def agente_detalhe(request: Request, db: Session = Depends(get_db)):
             content = _render_msg_content(p)
             msg_ts = ev.received_at.astimezone(BRASILIA).strftime("%d/%m %H:%M") if ev.received_at else ""
             if direction == "OUT":
-                msgs_html += f'<div class="msg msg-out">{content}<div class="msg-time">{msg_ts} &uarr;</div></div>'
+                if _is_template_msg(p):
+                    msgs_html += f'<div class="msg msg-out" style="{_TEMPLATE_BUBBLE_STYLE}">{_TEMPLATE_BADGE}{content}<div class="msg-time">{msg_ts} &uarr;</div></div>'
+                else:
+                    msgs_html += f'<div class="msg msg-out">{content}<div class="msg-time">{msg_ts} &uarr;</div></div>'
             else:
                 msgs_html += f'<div class="msg msg-in">{content}<div class="msg-time">{msg_ts} &darr;</div></div>'
 
