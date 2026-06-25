@@ -13865,9 +13865,13 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
                         reply_count += 1
                         if reply_ts is None:
                             reply_ts = in_ts
+                # "Avanço" = sinal de reunião/movimentação dito PELO CLIENTE
+                # (mensagem IN). Não conta follow-up do assessor — senão um
+                # cliente que nunca respondeu apareceria como "em conversa".
                 avanco = False
                 for e2 in evs_sorted:
-                    if e2.received_at and ts < e2.received_at <= ts + _DISP_REPLY_WINDOW:
+                    if (e2.received_at and ts < e2.received_at <= ts + _DISP_REPLY_WINDOW
+                            and _extract_direction(e2.raw_payload or {}) == "IN"):
                         tx = _n(_extract_content_preview(e2.raw_payload or {}) or "")
                         if any(k in tx for k in KW):
                             avanco = True
