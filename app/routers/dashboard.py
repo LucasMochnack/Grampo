@@ -11558,6 +11558,8 @@ _PDI_CSS = """
 .dtag{font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;background:rgba(86,201,236,.13);color:var(--cyan)}
 .btn-green{background:var(--green);color:#04130b;border:none;border-radius:9px;padding:11px 18px;font-weight:800;font-size:13.5px;font-family:inherit;cursor:pointer;box-shadow:0 6px 18px rgba(35,177,110,.28);white-space:nowrap}
 .btn-green:hover{background:#2bc77e}
+.btn-export{background:rgba(86,201,236,.10);color:var(--cyan);border:1px solid rgba(86,201,236,.45);border-radius:9px;padding:11px 16px;font-weight:700;font-size:13px;font-family:inherit;cursor:pointer;white-space:nowrap}
+.btn-export:hover{background:rgba(86,201,236,.20)}
 .raiox{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0 14px}
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:15px 16px;position:relative;overflow:hidden}
 .stat::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px}
@@ -11803,12 +11805,59 @@ _PDI_JS = r"""<script>
     var ck=p.checkins.length?'<div class="tl">'+p.checkins.map(function(k,i){ return '<div class="tlitem"><div class="tldot"></div><div class="tldate"><input type="date" class="dateinp" value="'+esc(k.data)+'" onchange="PDIH.ckDate('+i+',this.value)"></div><div class="tladd"><textarea class="ta" style="min-height:46px" placeholder="O que foi conversado, combinados, próximos passos..." onchange="PDIH.ckNota('+i+',this.value)">'+esc(k.nota)+'</textarea><button class="xbtn" onclick="PDIH.ckDel('+i+')">×</button></div></div>'; }).join('')+'</div>':'<div class="empty">Nada ainda — clique em + check-in.</div>';
     return kpis+'<div class="card"><div class="chd"><div><div class="ctit">📈 Evolução da nota · raio-X</div><div class="csub">Nota média mês a mês — últimos 6 ciclos.</div></div></div>'+chartHTML(c.hist||[])+'</div><div class="card"><div class="ctit">🎯 Progresso das competências</div><div class="csub" style="margin-bottom:14px">Barra = nível atual · marcador azul = alvo.</div>'+ctrack+'</div><div class="twocol"><div class="card"><div class="ctit" style="margin-bottom:6px">📌 Status das metas</div>'+mstat+'</div><div class="card"><div class="ctit" style="margin-bottom:6px">✅ Checklist do plano</div>'+achk+'</div></div><div class="card"><div class="chd"><div><div class="ctit">🗓 Acompanhamento (1:1)</div><div class="csub">Registro das conversas de desenvolvimento.</div></div><button class="btnadd" onclick="PDIH.addCk()">+ check-in</button></div>'+ck+'</div>';
   }
+  function _pdiCss(){ return '<style>'
+    +'*{box-sizing:border-box}'
+    +'body{font-family:Arial,Helvetica,sans-serif;color:#1a2236;max-width:820px;margin:22px auto;padding:0 26px;line-height:1.5;font-size:13px}'
+    +'h1{font-size:19px;margin:0 0 2px;color:#0e7a44}'
+    +'.hd{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #0e7a44;padding-bottom:9px;margin-bottom:14px}'
+    +'.nm{font-size:18px;font-weight:700}.mt{color:#667085;font-size:12px;margin-top:2px}'
+    +'.rx{display:flex;gap:22px;background:#f4f7f5;border:1px solid #e2e8e4;border-radius:8px;padding:11px 16px;margin-bottom:18px;font-size:12px}'
+    +'.rx b{color:#0e7a44;font-size:16px;display:block}'
+    +'.sec{margin-bottom:16px;page-break-inside:avoid}'
+    +'h2{font-size:14px;color:#0e7a44;border-bottom:1px solid #e2e8e4;padding-bottom:4px;margin:0 0 9px}'
+    +'h3{font-size:12px;color:#445566;margin:0 0 5px}'
+    +'.two{display:flex;gap:26px}.two>div{flex:1}'
+    +'ol,ul{margin:4px 0;padding-left:20px}li{margin:3px 0}'
+    +'.obj{margin-bottom:11px;page-break-inside:avoid}.objh{font-weight:700;margin-bottom:5px;color:#223344}'
+    +'.ptab{width:100%;border-collapse:collapse;font-size:11.5px}'
+    +'.ptab th,.ptab td{border:1px solid #d8dee6;padding:5px 7px;text-align:left;vertical-align:top}'
+    +'.ptab th{background:#eef3f0;font-size:9.5px;text-transform:uppercase;letter-spacing:.04em;color:#556677}'
+    +'.muted{color:#889}.empty{color:#aab;font-style:italic}'
+    +'p{margin:5px 0}'
+    +'.foot{margin-top:26px;border-top:1px solid #e2e8e4;padding-top:8px;color:#99a;font-size:10px}'
+    +'@media print{body{margin:0;max-width:none}}'
+    +'</style>'; }
+  function pdiPrintHTML(c){ var p=c.pdi, rx=c.raiox||{}, m=p.motivacao||{};
+    function ul(items){ items=(items||[]).filter(function(x){return (x||'').toString().trim();}); return items.length?('<ol>'+items.map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ol>'):'<div class="empty">—</div>'; }
+    var comps=(p.comps||[]).filter(function(x){return (x.nome||'').trim();}).map(function(x){ return '<li><b>'+esc(x.nome)+'</b> — nível atual '+(x.atual||0)+' → meta '+(x.alvo||0)+'</li>'; }).join('');
+    var metas=(p.metas||[]).filter(function(x){return (x.texto||'').trim();}).map(function(x){ return '<li>'+esc(x.texto)+(x.prazo?' <span class="muted">(prazo '+esc(x.prazo)+')</span>':'')+'</li>'; }).join('');
+    var plano='';
+    (p.metas||[]).forEach(function(mm,mi){ var rows=(p.acoes||[]).filter(function(a){return a.obj===mi;});
+      if(!((mm.texto||'').trim())&&!rows.length) return;
+      plano+='<div class="obj"><div class="objh">Objetivo '+(mi+1)+': '+esc(mm.texto||'')+'</div>';
+      plano+= rows.length?('<table class="ptab"><tr><th>O que fazer</th><th>Como fazer</th><th>Início</th><th>Fim</th><th>Métrica de sucesso</th></tr>'+rows.map(function(a){return '<tr><td>'+esc(a.o_que||'')+'</td><td>'+esc(a.como||'')+'</td><td>'+esc(a.inicio||'')+'</td><td>'+esc(a.fim||'')+'</td><td>'+esc(a.metrica||'')+'</td></tr>';}).join('')+'</table>'):'<div class="empty">Sem ações definidas.</div>';
+      plano+='</div>'; });
+    var mot=(m.a||m.b||m.c||m.d)?('<div class="sec"><h2>Motivação pessoal</h2>'+(m.a?'<p><b>Impacto pessoal:</b> '+esc(m.a)+'</p>':'')+(m.b?'<p><b>Impacto nas pessoas:</b> '+esc(m.b)+'</p>':'')+(m.c?'<p><b>Celebração e gratidão:</b> '+esc(m.c)+'</p>':'')+(m.d?'<p><b>Reconhecimento:</b> '+esc(m.d)+'</p>':'')+'</div>'):'';
+    return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>PDI — '+esc(c.nome)+'</title>'+_pdiCss()+'</head><body>'
+      +'<h1>Plano de Desenvolvimento Individual</h1>'
+      +'<div class="hd"><div><div class="nm">'+esc(c.nome)+'</div><div class="mt">'+esc(c.mesa||'')+' · Ciclo '+esc(D.cycleLabel||'')+'</div></div></div>'
+      +'<div class="rx"><span><b>'+(rx.nota==null?'—':rx.nota.toFixed(1))+'</b> nota média</span><span><b>'+(rx.prodCob||0)+'/'+(rx.prodTot||0)+'</b> produtos cobertos</span><span><b>'+(rx.clientes||0)+'</b> clientes</span><span><b>'+(rx.oport||0)+'</b> oportunidades</span></div>'
+      +'<div class="sec"><h2>Autoavaliação — Onde estou?</h2><div class="two"><div><h3>Pontos fortes</h3>'+ul(p.fortes)+'</div><div><h3>Áreas de melhoria</h3>'+ul(p.atencao)+'</div></div></div>'
+      +(comps?'<div class="sec"><h2>Competências em foco</h2><ul>'+comps+'</ul></div>':'')
+      +'<div class="sec"><h2>Objetivos — Onde quero chegar?</h2>'+(metas?'<ol>'+metas+'</ol>':'<div class="empty">—</div>')+'</div>'
+      +mot
+      +'<div class="sec"><h2>Desafios atuais</h2>'+ul(p.desafios)+'</div>'
+      +'<div class="sec"><h2>Construção do plano de desenvolvimento</h2>'+(plano||'<div class="empty">—</div>')+'</div>'
+      +'<div class="foot">Gerado pelo Grampo · Alto Valor Investimentos · PDI '+esc(D.cycleLabel||'')+'</div>'
+      +'</body></html>';
+  }
+  PDIH.exportPdf=function(){ var c=cur(); if(!c){return;} var w=window.open('','_blank'); if(!w){ toast('Permita pop-ups para exportar o PDF'); return; } w.document.open(); w.document.write(pdiPrintHTML(c)); w.document.close(); w.focus(); setTimeout(function(){ try{ w.print(); }catch(e){} }, 350); };
   function renderDetail(){ var c=cur(); var el=document.getElementById('pdi-detail');
     if(!c){ el.innerHTML='<div class="empty" style="padding:40px;text-align:center">Sem assessores de mesa (Alta Renda / On Demand).</div>'; return; }
     var rx=c.raiox;
     var ia=(c.iaErros&&c.iaErros.length)?'<div class="ia"><div class="iahd">✦ ERROS MAIS RECORRENTES (IA)</div>'+c.iaErros.map(function(e){return '<div class="iaitem"><span class="iadot">•</span><span>'+esc(e)+'</span></div>';}).join('')+'</div>':'';
     var upd=c.pdi.updated_at?'<span style="font-size:11px;color:var(--mut2)">salvo '+esc(c.pdi.updated_at)+'</span>':'';
-    var head='<div class="dhead"><div><div class="dtitle">'+esc(c.nome)+'</div><div class="dmeta"><span class="dtag">'+esc(c.mesa)+'</span><span>raio-X de '+esc(D.cycleLabel)+'</span>'+upd+'</div></div><button class="btn-green" id="pdi-save" onclick="PDIH.save()">⬇ Salvar PDI</button></div>';
+    var head='<div class="dhead"><div><div class="dtitle">'+esc(c.nome)+'</div><div class="dmeta"><span class="dtag">'+esc(c.mesa)+'</span><span>raio-X de '+esc(D.cycleLabel)+'</span>'+upd+'</div></div><div style="display:flex;gap:10px"><button class="btn-export" id="pdi-export" onclick="PDIH.exportPdf()">📄 Exportar PDF</button><button class="btn-green" id="pdi-save" onclick="PDIH.save()">⬇ Salvar PDI</button></div></div>';
     var raiox='<div class="raiox"><div class="stat s-amber"><div class="statnum">'+(rx.nota==null?'—':rx.nota.toFixed(1))+'</div><div class="statlab">NOTA MÉDIA</div><div class="statsub">'+(rx.avals||0)+' avaliações</div></div><div class="stat s-cyan"><div class="statnum">'+rx.prodCob+'/'+rx.prodTot+'</div><div class="statlab">PRODUTOS COBERTOS</div><div class="statsub">do catálogo</div></div><div class="stat s-green"><div class="statnum">'+rx.clientes+'</div><div class="statlab">CLIENTES ATENDIDOS</div><div class="statsub">no ciclo</div></div><div class="stat s-purple"><div class="statnum">'+rx.oport+'</div><div class="statlab">OPORTUNIDADES</div><div class="statsub">mapeadas pela IA</div></div></div>';
     var tabs='<div class="tabs"><div class="tab '+(ST.tab==='montar'?'active':'')+'" onclick="PDIH.tab(\'montar\')">✎ Montar PDI</div><div class="tab '+(ST.tab==='acomp'?'active':'')+'" onclick="PDIH.tab(\'acomp\')">◷ Acompanhamento</div></div>';
     el.innerHTML=head+raiox+ia+tabs+(ST.tab==='montar'?montarHTML(c):acompHTML(c));
