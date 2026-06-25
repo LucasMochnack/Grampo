@@ -11678,7 +11678,7 @@ _PDI_JS = r"""<script>
       checkins:p.checkins||[], updated_at:p.updated_at||''
     };
   });
-  var ST={selId: D.selId || (D.advisors[0]||{}).id, tab:'montar', search:'', mesa:''};
+  var ST={selId: D.selId || (D.advisors[0]||{}).id, tab:'montar', search:'', mesa:'', motOpen:false};
   function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
   function cur(){ for(var i=0;i<D.advisors.length;i++) if(D.advisors[i].id===ST.selId) return D.advisors[i]; return D.advisors[0]||null; }
   function nColor(n){ return n==null?'#5d667e':(n>=6?'#46cf8e':(n>=5.5?'#f0a800':'#ef6a6a')); }
@@ -11722,6 +11722,7 @@ _PDI_JS = r"""<script>
   PDIH.deText=function(i,v){ cur().pdi.desafios[i]=v; };
   PDIH.deDel=function(i){ cur().pdi.desafios.splice(i,1); renderDetail(); };
   PDIH.addDe=function(){ cur().pdi.desafios.push(''); renderDetail(); };
+  PDIH.motToggle=function(){ ST.motOpen=!ST.motOpen; renderDetail(); };
   PDIH.motA=function(v){ cur().pdi.motivacao.a=v; };
   PDIH.motB=function(v){ cur().pdi.motivacao.b=v; };
   PDIH.motC=function(v){ cur().pdi.motivacao.c=v; };
@@ -11770,7 +11771,10 @@ _PDI_JS = r"""<script>
     var SEC1='<div class="card"><div class="ctit">🧭 Autoavaliação — Onde estou?</div><div class="csub" style="margin-bottom:12px">Apoie-se no raio-X acima (nota, cobertura, oportunidades).</div><div class="twocol"><div><div class="ptit pt-green">💪 Pontos fortes</div>'+listCard(p.fortes,'fo','Habilidade/competência forte')+'<div style="margin-top:10px"><button class="btnadd" onclick="PDIH.addFo()">+ ponto forte</button></div></div><div><div class="ptit pt-amber">⚠ Áreas de melhoria</div>'+listCard(p.atencao,'at','Área que precisa desenvolver')+'<div style="margin-top:10px"><button class="btnadd" onclick="PDIH.addAt()">+ área</button></div></div></div></div>';
     var SECc='<div class="card"><div class="chd"><div><div class="ctit">🎯 Competências em foco</div><div class="csub">1 (Iniciante) a 5 (Excelente): marque onde está <b>hoje</b> e a <b>meta</b>.</div></div><button class="btnadd" onclick="PDIH.addComp()">+ competência</button></div><div class="cmplegend"><span><i class="lg lg-on"></i> nível atual</span><span><i class="lg lg-tgt"></i> alvo do ciclo</span><span class="lgscale">1 Iniciante · 2 Básico · 3 Intermediário · 4 Avançado · 5 Excelente</span></div>'+comps+'</div>';
     var SEC2='<div class="card"><div class="chd"><div><div class="ctit">🎯 Objetivos — Onde quero chegar?</div><div class="csub">Metas de desenvolvimento (SMART). Ex.: cobertura '+c.raiox.prodCob+'/'+c.raiox.prodTot+' → '+c.raiox.prodTot+'/'+c.raiox.prodTot+'. Cada meta vira um Objetivo no plano.</div></div><button class="btnadd" onclick="PDIH.addMeta()">+ objetivo</button></div>'+metas+'</div>';
-    var SEC3='<div class="card"><div class="ctit">💗 Motivação pessoal</div><div class="csub" style="margin-bottom:12px">Por que essas metas importam.</div><div class="motgrid">'+motf('A) Impacto pessoal: o que muda na sua vida se você conseguir (ou não)?','A',m.a)+motf('B) Impacto nas pessoas importantes: como isso afeta quem se importa com você?','B',m.b)+motf('C) Celebração e gratidão: como e com quem vai celebrar as conquistas?','C',m.c)+motf('D) Reconhecimento: quem você imagina que vai te elogiar?','D',m.d)+'</div></div>';
+    var motFilled=!!(m.a||m.b||m.c||m.d);
+    var motHdr='<div class="chd" style="cursor:pointer;margin-bottom:'+(ST.motOpen?'12px':'0')+'" onclick="PDIH.motToggle()"><div><div class="ctit">💗 Motivação pessoal <span style="font-size:11px;color:var(--mut2);font-weight:500">· opcional</span>'+(motFilled?' <span style="color:var(--green);font-size:11px;font-weight:700">• preenchida</span>':'')+'</div>'+(ST.motOpen?'<div class="csub">Por que essas metas importam.</div>':'')+'</div><span style="font-size:12.5px;color:var(--mut);white-space:nowrap">'+(ST.motOpen?'▾ ocultar':'▸ preencher')+'</span></div>';
+    var motBody=ST.motOpen?('<div class="motgrid">'+motf('A) Impacto pessoal: o que muda na sua vida se você conseguir (ou não)?','A',m.a)+motf('B) Impacto nas pessoas importantes: como isso afeta quem se importa com você?','B',m.b)+motf('C) Celebração e gratidão: como e com quem vai celebrar as conquistas?','C',m.c)+motf('D) Reconhecimento: quem você imagina que vai te elogiar?','D',m.d)+'</div>'):'';
+    var SEC3='<div class="card">'+motHdr+motBody+'</div>';
     var SEC4='<div class="card"><div class="chd"><div><div class="ctit">🧱 Desafios atuais</div><div class="csub">Principais obstáculos no trabalho hoje.</div></div><button class="btnadd" onclick="PDIH.addDe()">+ desafio</button></div>'+listCard(p.desafios,'de','Obstáculo no trabalho atual')+'</div>';
     var SEC5='<div class="card"><div class="ctit">🔧 Construção do plano de desenvolvimento</div><div class="csub" style="margin-bottom:12px">Para cada objetivo: o que fazer, como, início, fim e a métrica de sucesso.</div>'+planoHTML(p)+'</div>';
     return SEC1+SECc+SEC2+SEC3+SEC4+SEC5;
