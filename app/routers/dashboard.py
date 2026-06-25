@@ -13767,6 +13767,10 @@ def dashboard_mensagens(request: Request, db: Session = Depends(get_db)):
 # ── Disparos / Campanhas Dashboard ────────────────────────────────────────────
 
 _DISP_REPLY_WINDOW = timedelta(days=7)
+# Capture of mass-campaign (MESSAGE OUT) disparos started when the webhook
+# subscription was created. Nothing before this is reliably measurable, so the
+# Disparos page floors everything at this date.
+_DISPAROS_CAPTURE_START = datetime(2026, 6, 24, 0, 0, 0, tzinfo=timezone.utc)
 
 
 def _disparo_template_id(payload: dict) -> str:
@@ -13806,6 +13810,8 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
         since = (datetime.now(BRASILIA) - timedelta(days=dias)).replace(
             hour=0, minute=0, second=0, microsecond=0
         ).astimezone(timezone.utc)
+        if since < _DISPAROS_CAPTURE_START:
+            since = _DISPAROS_CAPTURE_START
         _limit = 50000 if dias >= 90 else 30000
         all_events, groups, phone_learned, client_agent_map, client_name_map = _load_period_pipeline(
             db, canal, since, _limit
@@ -13874,12 +13880,14 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
                     "reply_mins": (int((reply_ts - ts).total_seconds() // 60) if reply_ts else None),
                     "engaged": reply_count >= 2,
                     "avanco": avanco,
+                    "disp_ts": ts,
                 }
 
         rows = []
         g_recip, g_repl, g_eng, g_av = set(), set(), set(), set()
         reply_mins_all = []
         tpl_roll: dict = {}
+        phone_cards: dict = {}
         for (tid, date_br, source), camp in campaigns.items():
             recs = list(camp["recipients"].values())
             sent = len(recs)
@@ -13900,6 +13908,25 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
             tr = tpl_roll.setdefault(tid, {"name": name, "sent": 0, "replied": 0})
             tr["sent"] += sent
             tr["replied"] += repl
+            # Per-client aggregation for the kanban (one card per phone)
+            for r in recs:
+                ph = r["phone"]
+                pc = phone_cards.get(ph)
+                if pc is None:
+                    pc = phone_cards[ph] = {
+                        "phone": ph, "name": r["name"], "agent": r["agent"],
+                        "replied": False, "reply_mins": None, "engaged": False,
+                        "avanco": False, "templates": set(), "last_ts": None,
+                    }
+                pc["replied"] = pc["replied"] or r["replied"]
+                if r["reply_mins"] is not None:
+                    pc["reply_mins"] = r["reply_mins"] if pc["reply_mins"] is None else min(pc["reply_mins"], r["reply_mins"])
+                pc["engaged"] = pc["engaged"] or r["engaged"]
+                pc["avanco"] = pc["avanco"] or r["avanco"]
+                pc["templates"].add(name)
+                dts = r.get("disp_ts")
+                if dts and (pc["last_ts"] is None or dts > pc["last_ts"]):
+                    pc["last_ts"] = dts
             rows.append({
                 "tid": tid, "name": name, "date": date_br, "source": source,
                 "sent": sent, "replied": repl, "engaged": eng, "avanco": av,
@@ -13920,9 +13947,28 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
             key=lambda x: x["sent"], reverse=True,
         )
 
+        kanban_cards = []
+        for pc in phone_cards.values():
+            if pc["avanco"] or pc["engaged"]:
+                auto = "em_conversa"
+            elif pc["replied"]:
+                auto = "respondeu"
+            else:
+                auto = "aguardando"
+            kanban_cards.append({
+                "phone": pc["phone"], "name": pc["name"], "agent": pc["agent"],
+                "replied": pc["replied"], "reply_mins": pc["reply_mins"],
+                "engaged": pc["engaged"], "avanco": pc["avanco"],
+                "templates": sorted(pc["templates"])[:3],
+                "last_date": (pc["last_ts"].astimezone(BRASILIA).strftime("%d/%m") if pc["last_ts"] else ""),
+                "last_ts_iso": (pc["last_ts"].isoformat() if pc["last_ts"] else ""),
+                "auto_stage": auto,
+            })
+
         return {
             "rows": table_rows,
             "tpl_rows": tpl_rows,
+            "kanban_cards": kanban_cards,
             "send_events": send_events,
             "recipients": len(g_recip),
             "replied": len(g_repl),
@@ -13933,6 +13979,84 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
         }
 
     return _cache.cached(perm_key, 60.0, _compute)
+
+
+# ── Kanban stage persistence ──────────────────────────────────────────────────
+_DISPARO_STAGES_KEY = "disparo_stages"
+_DISPARO_STAGE_IDS = ("aguardando", "respondeu", "em_conversa", "reuniao", "ganho", "perdido")
+
+
+def _get_disparo_stages(db: Session) -> dict:
+    raw = get_setting(db, _DISPARO_STAGES_KEY)
+    if not raw:
+        return {}
+    try:
+        d = json.loads(raw)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _set_disparo_stage(db: Session, phone: str, stage: str) -> None:
+    if stage not in _DISPARO_STAGE_IDS:
+        return
+    stages = _get_disparo_stages(db)
+    stages[_real_phone(phone)] = {"stage": stage, "at": datetime.now(timezone.utc).isoformat()}
+    set_setting(db, _DISPARO_STAGES_KEY, json.dumps(stages, ensure_ascii=False))
+
+
+@router.post("/dashboard/disparo-stage", include_in_schema=False)
+def disparo_stage_api(request: Request, payload: dict = Body(...), db: Session = Depends(get_db)):
+    access = _get_access(request, db)
+    if access is None or (access or {}).get("role") == "compliance":
+        return JSONResponse({"ok": False, "error": "auth"}, status_code=401)
+    phone = str(payload.get("phone", "") or "").strip()
+    stage = str(payload.get("stage", "") or "").strip()
+    if not phone or stage not in _DISPARO_STAGE_IDS:
+        return JSONResponse({"ok": False, "error": "params"}, status_code=400)
+    _set_disparo_stage(db, phone, stage)
+    db.close()
+    return JSONResponse({"ok": True})
+
+
+_DISPAROS_CSS = """
+.vbtn{background:#111a2e;border:1px solid #1a2540;color:#8a96aa;padding:6px 14px;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit}
+.vbtn.on{background:#16233f;color:#e8ecf1;border-color:#2a3a5a}
+.kboard{display:flex;gap:12px;overflow-x:auto;padding-bottom:12px;align-items:flex-start}
+.kcol{flex:0 0 234px;background:#0c1424;border:1px solid #1a2540;border-radius:10px;display:flex;flex-direction:column;min-height:120px}
+.kcol-h{display:flex;justify-content:space-between;align-items:center;gap:6px;padding:9px 12px;font-size:11.5px;font-weight:700;color:#c8d4e8;border-bottom:1px solid #1a2540}
+.kcount{background:#1a2540;color:#8a96aa;border-radius:10px;padding:1px 8px;font-size:10px;font-weight:700}
+.kcol-body{padding:8px;display:flex;flex-direction:column;gap:8px;overflow-y:auto;max-height:72vh;min-height:60px}
+.kcard{background:#111a2e;border:1px solid #1a2540;border-radius:8px;padding:9px 11px;cursor:grab}
+.kcard:hover{border-color:#2a3a5a}
+.kcard:active{cursor:grabbing}
+.kcard a{text-decoration:none}
+"""
+
+_DISPAROS_KANBAN_JS = """
+<script>
+function dispView(v){
+  var t=document.getElementById('disp-tabela'),k=document.getElementById('disp-kanban');
+  var bt=document.getElementById('btn-tabela'),bk=document.getElementById('btn-kanban');
+  if(t)t.style.display=(v==='kanban'?'none':'block');
+  if(k)k.style.display=(v==='kanban'?'block':'none');
+  if(bt)bt.className=(v==='kanban'?'vbtn':'vbtn on');
+  if(bk)bk.className=(v==='kanban'?'vbtn on':'vbtn');
+}
+var kDragPhone=null;
+function kDragStart(e){kDragPhone=e.currentTarget.getAttribute('data-phone');try{e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',kDragPhone);}catch(_){}}
+function kDrop(e){
+  e.preventDefault();
+  var col=e.currentTarget;var stage=col.getAttribute('data-stage');
+  var phone=kDragPhone||((e.dataTransfer&&e.dataTransfer.getData('text/plain'))||'');
+  if(!phone)return;
+  var card=document.querySelector('.kcard[data-phone="'+phone+'"]');
+  var body=col.querySelector('.kcol-body');
+  if(card&&body){var emp=body.querySelector('.kempty');if(emp)emp.remove();body.insertBefore(card,body.firstChild);}
+  fetch('/dashboard/disparo-stage',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone:phone,stage:stage}),cache:'no-store'}).catch(function(){});
+}
+</script>
+"""
 
 
 @router.get("/dashboard/disparos", response_class=HTMLResponse, include_in_schema=False)
@@ -13947,10 +14071,11 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
         dias = 30
     if dias not in (7, 30, 90):
         dias = 30
-    origem = (request.query_params.get("origem", "todos") or "todos").lower()
+    origem = (request.query_params.get("origem", "campanha") or "campanha").lower()
     if origem not in ("todos", "campanha", "atendimento"):
-        origem = "todos"
+        origem = "campanha"
     data = _disparos_data(db, canal, dias, access, origem)
+    stages_map = _get_disparo_stages(db)
     db.close()
 
     def _fmt_mins(m):
@@ -14037,16 +14162,63 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
         camp_html = ('<tr><td colspan="8" style="text-align:center;color:#4a5a7a;padding:30px">'
                      'Nenhum disparo em massa no período. As campanhas começam a aparecer a partir de 24/06/2026.</td></tr>')
 
+    # ── Kanban: tratativa por cliente que recebeu disparo ─────────────────────
+    _STAGE_DEFS = [
+        ("aguardando", "Aguardando resposta", "#8a96aa"),
+        ("respondeu", "Respondeu", "#4a9eff"),
+        ("em_conversa", "Em conversa / interesse", "#0fa968"),
+        ("reuniao", "Reunião agendada", "#c4a3ff"),
+        ("ganho", "Ganho — conta/aporte", "#16c784"),
+        ("perdido", "Sem interesse / perdido", "#ef6b73"),
+    ]
+    _buckets = {s[0]: [] for s in _STAGE_DEFS}
+    for c in sorted(data["kanban_cards"], key=lambda x: x["last_ts_iso"], reverse=True):
+        st = (stages_map.get(_real_phone(c["phone"])) or {}).get("stage") or c["auto_stage"]
+        if st not in _buckets:
+            st = c["auto_stage"]
+        _buckets[st].append(c)
+
+    def _kcard(c):
+        rp = _real_phone(c["phone"])
+        nm = html_mod.escape(c["name"]) if c["name"] else html_mod.escape(rp)
+        ag = html_mod.escape(_short_agent_name(c["agent"])) if c["agent"] else "—"
+        tpls = html_mod.escape(" · ".join(c["templates"])) or "—"
+        if c["replied"]:
+            stt = f'<span style="color:#0fa968">✓ respondeu · {_fmt_mins(c["reply_mins"])}</span>'
+        else:
+            stt = '<span style="color:#ef6b73">✗ sem resposta</span>'
+        av = ' <span style="color:#c4a3ff">· avanço</span>' if c["avanco"] else ""
+        conv = f'/dashboard/conversa?phone={_url_quote(c["phone"], safe="")}&canal={canal}'
+        return (f'<div class="kcard" draggable="true" data-phone="{html_mod.escape(rp)}" ondragstart="kDragStart(event)">'
+                f'<div style="font-weight:600;font-size:12.5px;color:#e8ecf1">{nm}</div>'
+                f'<div style="font-size:10.5px;color:#5a6a8a;margin:2px 0">{c["last_date"]} · {ag}</div>'
+                f'<div style="font-size:10px;color:#8a96aa;margin-bottom:5px">📢 {tpls}</div>'
+                f'<div style="font-size:10.5px;margin-bottom:3px">{stt}{av}</div>'
+                f'<a href="{conv}" target="_blank" style="font-size:10px;color:#0fa968">abrir conversa →</a>'
+                f'</div>')
+
+    kanban_cols = ""
+    for sid, label, color in _STAGE_DEFS:
+        cards = _buckets[sid]
+        body = "".join(_kcard(c) for c in cards[:200]) or '<div class="kempty" style="color:#3a4a6a;font-size:11px;text-align:center;padding:14px">—</div>'
+        kanban_cols += (f'<div class="kcol" data-stage="{sid}" ondragover="event.preventDefault()" ondrop="kDrop(event)">'
+                        f'<div class="kcol-h" style="border-top:3px solid {color}"><span>{label}</span><span class="kcount">{len(cards)}</span></div>'
+                        f'<div class="kcol-body">{body}</div></div>')
+    total_cards = sum(len(v) for v in _buckets.values())
+
     nav = _nav_html("disparos", canal=canal, is_admin=(access or {}).get('role') == 'admin', title="Disparos")
-    return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo — Disparos</title>{COMMON_CSS}</head><body>
+    return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo — Disparos</title>{COMMON_CSS}<style>{_DISPAROS_CSS}</style></head><body>
 {nav}
 <div class="container">
-  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px">
-    <p style="color:#5a6a8a;font-size:12px;margin:0;max-width:560px">Performance dos envios em massa (Ferramenta de Campanhas) e templates do atendimento. <b>Resposta</b> = o cliente respondeu em até 7 dias após o disparo.</p>
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:8px">
+    <p style="color:#5a6a8a;font-size:12px;margin:0;max-width:520px">Performance dos disparos. <b>Resposta</b> = o cliente respondeu em até 7 dias após o disparo.</p>
     <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">
       <div style="display:flex;gap:6px">{origem_btns}</div>
       <div style="display:flex;gap:6px">{period_btns}</div>
     </div>
+  </div>
+  <div style="background:#0d1a2e;border:1px solid #1a2540;border-left:3px solid #c4a3ff;border-radius:0 8px 8px 0;padding:8px 14px;font-size:11.5px;color:#8a96aa;margin-bottom:16px">
+    🔎 Dados a partir de <b>24/06/2026</b> (início da captura). Disparos anteriores a essa data não foram registrados e não aparecem aqui.
   </div>
   <div class="kpi-row">
     <div class="kpi" style="border-top:3px solid #c4a3ff"><div class="val">{data["send_events"]}</div><div class="label">Disparos enviados</div></div>
@@ -14056,24 +14228,37 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
     <div class="kpi" style="border-top:3px solid #c4a3ff"><div class="val" style="color:#c4a3ff">{data["avanco"]}</div><div class="label">Avanço (indício)</div></div>
   </div>
 
-  <div class="card" style="margin-bottom:20px">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="width:8px;height:8px;border-radius:50%;background:#c4a3ff;display:inline-block"></span><h2 style="margin:0;font-size:15px">Taxa de resposta por template</h2></div>
-    <p style="color:#5a6a8a;font-size:11px;margin-bottom:12px">Acumulado no período — qual template mais engaja (todos os envios, incl. individuais).</p>
-    <table><thead><tr><th>Template</th><th style="text-align:center">Enviados</th><th style="text-align:center">Responderam</th><th style="text-align:center">Taxa</th></tr></thead><tbody>{tpl_html}</tbody></table>
+  <div style="display:flex;gap:8px;margin:4px 0 16px">
+    <button id="btn-tabela" class="vbtn on" onclick="dispView('tabela')">📊 Tabela</button>
+    <button id="btn-kanban" class="vbtn" onclick="dispView('kanban')">🗂 Kanban — tratativas</button>
   </div>
 
-  <div class="card">
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="width:8px;height:8px;border-radius:50%;background:#c4a3ff;display:inline-block"></span><h2 style="margin:0;font-size:15px">Campanhas / disparos em massa</h2></div>
-    <p style="color:#5a6a8a;font-size:11px;margin-bottom:12px">Cada linha = um template enviado num dia (2+ destinatários). Clique pra ver quem recebeu e quem respondeu. <span style="color:#c4a3ff">■</span> Campanha em massa · <span style="color:#4a9eff">■</span> Atendimento. <b>Avanço</b> = indício de reunião/movimentação na conversa (aproximado).</p>
-    <table>
-      <thead><tr><th>Origem</th><th>Template</th><th>Data</th><th style="text-align:center">Enviados</th><th style="text-align:center">Resp.</th><th style="text-align:center">Taxa</th><th style="text-align:center">Tempo méd.</th><th style="text-align:center">Avanço</th></tr></thead>
-      <tbody>{camp_html}</tbody>
-    </table>
+  <div id="disp-tabela">
+    <div class="card" style="margin-bottom:20px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="width:8px;height:8px;border-radius:50%;background:#c4a3ff;display:inline-block"></span><h2 style="margin:0;font-size:15px">Taxa de resposta por template</h2></div>
+      <p style="color:#5a6a8a;font-size:11px;margin-bottom:12px">Acumulado no período — qual template mais engaja (todos os envios, incl. individuais).</p>
+      <table><thead><tr><th>Template</th><th style="text-align:center">Enviados</th><th style="text-align:center">Responderam</th><th style="text-align:center">Taxa</th></tr></thead><tbody>{tpl_html}</tbody></table>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="width:8px;height:8px;border-radius:50%;background:#c4a3ff;display:inline-block"></span><h2 style="margin:0;font-size:15px">Campanhas / disparos em massa</h2></div>
+      <p style="color:#5a6a8a;font-size:11px;margin-bottom:12px">Cada linha = um template enviado num dia (2+ destinatários). Clique pra ver quem recebeu e quem respondeu. <span style="color:#c4a3ff">■</span> Campanha em massa · <span style="color:#4a9eff">■</span> Atendimento. <b>Avanço</b> = indício de reunião/movimentação na conversa (aproximado).</p>
+      <table>
+        <thead><tr><th>Origem</th><th>Template</th><th>Data</th><th style="text-align:center">Enviados</th><th style="text-align:center">Resp.</th><th style="text-align:center">Taxa</th><th style="text-align:center">Tempo méd.</th><th style="text-align:center">Avanço</th></tr></thead>
+        <tbody>{camp_html}</tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="disp-kanban" style="display:none">
+    <p style="color:#5a6a8a;font-size:11px;margin:0 0 12px">Cada cartão = um cliente que recebeu disparo ({total_cards} no total). As 3 primeiras colunas são automáticas; arraste o cartão pra <b>Reunião</b>, <b>Ganho</b> ou <b>Perdido</b> — fica salvo. Cartão movido na mão permanece onde você deixou.</p>
+    <div class="kboard">{kanban_cols}</div>
   </div>
 </div>
 <script>
 function toggleDisp(id){{var r=document.getElementById(id);if(r){{r.style.display=(r.style.display==='none'?'table-row':'none');}}}}
 </script>
+{_DISPAROS_KANBAN_JS}
 </body></html>""")
 
 
