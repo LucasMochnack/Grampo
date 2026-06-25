@@ -13771,6 +13771,10 @@ _DISP_REPLY_WINDOW = timedelta(days=7)
 # subscription was created. Nothing before this is reliably measurable, so the
 # Disparos page floors everything at this date.
 _DISPAROS_CAPTURE_START = datetime(2026, 6, 24, 0, 0, 0, tzinfo=timezone.utc)
+# A "disparo em massa" = the same template sent to MORE THAN 10 clients in a
+# short period (we group by template + day). Smaller batches / one-off sends
+# don't count as mass campaigns and are excluded from the page.
+_DISPARO_MASSA_MIN = 11
 
 
 def _disparo_template_id(payload: dict) -> str:
@@ -13833,7 +13837,6 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
               "abrir conta", "abertura de conta", "trazer o recurso", "trazer recurso")
 
         campaigns: dict = {}
-        send_events = 0
         for phone, evs in groups.items():
             if _real_phone(phone) == cp:
                 continue
@@ -13851,7 +13854,6 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
                 source = "Campanha" if (p.get("type", "") or "").upper() == "MESSAGE" else "Atendimento"
                 if origem in ("campanha", "atendimento") and source.lower() != origem:
                     continue
-                send_events += 1
                 tid = _disparo_template_id(p)
                 date_br = ts.astimezone(BRASILIA).strftime("%d/%m")
                 key = (tid or "—", date_br, source)
@@ -13892,9 +13894,13 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
         reply_mins_all = []
         tpl_roll: dict = {}
         phone_cards: dict = {}
+        send_events = 0
         for (tid, date_br, source), camp in campaigns.items():
             recs = list(camp["recipients"].values())
             sent = len(recs)
+            if sent < _DISPARO_MASSA_MIN:   # não é disparo em massa (mais de 10 clientes)
+                continue
+            send_events += sent
             repl = sum(1 for r in recs if r["replied"])
             eng = sum(1 for r in recs if r["engaged"])
             av = sum(1 for r in recs if r["avanco"])
@@ -13939,10 +13945,8 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
                 "recipients": sorted(recs, key=lambda r: (not r["replied"], r["reply_mins"] if r["reply_mins"] is not None else 10**9)),
             })
 
-        # Campaign table: focus on batches (2+ recipients), most recent / biggest first
-        table_rows = [r for r in rows if r["sent"] >= 2]
-        table_rows.sort(key=lambda r: (r["date"], r["sent"]), reverse=True)
-        table_rows = table_rows[:150]
+        # Todas as linhas já são disparos em massa (>10 destinatários); só ordena.
+        table_rows = sorted(rows, key=lambda r: (r["date"], r["sent"]), reverse=True)[:150]
 
         tpl_rows = sorted(
             [{"name": v["name"], "sent": v["sent"], "replied": v["replied"],
@@ -14198,7 +14202,7 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
         )
     if not camp_html:
         camp_html = ('<tr><td colspan="7" style="text-align:center;color:#4a5a7a;padding:30px">'
-                     'Nenhum disparo em massa no período. As campanhas começam a aparecer a partir de 24/06/2026.</td></tr>')
+                     'Nenhum disparo em massa (mais de 10 clientes) no período. Captura a partir de 24/06/2026.</td></tr>')
 
     # ── Kanban: tratativa por cliente que recebeu disparo ─────────────────────
     _STAGE_DEFS = [
@@ -14266,7 +14270,7 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
 {nav}
 <div class="container">
   <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:8px">
-    <p style="color:#5a6a8a;font-size:12px;margin:0;max-width:560px">Performance dos <b>disparos em massa</b> (Ferramenta de Campanhas da Zenvia). <b>Resposta</b> = o cliente respondeu em até 7 dias após o disparo.</p>
+    <p style="color:#5a6a8a;font-size:12px;margin:0;max-width:560px">Performance dos <b>disparos em massa</b> — mesmo template enviado a <b>mais de 10 clientes</b> num mesmo dia (Ferramenta de Campanhas). <b>Resposta</b> = o cliente respondeu em até 7 dias.</p>
     <div style="display:flex;gap:6px">{period_btns}</div>
   </div>
   <div style="background:#0d1a2e;border:1px solid #1a2540;border-left:3px solid #c4a3ff;border-radius:0 8px 8px 0;padding:8px 14px;font-size:11.5px;color:#8a96aa;margin-bottom:14px">
@@ -14294,7 +14298,7 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
 
     <div class="card">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="width:8px;height:8px;border-radius:50%;background:#c4a3ff;display:inline-block"></span><h2 style="margin:0;font-size:15px">Campanhas / disparos em massa</h2></div>
-      <p style="color:#5a6a8a;font-size:11px;margin-bottom:12px">Cada linha = um template disparado num dia (2+ destinatários). Clique pra ver quem recebeu e quem respondeu. <b>Avanço</b> = indício de reunião/movimentação na conversa (aproximado).</p>
+      <p style="color:#5a6a8a;font-size:11px;margin-bottom:12px">Cada linha = um disparo em massa (mesmo template, 11+ clientes, num dia). Clique pra ver quem recebeu e quem respondeu. <b>Avanço</b> = indício de reunião/movimentação na conversa (aproximado).</p>
       <table>
         <thead><tr><th>Template</th><th>Data</th><th style="text-align:center">Enviados</th><th style="text-align:center">Resp.</th><th style="text-align:center">Taxa</th><th style="text-align:center">Tempo méd.</th><th style="text-align:center">Avanço</th></tr></thead>
         <tbody>{camp_html}</tbody>
