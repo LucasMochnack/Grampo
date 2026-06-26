@@ -13986,7 +13986,8 @@ def dashboard_mensagens(request: Request, db: Session = Depends(get_db)):
 # ── Patch Notes ───────────────────────────────────────────────────────────────
 # Changelog curado (legível pro time). Mais recente no topo. t: new/imp/fix.
 _PATCH_NOTES = [
-    {"date": "26/06/2026", "title": "Avaliação dos assessores mais justa", "items": [
+    {"date": "26/06/2026", "title": "Patch Notes e avaliação mais justa", "items": [
+        {"t": "new", "x": "Nova aba <b>Patch Notes</b> (esta página) — daqui pra frente toda atualização do Grampo fica registrada aqui pro time acompanhar."},
         {"t": "fix", "x": "A IA parou de tratar como <b>erro</b> coisas que não são falha de atendimento: responder por <b>áudio</b>, <b>tom/linguagem informal</b> (abreviações, emojis, 'Legal!') e o detalhe de 'não aproveitou o 👍'. Os erros reais — atrasos, mensagens duplicadas, não responder, informação errada, vazamento de dado — continuam contando normalmente."},
         {"t": "imp", "x": "Os indicadores que definem a nota (tempo de resposta, clareza, cordialidade, necessidade atendida, proatividade) seguem os mesmos — só deixamos de descontar por estilo/formato."},
     ]},
