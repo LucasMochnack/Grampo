@@ -10858,17 +10858,24 @@ def _drop_channel_false_positives(erros: list) -> list:
     usar WhatsApp (canal oficial criptografado) ou tratar dados do cliente nele; e
     responder por áudio (formato legítimo). Aplica-se aos dados já pontuados; o
     prompt já evita gerar novos."""
+    import unicodedata
     out = []
     for e in erros:
-        low = (e or "").lower()
-        if "criptograf" in low:
+        nn = "".join(c for c in unicodedata.normalize("NFD", (e or "").lower())
+                     if unicodedata.category(c) != "Mn")
+        if "criptograf" in nn:
             continue
-        if ("whatsapp" in low or "canal" in low or "canais" in low or "plataforma oficial" in low) and any(
-            w in low for w in ("conformidade", "segur", "lgpd", "criptog", "privacidade", "seguradora")
+        if ("whatsapp" in nn or "canal" in nn or "canais" in nn or "plataforma oficial" in nn) and any(
+            w in nn for w in ("conformidade", "segur", "lgpd", "criptog", "privacidade", "seguradora")
         ):
             continue
-        # Áudio é forma legítima de atender — qualquer crítica a áudio sai.
-        if "udio" in low:
+        # Áudio é forma legítima de atender: tira a CRÍTICA ao formato áudio, mas
+        # mantém problemas reais que apenas mencionam áudio (atraso, duplicação).
+        _real = any(k in nn for k in (
+            "demor", "espera", "atras", "hora", "duplicad", "reenvi", "repeti",
+            "duas vezes", "tres vezes", "seguida", "spam", "multipl", "mesma mensagem",
+            "mesmo audio", "mesmos audio"))
+        if "udio" in nn and not _real:
             continue
         out.append(e)
     return out
