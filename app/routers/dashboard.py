@@ -10867,10 +10867,8 @@ def _drop_channel_false_positives(erros: list) -> list:
             w in low for w in ("conformidade", "segur", "lgpd", "criptog", "privacidade", "seguradora")
         ):
             continue
-        # Áudio é forma legítima de atender — não é erro de qualidade.
-        if "udio" in low and any(
-            w in low for w in ("ouvir", "escutar", "transcri", "confirmar", "resumo escrit", "prefer")
-        ):
+        # Áudio é forma legítima de atender — qualquer crítica a áudio sai.
+        if "udio" in low:
             continue
         out.append(e)
     return out
