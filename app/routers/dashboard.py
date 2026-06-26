@@ -4351,7 +4351,7 @@ NÃO considere como erro do assessor (não liste em "erros" nem baixe a nota por
 - Tratar dados pessoais/sensíveis do cliente (saúde, documentos, valores, CPF) pelo WhatsApp no atendimento normal — é o canal sancionado. Só vira erro se o assessor vazou para a pessoa ERRADA, encaminhou para fora da empresa, ou expôs publicamente.
 - NUNCA afirme questões técnicas de segurança/criptografia ("sem criptografia", "canal inseguro", "risco de conformidade pelo canal") — isso foge do escopo e não é responsabilidade do assessor.
 - Responder por ÁUDIO é uma forma legítima de atender. NÃO liste como erro nem baixe a nota por usar áudio, por não confirmar antes se o cliente podia ouvir, ou por não mandar transcrição/resumo. Só vira problema se o cliente DISSE que não conseguia ouvir (ou pediu texto) e foi ignorado.
-- TOM e formalidade NÃO são erro: linguagem informal, abreviações ('vc', 'pra', 'd um'), emojis, ou respostas curtas ('Legal!', '👍') são aceitáveis nesse contexto. Só vira problema se a mensagem ficou ambígua/incompreensível a ponto do cliente não entender. NUNCA liste "linguagem informal", "pouco profissional", "respondeu só com emoji" como erro, nem sugira "ser mais formal/profissional".
+- TOM e formalidade NÃO são erro: linguagem informal, abreviações ('vc', 'pra', 'd um'), emojis, ou respostas curtas ('Legal!', '👍') são aceitáveis nesse contexto. Só vira problema se a mensagem ficou ambígua/incompreensível a ponto do cliente não entender. NUNCA liste "linguagem informal", "pouco profissional", "respondeu só com emoji" como erro, nem sugira "ser mais formal/profissional". Também NÃO cobre "não aproveitou o 👍/emoji/reação do cliente para dar próximo passo" — um 👍 não exige follow-up. (Mas aproveitar uma ABERTURA real do cliente — pergunta, reclamação, interesse declarado — continua valendo.)
 Avalie SÓ a qualidade do atendimento (clareza, agilidade, cordialidade, resolução), não o estilo/tom/canal/formato de comunicação. Isso vale também para "pontos_melhoria": NÃO sugira trocar áudio por texto, mandar transcrição/resumo de áudio, mudar de canal/criptografia, nem usar tom mais formal.
 
 Use frases curtas e PADRONIZADAS (reaproveitáveis entre conversas), não descrições longas.
@@ -10883,6 +10883,12 @@ def _drop_channel_false_positives(erros: list) -> list:
         # Tom/formalidade não é erro de qualidade (linguagem informal, emoji, etc.).
         if any(k in nn for k in (
             "informal", "pouco profissional", "emoji", "giria", "coloquial", "abreviac"
+        )):
+            continue
+        # Nitpick: cobrar que o assessor "não aproveitou" um 👍/emoji/reação curta
+        # do cliente para dar próximo passo. (Abertura substantiva continua sendo erro.)
+        if ("👍" in e or "👌" in e) or ("nao aproveitou" in nn and any(
+            w in nn for w in ("emoji", "reacao", "curtida")
         )):
             continue
         out.append(e)
