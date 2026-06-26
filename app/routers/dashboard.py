@@ -4351,7 +4351,8 @@ NÃO considere como erro do assessor (não liste em "erros" nem baixe a nota por
 - Tratar dados pessoais/sensíveis do cliente (saúde, documentos, valores, CPF) pelo WhatsApp no atendimento normal — é o canal sancionado. Só vira erro se o assessor vazou para a pessoa ERRADA, encaminhou para fora da empresa, ou expôs publicamente.
 - NUNCA afirme questões técnicas de segurança/criptografia ("sem criptografia", "canal inseguro", "risco de conformidade pelo canal") — isso foge do escopo e não é responsabilidade do assessor.
 - Responder por ÁUDIO é uma forma legítima de atender. NÃO liste como erro nem baixe a nota por usar áudio, por não confirmar antes se o cliente podia ouvir, ou por não mandar transcrição/resumo. Só vira problema se o cliente DISSE que não conseguia ouvir (ou pediu texto) e foi ignorado.
-Avalie SÓ a qualidade do atendimento (clareza, agilidade, cordialidade, resolução), não o estilo/canal/formato de comunicação. Isso vale também para "pontos_melhoria": NÃO sugira trocar áudio por texto, mandar transcrição/resumo de áudio, nem mudar de canal/criptografia.
+- TOM e formalidade NÃO são erro: linguagem informal, abreviações ('vc', 'pra', 'd um'), emojis, ou respostas curtas ('Legal!', '👍') são aceitáveis nesse contexto. Só vira problema se a mensagem ficou ambígua/incompreensível a ponto do cliente não entender. NUNCA liste "linguagem informal", "pouco profissional", "respondeu só com emoji" como erro, nem sugira "ser mais formal/profissional".
+Avalie SÓ a qualidade do atendimento (clareza, agilidade, cordialidade, resolução), não o estilo/tom/canal/formato de comunicação. Isso vale também para "pontos_melhoria": NÃO sugira trocar áudio por texto, mandar transcrição/resumo de áudio, mudar de canal/criptografia, nem usar tom mais formal.
 
 Use frases curtas e PADRONIZADAS (reaproveitáveis entre conversas), não descrições longas.
 
@@ -10876,6 +10877,11 @@ def _drop_channel_false_positives(erros: list) -> list:
             "duas vezes", "tres vezes", "seguida", "spam", "multipl", "mesma mensagem",
             "mesmo audio", "mesmos audio"))
         if "udio" in nn and not _real:
+            continue
+        # Tom/formalidade não é erro de qualidade (linguagem informal, emoji, etc.).
+        if any(k in nn for k in (
+            "informal", "pouco profissional", "emoji", "giria", "coloquial", "abreviac"
+        )):
             continue
         out.append(e)
     return out
