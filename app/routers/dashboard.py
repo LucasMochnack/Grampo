@@ -10872,11 +10872,13 @@ def _drop_channel_false_positives(erros: list) -> list:
             continue
         # Áudio é forma legítima de atender: tira a CRÍTICA ao formato áudio, mas
         # mantém problemas reais que apenas mencionam áudio (atraso, duplicação).
-        _real = any(k in nn for k in (
-            "demor", "espera", "atras", "hora", "duplicad", "reenvi", "repeti",
-            "duas vezes", "tres vezes", "seguida", "spam", "multipl", "mesma mensagem",
-            "mesmo audio", "mesmos audio"))
-        if "udio" in nn and not _real:
+        # mantém só se for problema real que apenas menciona áudio: atraso, ou
+        # RE-ENVIO do mesmo áudio (duplicação). "vários/múltiplos áudios" sozinho
+        # ou "sem transcrição" é crítica de formato → removido.
+        _audio_real = any(k in nn for k in (
+            "demor", "espera", "atras", "hora", "reenvi", "reencamin", "novamente",
+            "duplicad", "mesmo audio", "mesmos audio"))
+        if "udio" in nn and not _audio_real:
             continue
         # Tom/formalidade não é erro de qualidade (linguagem informal, emoji, etc.).
         if any(k in nn for k in (
