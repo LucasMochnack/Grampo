@@ -2728,6 +2728,7 @@ _PAGE_TITLES: dict[str, str] = {
     "sem-resposta": "Sem Resposta",
     "copiloto":   "Copiloto IA",
     "oportunidades": "Oportunidades",
+    "pipeline":   "Pipeline (R$)",
     "disparos":   "Disparos",
     "patch-notes": "Patch Notes",
     "temas":      "Temas",
@@ -2799,6 +2800,7 @@ def _nav_html(active: str, extra: str = "", canal: str = "", unacked_alerts: int
             + _ni("sem-resposta", "Sem Resposta", f"/dashboard/sem-resposta{canal_qs}")
             + _ni("copiloto", "Copiloto IA", f"/dashboard/copiloto{canal_qs}")
             + _ni("oportunidades", "Oportunidades", f"/dashboard/oportunidades{canal_qs}")
+            + _ni("pipeline", "Pipeline (R$)", f"/dashboard/pipeline{canal_qs}")
             + _ni("agentes", "Agentes", f"/dashboard/agentes{canal_qs}")
             + '</div>'
             + '<div class="nav-group"><div class="nav-group-label">ANÁLISE</div>'
@@ -5676,27 +5678,20 @@ def _opp_card_html(i: dict) -> str:
     )
 
 
-@router.get("/dashboard/oportunidades", response_class=HTMLResponse, include_in_schema=False)
-def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
-    access = _get_access(request, db)
-    if access is None:
-        return RedirectResponse("/dashboard/login", status_code=302)
-    is_admin = (access or {}).get("role") == "admin"
-    canal    = _req_canal(request, default="")
-    tipo_f   = (request.query_params.get("tipo") or "").strip()
-    agente_f = (request.query_params.get("agente") or "").strip()
-    time_f   = (request.query_params.get("time") or "").strip()
-    try:
-        days_f = max(1, min(365, int(request.query_params.get("dias") or 30)))
-    except (TypeError, ValueError):
-        days_f = 30
+def _opp_all_items(db: Session, canal: str, access: dict, days: int = 30) -> list:
+    """Carrega as oportunidades vigentes e devolve os itens já normalizados.
 
+    Faz o dedup por telefone (mantém só a linha has_opp=1 mais recente e a
+    descarta se um re-scan mais novo concluiu que não há mais oportunidade),
+    aplica descartes (falso positivo) e pins de etapa, e calcula
+    stage/parada/valor por oportunidade. É a FONTE ÚNICA usada por
+    /oportunidades (kanban) e /pipeline (ranking por assessor) — assim os R$
+    em aberto/ganho/risco batem entre as duas páginas. Não fecha a sessão."""
     from app.models import ConversationOpportunity as _CO
     from sqlalchemy import func as _func
     _now_br = datetime.now(BRASILIA)
-    # Janela "Últimos N dias" — agora filtra o board de verdade (antes só afetava
-    # a próxima varredura), via last_msg_at.
-    cutoff_board = (_now_br - timedelta(days=days_f)).replace(
+    # Janela "Últimos N dias" — filtra o board via last_msg_at.
+    cutoff_board = (_now_br - timedelta(days=days)).replace(
         hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
 
     q = db.query(_CO).filter(
@@ -5773,6 +5768,25 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
                 "canal": r.canal or canal,
                 "stalled": _bh > _BIZ_DAY_H, "stalled_days": int(_bh // _BIZ_DAY_H),
             })
+    return all_items
+
+
+@router.get("/dashboard/oportunidades", response_class=HTMLResponse, include_in_schema=False)
+def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
+    access = _get_access(request, db)
+    if access is None:
+        return RedirectResponse("/dashboard/login", status_code=302)
+    is_admin = (access or {}).get("role") == "admin"
+    canal    = _req_canal(request, default="")
+    tipo_f   = (request.query_params.get("tipo") or "").strip()
+    agente_f = (request.query_params.get("agente") or "").strip()
+    time_f   = (request.query_params.get("time") or "").strip()
+    try:
+        days_f = max(1, min(365, int(request.query_params.get("dias") or 30)))
+    except (TypeError, ValueError):
+        days_f = 30
+
+    all_items = _opp_all_items(db, canal, access, days=days_f)
     db.close()
 
     agents = sorted({i["agente"] for i in all_items if i["agente"]})
@@ -5991,6 +6005,7 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         f'<a class="sb-item" href="/dashboard/sem-resposta{_cq}"><span>Sem resposta</span></a>'
         f'<a class="sb-item" href="/dashboard/copiloto{_cq}"><span>Copiloto IA</span></a>'
         f'<a class="sb-item on" href="/dashboard/oportunidades{_cq}"><span>Oportunidades</span></a>'
+        f'<a class="sb-item" href="/dashboard/pipeline{_cq}"><span>Pipeline (R$)</span></a>'
         f'<a class="sb-item" href="/dashboard/agentes{_cq}"><span>Agentes</span></a>'
         '</div>'
         '<div class="sb-sec"><div class="sb-sec-h">Análise</div>'
@@ -7061,7 +7076,7 @@ function pautaExcluir(id){
         + _v2nav("Visão geral", "/dashboard/overview" + _cq) + _v2nav("Conversas", "/dashboard" + _cq)
         + _v2nav("Alertas", "/dashboard/alertas" + _cq) + _v2nav("Sem resposta", "/dashboard/sem-resposta" + _cq)
         + _v2nav("Copiloto IA", "/dashboard/copiloto" + _cq)
-        + _v2nav("Oportunidades", "/dashboard/oportunidades" + _cq) + _v2nav("Agentes", "/dashboard/agentes" + _cq) + '</nav>'
+        + _v2nav("Oportunidades", "/dashboard/oportunidades" + _cq) + _v2nav("Pipeline (R$)", "/dashboard/pipeline" + _cq) + _v2nav("Agentes", "/dashboard/agentes" + _cq) + '</nav>'
         '<div class="spaced" style="font-size:9.5px;font-weight:600;letter-spacing:0.22em;color:#4a5369;padding:0 6px 10px;">ANÁLISE</div>'
         '<nav style="display:flex;flex-direction:column;gap:1px;margin-bottom:22px;">'
         + _v2nav("Temas", "/dashboard/temas" + _cq, active=True) + _v2nav("Clientes", "/dashboard/clientes" + _cq)
@@ -10142,6 +10157,7 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
         + _sr_nav("Sem resposta", "/dashboard/sem-resposta" + canal_qs, active=True)
         + _sr_nav("Copiloto IA", "/dashboard/copiloto" + canal_qs)
         + _sr_nav("Oportunidades", "/dashboard/oportunidades" + canal_qs)
+        + _sr_nav("Pipeline (R$)", "/dashboard/pipeline" + canal_qs)
         + _sr_nav("Agentes", "/dashboard/agentes" + canal_qs)
         + '<div class="nav-group">Análise</div>'
         + _sr_nav("Temas", "/dashboard/temas" + canal_qs)
@@ -13987,6 +14003,7 @@ def dashboard_mensagens(request: Request, db: Session = Depends(get_db)):
 # Changelog curado (legível pro time). Mais recente no topo. t: new/imp/fix.
 _PATCH_NOTES = [
     {"date": "26/06/2026", "title": "Patch Notes e avaliação mais justa", "items": [
+        {"t": "new", "x": "Nova aba <b>Pipeline (R$)</b>: ranking de receita <b>por assessor</b> — quanto cada um tem em aberto, já ganhou e quantos clientes estão em risco de saída — além de quantas oportunidades estão <b>paradas</b> (e há quantos dias) e um consolidado <b>por mesa</b>. Clique no assessor pra ver as oportunidades quentes envelhecendo. Usa as mesmas oportunidades do Kanban, só reagrupadas por quem atende."},
         {"t": "new", "x": "Nova aba <b>Patch Notes</b> (esta página) — daqui pra frente toda atualização do Grampo fica registrada aqui pro time acompanhar."},
         {"t": "imp", "x": "<b>Disparos</b>: ao clicar numa campanha, agora aparece também o <b>texto da mensagem disparada</b> (o template enviado), além da lista de quem recebeu e respondeu."},
         {"t": "fix", "x": "A IA parou de tratar como <b>erro</b> coisas que não são falha de atendimento: responder por <b>áudio</b>, <b>tom/linguagem informal</b> (abreviações, emojis, 'Legal!') e o detalhe de 'não aproveitou o 👍'. Os erros reais — atrasos, mensagens duplicadas, não responder, informação errada, vazamento de dado — continuam contando normalmente."},
@@ -14633,6 +14650,234 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
 function toggleDisp(id){{var r=document.getElementById(id);if(r){{r.style.display=(r.style.display==='none'?'table-row':'none');}}}}
 </script>
 {_DISPAROS_KANBAN_JS}
+</body></html>""")
+
+
+# ── Pipeline de Receita por Assessor ──────────────────────────────────────────
+# Reagrupa as MESMAS oportunidades do Kanban (/oportunidades) POR ASSESSOR, em
+# R$: quanto cada um tem em aberto (mapeada+execução), quanto já ganhou, quantas
+# oportunidades estão paradas (sem atividade > 1 dia útil) e há quantos dias, e
+# quantos clientes estão em risco de saída. Zero captura nova — usa _opp_all_items.
+
+def _pipeline_assessor_data(db: Session, canal: str, access: dict, days: int = 30) -> dict:
+    items = _opp_all_items(db, canal, access, days=days)
+
+    by_agent: dict[str, dict] = {}
+    for i in items:
+        ag = i["agente"] or "—"
+        d = by_agent.get(ag)
+        if d is None:
+            d = by_agent[ag] = {
+                "agente": ag, "mesa": i["time"] or "Outros",
+                "aberto": 0.0, "ganho": 0.0,
+                "n_abertas": 0, "n_ganha": 0, "n_perd": 0, "n_risco": 0,
+                "stalled": [], "open_items": [],
+            }
+        cap = (i["tipo"] != "risco_saida")   # captação (risco_saida é retenção)
+        val = i["valor"] if i["valor"] else 0
+        stage = i["stage"]
+        if stage in ("mapeada", "execucao"):
+            if cap:
+                d["aberto"] += val
+                d["n_abertas"] += 1
+                d["open_items"].append(i)
+            else:
+                d["n_risco"] += 1            # cliente em risco de saída, ainda aberto
+            if i["stalled"]:
+                d["stalled"].append(i)
+        elif stage == "ganha" and cap:
+            d["ganho"] += val
+            d["n_ganha"] += 1
+        elif stage == "perdido" and cap:
+            d["n_perd"] += 1
+
+    rows = []
+    for d in by_agent.values():
+        nc = d["n_ganha"] + d["n_perd"]
+        d["conv"] = round(100 * d["n_ganha"] / nc) if nc else 0
+        st = d["stalled"]
+        d["n_paradas"] = len(st)
+        d["idade_media"] = round(sum(x["stalled_days"] for x in st) / len(st), 1) if st else 0.0
+        # Quentes envelhecendo: paradas, maiores R$ primeiro, depois mais dias parado.
+        d["hot"] = sorted(st, key=lambda x: ((x["valor"] or 0), x["stalled_days"]), reverse=True)
+        rows.append(d)
+    rows.sort(key=lambda d: (d["aberto"], d["ganho"], d["n_abertas"]), reverse=True)
+
+    by_mesa: dict[str, dict] = {}
+    for d in rows:
+        m = by_mesa.get(d["mesa"])
+        if m is None:
+            m = by_mesa[d["mesa"]] = {
+                "mesa": d["mesa"], "assessores": 0, "aberto": 0.0, "ganho": 0.0,
+                "n_abertas": 0, "n_paradas": 0, "n_risco": 0, "n_ganha": 0, "n_perd": 0,
+            }
+        m["assessores"] += 1
+        for k in ("aberto", "ganho", "n_abertas", "n_paradas", "n_risco", "n_ganha", "n_perd"):
+            m[k] += d[k]
+    mesas = []
+    for m in by_mesa.values():
+        nc = m["n_ganha"] + m["n_perd"]
+        m["conv"] = round(100 * m["n_ganha"] / nc) if nc else 0
+        mesas.append(m)
+    mesas.sort(key=lambda m: m["aberto"], reverse=True)
+
+    all_stalled = [x for d in rows for x in d["stalled"]]
+    tot = {
+        "aberto": sum(d["aberto"] for d in rows),
+        "ganho": sum(d["ganho"] for d in rows),
+        "n_abertas": sum(d["n_abertas"] for d in rows),
+        "n_paradas": sum(d["n_paradas"] for d in rows),
+        "n_risco": sum(d["n_risco"] for d in rows),
+        "n_assessores": len(rows),
+        "idade_media": round(sum(x["stalled_days"] for x in all_stalled) / len(all_stalled), 1) if all_stalled else 0.0,
+    }
+    return {"rows": rows, "mesas": mesas, "tot": tot}
+
+
+@router.get("/dashboard/pipeline", response_class=HTMLResponse, include_in_schema=False)
+def dashboard_pipeline(request: Request, db: Session = Depends(get_db)):
+    access = _get_access(request, db)
+    if access is None:
+        return _auth_redirect()
+    canal = _req_canal(request)
+    try:
+        dias = int(request.query_params.get("dias", "30"))
+    except Exception:
+        dias = 30
+    if dias not in (7, 30, 90):
+        dias = 30
+
+    data = _pipeline_assessor_data(db, canal, access, days=dias)
+    db.close()
+    rows, mesas, tot = data["rows"], data["mesas"], data["tot"]
+
+    def _pbtn(d, lbl):
+        on = (d == dias)
+        st = ("background:#0fa968;color:#fff;border-color:#0fa968" if on
+              else "background:#111a2e;color:#8a96aa;border-color:#1a2540")
+        return (f'<a href="/dashboard/pipeline?canal={canal}&dias={d}" '
+                f'style="text-decoration:none;padding:5px 13px;border:1px solid;border-radius:7px;'
+                f'font-size:12px;font-weight:600;{st}">{lbl}</a>')
+    period_btns = _pbtn(7, "7 dias") + _pbtn(30, "30 dias") + _pbtn(90, "90 dias")
+
+    def _conv_color(c):
+        return "#0fa968" if c >= 40 else "#f59e0b" if c >= 20 else "#ef6b73"
+
+    # ── Ranking por assessor ──────────────────────────────────────────────────
+    rank_html = ""
+    for idx, d in enumerate(rows):
+        rid = f"pa_{idx}"
+        cc = _conv_color(d["conv"])
+        idade = (f'{d["idade_media"]:.0f}d'.replace(".0d", "d") if d["idade_media"] else "—")
+        paradas_cell = (f'<span style="color:#f59e0b;font-weight:700">{d["n_paradas"]}</span>'
+                        if d["n_paradas"] else '<span style="color:#5a6a8a">0</span>')
+        risco_cell = (f'<span style="color:#ef6b73;font-weight:700">{d["n_risco"]}</span>'
+                      if d["n_risco"] else '<span style="color:#5a6a8a">0</span>')
+        # Linha expansível: oportunidades quentes paradas do assessor.
+        hot = d["hot"]
+        if hot:
+            hot_rows = ""
+            for h in hot[:30]:
+                tlabel = _OPP_TIPOS.get(h["tipo"], ("Oportunidade", "", ""))[0]
+                vfmt = _fmt_brl(h["valor"]) if h["valor"] else (html_mod.escape(h["valor_texto"]) if h["valor_texto"] else "—")
+                conv_link = f'/dashboard/conversa?phone={_url_quote(h["phone"], safe="")}&canal={canal}'
+                titulo = html_mod.escape(h["titulo"] or tlabel)
+                hot_rows += (
+                    f'<tr><td style="padding:4px 12px">{html_mod.escape(h["cliente"])}</td>'
+                    f'<td style="padding:4px 12px;color:#8a96aa;font-size:11px">{html_mod.escape(tlabel)}</td>'
+                    f'<td style="padding:4px 12px;font-size:11px;color:#cdd6e4">{titulo}</td>'
+                    f'<td style="padding:4px 12px;text-align:right;color:#22c55e;font-weight:600">{vfmt}</td>'
+                    f'<td style="padding:4px 12px;text-align:center;color:#f59e0b">{h["stalled_days"]}d parado</td>'
+                    f'<td style="padding:4px 12px"><a href="{conv_link}" target="_blank" style="color:#0fa968;font-size:11px">abrir →</a></td></tr>')
+            detail = (
+                f'<div style="padding:10px 14px 6px"><div style="font-size:10px;letter-spacing:.5px;color:#f59e0b;font-weight:700;margin-bottom:6px">🔥 OPORTUNIDADES QUENTES PARADAS ({len(hot)})</div>'
+                f'<table style="width:100%;font-size:12px"><tbody>{hot_rows}</tbody></table>'
+                + (f'<div style="padding:6px 12px;color:#5a6a8a;font-size:11px">… e mais {len(hot) - 30} paradas</div>' if len(hot) > 30 else "")
+                + '</div>')
+            cursor = "cursor:pointer"
+            chev = ' <span style="color:#5a6a8a;font-size:10px">▸</span>'
+        else:
+            detail = ""
+            cursor = ""
+            chev = ""
+        rank_html += (
+            f'<tr onclick="togglePa(\'{rid}\')" style="{cursor}">'
+            f'<td style="text-align:center;color:#5a6a8a;font-weight:700">{idx + 1}</td>'
+            f'<td style="font-weight:600">{html_mod.escape(_short_agent_name(d["agente"]))}{chev}</td>'
+            f'<td style="color:#8a96aa;font-size:12px">{html_mod.escape(d["mesa"])}</td>'
+            f'<td style="text-align:right;font-weight:700;color:#f59e0b">{_fmt_brl(d["aberto"]) if d["aberto"] else "—"}</td>'
+            f'<td style="text-align:right;color:#22c55e">{_fmt_brl(d["ganho"]) if d["ganho"] else "—"}</td>'
+            f'<td style="text-align:center">{d["n_abertas"]}</td>'
+            f'<td style="text-align:center">{paradas_cell}</td>'
+            f'<td style="text-align:center;color:#8a96aa">{idade}</td>'
+            f'<td style="text-align:center;color:{cc};font-weight:700">{d["conv"]}%</td>'
+            f'<td style="text-align:center">{risco_cell}</td>'
+            f'</tr>')
+        if detail:
+            rank_html += f'<tr id="{rid}" style="display:none"><td colspan="10" style="padding:0;background:#0b1120">{detail}</td></tr>'
+    if not rank_html:
+        rank_html = ('<tr><td colspan="10" style="text-align:center;color:#4a5a7a;padding:30px">'
+                     'Nenhuma oportunidade no período. Rode uma varredura em <b>Oportunidades</b> para popular o pipeline.</td></tr>')
+
+    # ── Consolidado por mesa ──────────────────────────────────────────────────
+    mesa_html = ""
+    for m in mesas:
+        cc = _conv_color(m["conv"])
+        mesa_html += (
+            f'<tr><td style="font-weight:600">{html_mod.escape(m["mesa"])}</td>'
+            f'<td style="text-align:center;color:#8a96aa">{m["assessores"]}</td>'
+            f'<td style="text-align:right;font-weight:700;color:#f59e0b">{_fmt_brl(m["aberto"]) if m["aberto"] else "—"}</td>'
+            f'<td style="text-align:right;color:#22c55e">{_fmt_brl(m["ganho"]) if m["ganho"] else "—"}</td>'
+            f'<td style="text-align:center">{m["n_abertas"]}</td>'
+            f'<td style="text-align:center;color:{"#f59e0b" if m["n_paradas"] else "#5a6a8a"}">{m["n_paradas"]}</td>'
+            f'<td style="text-align:center;color:{cc};font-weight:700">{m["conv"]}%</td>'
+            f'<td style="text-align:center;color:{"#ef6b73" if m["n_risco"] else "#5a6a8a"}">{m["n_risco"]}</td>'
+            f'</tr>')
+    if not mesa_html:
+        mesa_html = '<tr><td colspan="8" style="text-align:center;color:#4a5a7a;padding:24px">—</td></tr>'
+
+    idade_geral = (f'{tot["idade_media"]:.0f}d'.replace(".0d", "d") if tot["idade_media"] else "—")
+    nav = _nav_html("pipeline", canal=canal, is_admin=(access or {}).get('role') == 'admin', title="Pipeline (R$)")
+    return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo — Pipeline por Assessor</title>{COMMON_CSS}</head><body>
+{nav}
+<div class="container">
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:8px">
+    <p style="color:#5a6a8a;font-size:12px;margin:0;max-width:620px">Pipeline de receita <b>por assessor</b>, em R$ — as mesmas oportunidades do Kanban de <b>Oportunidades</b>, reagrupadas por quem atende. <b>Em aberto</b> = mapeada + em execução; <b>parada</b> = sem atividade na conversa por mais de 1 dia útil.</p>
+    <div style="display:flex;gap:6px">{period_btns}</div>
+  </div>
+  <div style="background:#0d1a2e;border:1px solid #1a2540;border-left:3px solid #f59e0b;border-radius:0 8px 8px 0;padding:8px 14px;font-size:11.5px;color:#8a96aa;margin-bottom:16px">
+    💡 Os valores em R$ são <b>estimativas da IA</b> a partir das conversas (só conta oportunidades com valor identificado). O nº de oportunidades conta todas; o R$ conta as que têm valor.
+  </div>
+  <div class="kpi-row">
+    <div class="kpi" style="border-top:3px solid #f59e0b"><div class="val" style="color:#f59e0b">{_fmt_brl(tot["aberto"]) if tot["aberto"] else "—"}</div><div class="label">Em aberto (R$)</div></div>
+    <div class="kpi" style="border-top:3px solid #22c55e"><div class="val" style="color:#22c55e">{_fmt_brl(tot["ganho"]) if tot["ganho"] else "—"}</div><div class="label">Ganho (R$)</div></div>
+    <div class="kpi" style="border-top:3px solid #4a9eff"><div class="val" style="color:#4a9eff">{tot["n_abertas"]}</div><div class="label">Oportunidades abertas</div></div>
+    <div class="kpi" style="border-top:3px solid #f59e0b"><div class="val" style="color:#f59e0b">{tot["n_paradas"]}</div><div class="label">Paradas (idade méd. {idade_geral})</div></div>
+    <div class="kpi" style="border-top:3px solid #ef6b73"><div class="val" style="color:#ef6b73">{tot["n_risco"]}</div><div class="label">Clientes em risco de saída</div></div>
+    <div class="kpi" style="border-top:3px solid #c4a3ff"><div class="val" style="color:#c4a3ff">{tot["n_assessores"]}</div><div class="label">Assessores com pipeline</div></div>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="width:8px;height:8px;border-radius:50%;background:#f59e0b;display:inline-block"></span><h2 style="margin:0;font-size:15px">Ranking por assessor</h2></div>
+    <p style="color:#5a6a8a;font-size:11px;margin-bottom:12px">Ordenado por R$ em aberto. Clique num assessor para ver as <b>oportunidades quentes paradas</b> dele (maiores valores envelhecendo).</p>
+    <table>
+      <thead><tr><th style="text-align:center">#</th><th>Assessor</th><th>Mesa</th><th style="text-align:right">Em aberto</th><th style="text-align:right">Ganho</th><th style="text-align:center">Abertas</th><th style="text-align:center">Paradas</th><th style="text-align:center">Idade méd.</th><th style="text-align:center">Conv.</th><th style="text-align:center">Risco</th></tr></thead>
+      <tbody>{rank_html}</tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span style="width:8px;height:8px;border-radius:50%;background:#c4a3ff;display:inline-block"></span><h2 style="margin:0;font-size:15px">Consolidado por mesa</h2></div>
+    <p style="color:#5a6a8a;font-size:11px;margin-bottom:12px">Soma do pipeline de cada mesa (segmento).</p>
+    <table>
+      <thead><tr><th>Mesa</th><th style="text-align:center">Assessores</th><th style="text-align:right">Em aberto</th><th style="text-align:right">Ganho</th><th style="text-align:center">Abertas</th><th style="text-align:center">Paradas</th><th style="text-align:center">Conv.</th><th style="text-align:center">Risco</th></tr></thead>
+      <tbody>{mesa_html}</tbody>
+    </table>
+  </div>
+</div>
+<script>
+function togglePa(id){{var r=document.getElementById(id);if(r){{r.style.display=(r.style.display==='none'?'table-row':'none');}}}}
+</script>
 </body></html>""")
 
 
