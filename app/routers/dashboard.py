@@ -4351,7 +4351,7 @@ NÃO considere como erro do assessor (não liste em "erros" nem baixe a nota por
 - Tratar dados pessoais/sensíveis do cliente (saúde, documentos, valores, CPF) pelo WhatsApp no atendimento normal — é o canal sancionado. Só vira erro se o assessor vazou para a pessoa ERRADA, encaminhou para fora da empresa, ou expôs publicamente.
 - NUNCA afirme questões técnicas de segurança/criptografia ("sem criptografia", "canal inseguro", "risco de conformidade pelo canal") — isso foge do escopo e não é responsabilidade do assessor.
 - Responder por ÁUDIO é uma forma legítima de atender. NÃO liste como erro nem baixe a nota por usar áudio, por não confirmar antes se o cliente podia ouvir, ou por não mandar transcrição/resumo. Só vira problema se o cliente DISSE que não conseguia ouvir (ou pediu texto) e foi ignorado.
-Avalie SÓ a qualidade do atendimento (clareza, agilidade, cordialidade, resolução), não o estilo/canal/formato de comunicação.
+Avalie SÓ a qualidade do atendimento (clareza, agilidade, cordialidade, resolução), não o estilo/canal/formato de comunicação. Isso vale também para "pontos_melhoria": NÃO sugira trocar áudio por texto, mandar transcrição/resumo de áudio, nem mudar de canal/criptografia.
 
 Use frases curtas e PADRONIZADAS (reaproveitáveis entre conversas), não descrições longas.
 
@@ -10863,8 +10863,8 @@ def _drop_channel_false_positives(erros: list) -> list:
         low = (e or "").lower()
         if "criptograf" in low:
             continue
-        if ("whatsapp" in low or "canal" in low) and any(
-            w in low for w in ("conformidade", "segur", "lgpd", "criptog", "privacidade")
+        if ("whatsapp" in low or "canal" in low or "canais" in low or "plataforma oficial" in low) and any(
+            w in low for w in ("conformidade", "segur", "lgpd", "criptog", "privacidade", "seguradora")
         ):
             continue
         # Áudio é forma legítima de atender — não é erro de qualidade.
@@ -10987,7 +10987,7 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
                 "url":     "/dashboard/conversa?phone=" + _uq_av(sc.phone, safe="") + "&canal=" + _uq_av(canal, safe=""),
                 "positivos": [str(x) for x in (sc.pontos_positivos or [])][:6],
                 "erros":     _drop_channel_false_positives([str(x) for x in (sc.erros or [])])[:6],
-                "melhorias": [str(x) for x in (sc.pontos_melhoria or [])][:6],
+                "melhorias": _drop_channel_false_positives([str(x) for x in (sc.pontos_melhoria or [])])[:6],
             })
 
         # legacy fallback for erros (v1 rows without structured erros)
@@ -11005,7 +11005,7 @@ def dashboard_avaliacao_agentes(request: Request, db: Session = Depends(get_db))
             "ignorados":   agent_skipped.get(agent, 0),
             "positivos":   _aggregate(slist, "pontos_positivos", 6),
             "erros":       erros,
-            "melhorias":   _aggregate(slist, "pontos_melhoria", 6),
+            "melhorias":   _drop_channel_false_positives(_aggregate(slist, "pontos_melhoria", 8))[:6],
             "atend":       atend,
         })
 
