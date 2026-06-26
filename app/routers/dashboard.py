@@ -13988,6 +13988,7 @@ def dashboard_mensagens(request: Request, db: Session = Depends(get_db)):
 _PATCH_NOTES = [
     {"date": "26/06/2026", "title": "Patch Notes e avaliação mais justa", "items": [
         {"t": "new", "x": "Nova aba <b>Patch Notes</b> (esta página) — daqui pra frente toda atualização do Grampo fica registrada aqui pro time acompanhar."},
+        {"t": "imp", "x": "<b>Disparos</b>: ao clicar numa campanha, agora aparece também o <b>texto da mensagem disparada</b> (o template enviado), além da lista de quem recebeu e respondeu."},
         {"t": "fix", "x": "A IA parou de tratar como <b>erro</b> coisas que não são falha de atendimento: responder por <b>áudio</b>, <b>tom/linguagem informal</b> (abreviações, emojis, 'Legal!') e o detalhe de 'não aproveitou o 👍'. Os erros reais — atrasos, mensagens duplicadas, não responder, informação errada, vazamento de dado — continuam contando normalmente."},
         {"t": "imp", "x": "Os indicadores que definem a nota (tempo de resposta, clareza, cordialidade, necessidade atendida, proatividade) seguem os mesmos — só deixamos de descontar por estilo/formato."},
     ]},
@@ -14251,6 +14252,7 @@ def _disparos_data(db: Session, canal: str, dias: int, access: dict, origem: str
             rows.append({
                 "tid": tid, "ckey": ckey, "name": name, "when": when,
                 "start_iso": camp["start"].isoformat(), "source": source,
+                "text": (tmap.get(tid, "") or ""),
                 "sent": sent, "replied": repl, "engaged": eng, "avanco": av,
                 "rate": (round(repl / sent * 100) if sent else 0),
                 "avg_reply": (sum(rmins) // len(rmins) if rmins else None),
@@ -14499,6 +14501,10 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
                          f'<td style="padding:4px 12px"><a href="{conv_link}" target="_blank" style="color:#0fa968;font-size:11px">abrir →</a></td></tr>')
         more = (f'<div style="padding:6px 12px;color:#5a6a8a;font-size:11px">… e mais {len(r["recipients"]) - 200} destinatários</div>'
                 if len(r["recipients"]) > 200 else "")
+        _txt = (r.get("text") or "").strip()
+        _msg = (f'<div style="padding:12px 14px 6px"><div style="font-size:10px;letter-spacing:.5px;color:#5a6a8a;font-weight:700;margin-bottom:6px">📤 MENSAGEM DISPARADA</div>'
+                f'<div style="font-size:12.5px;color:#e7dcff;line-height:1.55;white-space:pre-wrap;background:#241a3d;border:1px solid #6d4fd0;border-radius:8px;padding:11px 13px">{html_mod.escape(_txt)}</div>'
+                f'<div style="font-size:10px;color:#5a6a8a;margin-top:5px">Trechos entre chaves são preenchidos por cliente (nome, etc.)</div></div>') if _txt else ''
         camp_html += (
             f'<tr onclick="toggleDisp(\'{did}\')" style="cursor:pointer">'
             f'<td style="font-weight:600">{html_mod.escape(r["name"])}</td>'
@@ -14509,7 +14515,7 @@ def dashboard_disparos(request: Request, db: Session = Depends(get_db)):
             f'<td style="text-align:center;color:#8a96aa">{_fmt_mins(r["avg_reply"])}</td>'
             f'<td style="text-align:center;color:#c4a3ff">{r["avanco"]}</td>'
             f'</tr>'
-            f'<tr id="{did}" style="display:none"><td colspan="7" style="padding:0;background:#0b1120">'
+            f'<tr id="{did}" style="display:none"><td colspan="7" style="padding:0;background:#0b1120">{_msg}'
             f'<table style="width:100%;font-size:12px;border:none"><tbody>{rec_rows}</tbody></table>{more}</td></tr>'
         )
     if not camp_html:
