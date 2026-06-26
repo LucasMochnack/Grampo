@@ -4350,7 +4350,8 @@ NÃO considere como erro do assessor (não liste em "erros" nem baixe a nota por
 - Usar o WhatsApp para atender — é o canal oficial e seguro da empresa (criptografia ponta-a-ponta); o assessor NÃO escolhe o canal.
 - Tratar dados pessoais/sensíveis do cliente (saúde, documentos, valores, CPF) pelo WhatsApp no atendimento normal — é o canal sancionado. Só vira erro se o assessor vazou para a pessoa ERRADA, encaminhou para fora da empresa, ou expôs publicamente.
 - NUNCA afirme questões técnicas de segurança/criptografia ("sem criptografia", "canal inseguro", "risco de conformidade pelo canal") — isso foge do escopo e não é responsabilidade do assessor.
-Avalie SÓ a qualidade do atendimento (clareza, agilidade, cordialidade, resolução), não a política de canal/compliance da empresa.
+- Responder por ÁUDIO é uma forma legítima de atender. NÃO liste como erro nem baixe a nota por usar áudio, por não confirmar antes se o cliente podia ouvir, ou por não mandar transcrição/resumo. Só vira problema se o cliente DISSE que não conseguia ouvir (ou pediu texto) e foi ignorado.
+Avalie SÓ a qualidade do atendimento (clareza, agilidade, cordialidade, resolução), não o estilo/canal/formato de comunicação.
 
 Use frases curtas e PADRONIZADAS (reaproveitáveis entre conversas), não descrições longas.
 
@@ -10853,9 +10854,10 @@ window.META = __META_JSON__;
 
 
 def _drop_channel_false_positives(erros: list) -> list:
-    """Remove 'erros' que NÃO são culpa do assessor (política da empresa): usar
-    o WhatsApp — canal oficial e criptografado — ou tratar dados do cliente nele.
-    Aplica-se aos dados já pontuados; o prompt já evita gerar novos."""
+    """Remove 'erros' que NÃO são culpa do assessor (política/estilo, não qualidade):
+    usar WhatsApp (canal oficial criptografado) ou tratar dados do cliente nele; e
+    responder por áudio (formato legítimo). Aplica-se aos dados já pontuados; o
+    prompt já evita gerar novos."""
     out = []
     for e in erros:
         low = (e or "").lower()
@@ -10863,6 +10865,11 @@ def _drop_channel_false_positives(erros: list) -> list:
             continue
         if ("whatsapp" in low or "canal" in low) and any(
             w in low for w in ("conformidade", "segur", "lgpd", "criptog", "privacidade")
+        ):
+            continue
+        # Áudio é forma legítima de atender — não é erro de qualidade.
+        if "udio" in low and any(
+            w in low for w in ("ouvir", "escutar", "transcri", "confirmar", "resumo escrit", "prefer")
         ):
             continue
         out.append(e)
