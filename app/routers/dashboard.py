@@ -2729,6 +2729,7 @@ _PAGE_TITLES: dict[str, str] = {
     "copiloto":   "Copiloto IA",
     "oportunidades": "Oportunidades",
     "disparos":   "Disparos",
+    "patch-notes": "Patch Notes",
     "temas":      "Temas",
     "evolucao":   "Evolução",
     "acessos":    "Acessos",
@@ -2808,6 +2809,7 @@ def _nav_html(active: str, extra: str = "", canal: str = "", unacked_alerts: int
             + _ni("evolucao", "Evolução", f"/dashboard/evolucao{canal_qs}")
             + _ni("mensagens", "Mensagens iniciais", f"/dashboard/mensagens{canal_qs}")
             + _ni("disparos", "Disparos", f"/dashboard/disparos{canal_qs}")
+            + _ni("patch-notes", "Patch Notes", f"/dashboard/patch-notes{canal_qs}")
             + '</div>'
             + admin_group
         )
@@ -5999,6 +6001,7 @@ def dashboard_oportunidades(request: Request, db: Session = Depends(get_db)):
         f'<a class="sb-item" href="/dashboard/evolucao{_cq}"><span>Evolução</span></a>'
         f'<a class="sb-item" href="/dashboard/mensagens{_cq}"><span>Mensagens iniciais</span></a>'
         f'<a class="sb-item" href="/dashboard/disparos{_cq}"><span>Disparos</span></a>'
+        f'<a class="sb-item" href="/dashboard/patch-notes{_cq}"><span>Patch Notes</span></a>'
         '</div>'
         + _admin_sec +
         '</nav>'
@@ -7064,7 +7067,7 @@ function pautaExcluir(id){
         + _v2nav("Temas", "/dashboard/temas" + _cq, active=True) + _v2nav("Clientes", "/dashboard/clientes" + _cq)
         + _v2nav("Avaliação agentes", "/dashboard/avaliacao-agentes" + _cq) + _v2nav("PDI", "/dashboard/pdi" + _cq)
         + _v2nav("Evolução", "/dashboard/evolucao" + _cq)
-        + _v2nav("Mensagens iniciais", "/dashboard/mensagens" + _cq) + _v2nav("Disparos", "/dashboard/disparos" + _cq) + '</nav>'
+        + _v2nav("Mensagens iniciais", "/dashboard/mensagens" + _cq) + _v2nav("Disparos", "/dashboard/disparos" + _cq) + _v2nav("Patch Notes", "/dashboard/patch-notes" + _cq) + '</nav>'
         + admin_nav +
         '<div style="margin-top:auto;display:flex;align-items:center;gap:11px;padding:12px 8px 0;border-top:1px solid rgba(255,255,255,0.06);">'
         '<div class="spaced" style="width:32px;height:32px;border-radius:50%;background:#13301f;border:1px solid #1f6b40;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#3ddc84;">AV</div>'
@@ -10148,6 +10151,7 @@ def dashboard_sem_resposta(request: Request, db: Session = Depends(get_db)):
         + _sr_nav("Evolução", "/dashboard/evolucao" + canal_qs)
         + _sr_nav("Mensagens iniciais", "/dashboard/mensagens" + canal_qs)
         + _sr_nav("Disparos", "/dashboard/disparos" + canal_qs)
+        + _sr_nav("Patch Notes", "/dashboard/patch-notes" + canal_qs)
     )
     if is_admin:
         nav_links += (
@@ -13977,6 +13981,76 @@ def dashboard_mensagens(request: Request, db: Session = Depends(get_db)):
         </div>
     </div>
     </body></html>""")
+
+
+# ── Patch Notes ───────────────────────────────────────────────────────────────
+# Changelog curado (legível pro time). Mais recente no topo. t: new/imp/fix.
+_PATCH_NOTES = [
+    {"date": "26/06/2026", "title": "Avaliação dos assessores mais justa", "items": [
+        {"t": "fix", "x": "A IA parou de tratar como <b>erro</b> coisas que não são falha de atendimento: responder por <b>áudio</b>, <b>tom/linguagem informal</b> (abreviações, emojis, 'Legal!') e o detalhe de 'não aproveitou o 👍'. Os erros reais — atrasos, mensagens duplicadas, não responder, informação errada, vazamento de dado — continuam contando normalmente."},
+        {"t": "imp", "x": "Os indicadores que definem a nota (tempo de resposta, clareza, cordialidade, necessidade atendida, proatividade) seguem os mesmos — só deixamos de descontar por estilo/formato."},
+    ]},
+    {"date": "25/06/2026", "title": "Aba Disparos, PDI repaginado e Avaliação detalhada", "items": [
+        {"t": "new", "x": "<b>Nova aba Disparos</b>: performance das campanhas em massa — enviados, taxa de resposta por template, tempo até a resposta — e um <b>Kanban de tratativas</b> onde você arrasta cada cliente entre Aguardando · Respondeu · Em conversa · Reunião · Ganho · Perdido."},
+        {"t": "new", "x": "Os <b>disparos em massa</b> (Ferramenta de Campanhas da Zenvia) agora <b>aparecem nas conversas</b>, com bolha violeta e o selo '📢 disparo'. A captura vale a partir de 24/06."},
+        {"t": "imp", "x": "<b>PDI</b> reorganizado nas seções do plano de desenvolvimento (Autoavaliação, Objetivos, Motivação, Desafios, Plano de ação); Motivação virou seção recolhível; botão <b>Exportar PDF</b> (com a parte de Acompanhamento) pra enviar ao assessor; e a página <b>não recarrega mais sozinha</b> — não perde o que você está escrevendo."},
+        {"t": "imp", "x": "<b>Avaliação Agentes</b>: clique em cada atendimento para abrir a <b>memória de cálculo</b> — os pontos positivos, erros e melhorias daquela conversa específica."},
+        {"t": "fix", "x": "Menu lateral <b>consistente</b> em todas as páginas (alguns itens sumiam dependendo da aba aberta)."},
+    ]},
+    {"date": "24/06/2026", "title": "Aba PDI", "items": [
+        {"t": "new", "x": "<b>PDI — Plano de Desenvolvimento Individual</b> por assessor (ciclo mensal), com <b>raio-X automático</b> dos dados do Grampo: nota média, cobertura de produtos, clientes atendidos e oportunidades."},
+    ]},
+    {"date": "23/06/2026", "title": "Compliance, alerta de ingestão e webhook robusto", "items": [
+        {"t": "new", "x": "Novo perfil de acesso <b>Compliance</b> — enxerga só a aba Alertas."},
+        {"t": "imp", "x": "<b>Banner de aviso</b> no topo se a ingestão de mensagens parar (0 eventos por 25 min em horário comercial)."},
+        {"t": "fix", "x": "Webhook mais robusto (2 processos) — evita travar/degradar na Zenvia quando o painel está pesado."},
+    ]},
+    {"date": "22/06/2026", "title": "Gestão de Sistemas, Temas e Copiloto", "items": [
+        {"t": "new", "x": "Nova aba <b>Gestão de Sistemas</b>: explica como cada página funciona, com fluxos visuais."},
+        {"t": "imp", "x": "<b>Temas</b>: mostra só as mesas Alta Renda e On Demand, com a data da análise da IA por conversa."},
+        {"t": "fix", "x": "<b>Copiloto IA</b>: sugestões mais precisas — trata o cliente como cliente da casa, não inventa fatos/produtos e respeita o que o assessor já combinou."},
+    ]},
+]
+
+
+@router.get("/dashboard/patch-notes", response_class=HTMLResponse, include_in_schema=False)
+def dashboard_patch_notes(request: Request, db: Session = Depends(get_db)):
+    access = _get_access(request, db)
+    if access is None:
+        return _auth_redirect()
+    canal = _req_canal(request)
+    db.close()
+    _TAG = {
+        "new": ("🆕 Novidade", "#46cf8e", "rgba(35,177,110,.12)", "rgba(35,177,110,.4)"),
+        "imp": ("✨ Melhoria", "#5b8cf0", "rgba(91,140,240,.12)", "rgba(91,140,240,.4)"),
+        "fix": ("🛠 Correção", "#f0a800", "rgba(240,168,0,.12)", "rgba(240,168,0,.4)"),
+    }
+    blocks = ""
+    for rel in _PATCH_NOTES:
+        rows = ""
+        for it in rel["items"]:
+            lbl, color, bg, bd = _TAG.get(it["t"], _TAG["imp"])
+            rows += (
+                '<div style="display:flex;gap:12px;padding:12px 0;border-top:1px solid #161f33">'
+                f'<span style="flex:0 0 auto;align-self:flex-start;font-size:10px;font-weight:700;color:{color};'
+                f'background:{bg};border:1px solid {bd};border-radius:20px;padding:3px 10px;white-space:nowrap">{lbl}</span>'
+                f'<div style="font-size:13.5px;color:#c8d4e8;line-height:1.55">{it["x"]}</div></div>'
+            )
+        blocks += (
+            '<div class="card" style="margin-bottom:18px">'
+            '<div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:4px">'
+            f'<span style="font-family:\'JetBrains Mono\',monospace;font-size:12px;color:#0fa968;font-weight:700">{rel["date"]}</span>'
+            f'<h2 style="margin:0;font-size:16px">{html_mod.escape(rel["title"])}</h2></div>'
+            f'{rows}</div>'
+        )
+    nav = _nav_html("patch-notes", canal=canal, is_admin=(access or {}).get('role') == 'admin', title="Patch Notes")
+    return HTMLResponse(f"""<!DOCTYPE html><html><head><meta charset="utf-8"><title>Grampo — Patch Notes</title>{COMMON_CSS}</head><body>
+{nav}
+<div class="container">
+  <p style="color:#5a6a8a;font-size:12px;margin:0 0 18px;max-width:620px">Histórico de atualizações do Grampo — as mais recentes no topo. <span style="color:#46cf8e">🆕 Novidade</span> · <span style="color:#5b8cf0">✨ Melhoria</span> · <span style="color:#f0a800">🛠 Correção</span></p>
+  {blocks}
+</div>
+</body></html>""")
 
 
 # ── Disparos / Campanhas Dashboard ────────────────────────────────────────────
