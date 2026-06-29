@@ -419,12 +419,17 @@ TOPIC_RULES: list[tuple[str, str, str, list[str]]] = [
     ("coe",         "COE",                 "#d4af37", [
         "coe","certificado de operações estruturadas","operações estruturadas",
     ]),
-    ("offshore",    "Offshore / Int'l",    "#7c3aed", [
+    ("offshore",    "Câmbio / Internacional", "#7c3aed", [
+        # Internacional / offshore
         "offshore","investimento no exterior","investir no exterior",
         "conta no exterior","investimento internacional","fundo internacional",
         "fundo global","conta global","global investments",
         "remessa internacional","enviar dinheiro para fora",
         "capital no exterior","patrimônio no exterior",
+        # Câmbio (fundido em 29/06/2026)
+        "câmbio","cambio","remessa","moeda estrangeira",
+        "dólar","euro","libra esterlina","iene","yuan",
+        "taxa de câmbio","spread cambial","comprar dólar","vender dólar",
     ]),
     ("carteira",    "Revisão de Carteira", "#64748b", [
         "carteira de investimentos","revisão de carteira","revisar carteira",
@@ -447,12 +452,26 @@ TOPIC_RULES: list[tuple[str, str, str, list[str]]] = [
         "linha de crédito","capital de giro","refinanciamento",
         "parcelamento","alienação fiduciária","alienacao fiduciaria",
     ]),
-    ("cambio",      "Câmbio",              "#a78bfa", [
-        "câmbio","cambio","remessa","moeda estrangeira",
-        "dólar","euro","libra esterlina","iene","yuan",
-        "taxa de câmbio","spread cambial","comprar dólar","vender dólar",
-    ]),
 ]
+
+# IDs de produto antigos → ID canônico atual, após fusões de tópicos. Mantém a
+# cobertura JÁ gravada (ConversationCoverage.produtos) válida sem precisar
+# re-rodar a varredura: "cambio" foi fundido em "offshore" (Câmbio/Internacional)
+# em 29/06/2026.
+_PROD_ALIASES = {"cambio": "offshore"}
+
+
+def _canon_prods(produtos) -> list:
+    """Normaliza uma lista de IDs de produto aplicando os aliases de fusão,
+    sem duplicar e preservando a ordem."""
+    out: list = []
+    seen: set = set()
+    for p in (produtos or []):
+        c = _PROD_ALIASES.get(p, p)
+        if c and c not in seen:
+            seen.add(c)
+            out.append(c)
+    return out
 
 
 def _short_agent_name(name: str) -> str:
@@ -4481,7 +4500,7 @@ def _upsert_coverage(db: Session, phone: str, last_event_id: str, canal: str,
     """Persist which shelf products the advisor offered (Cobertura). Rides the
     weekly score call — see ConversationCoverage."""
     from app.models import ConversationCoverage as _CC
-    prods = [p for p in (produtos or []) if p in _COV_PRODUCT_IDS]
+    prods = [p for p in _canon_prods(produtos) if p in _COV_PRODUCT_IDS]
     row = db.get(_CC, (phone, last_event_id))
     now_utc = datetime.now(timezone.utc)
     if row:
@@ -6132,7 +6151,7 @@ def _suggest_context_block(db, phone: str) -> str:
         cov = db.query(_CC).filter(_CC.phone == phone).order_by(_CC.scored_at.desc()).first()
         if cov and cov.produtos:
             _labels = {tid: lbl for tid, lbl, *_ in TOPIC_RULES}
-            offered = [_labels.get(p, p) for p in cov.produtos if p]
+            offered = [_labels.get(p, p) for p in _canon_prods(cov.produtos) if p]
             if offered:
                 parts.append("Produtos que o assessor já ofereceu: " + ", ".join(offered[:8]))
     except Exception:
@@ -6529,7 +6548,7 @@ def dashboard_temas(request: Request, db: Session = Depends(get_db)):
     try:
         from app.models import ConversationCoverage as _CCq
         for _r in db.query(_CCq).filter(_CCq.canal == canal, _CCq.cov_version == _COV_VERSION).all():
-            cov_by_key[(_r.phone, _r.last_event_id)] = set(_r.produtos or [])
+            cov_by_key[(_r.phone, _r.last_event_id)] = set(_canon_prods(_r.produtos))
     except Exception:
         cov_by_key = {}
     # Resumo mais recente por telefone (para "conversas recentes" no detalhe v2).
@@ -11533,7 +11552,7 @@ def _pdi_raiox_all(db, cycle: str) -> dict:
             if not ag:
                 continue
             cov_agent[(c.phone, c.last_event_id)] = ag
-            prod[ag].update(c.produtos or [])
+            prod[ag].update(_canon_prods(c.produtos))
             clients[ag].add(c.phone)
     except Exception:
         pass
@@ -14058,6 +14077,7 @@ _PATCH_NOTES = [
         {"t": "new", "x": "Nova aba <b>Pipeline (R$)</b>: ranking de receita <b>por assessor</b> — quanto cada um tem em aberto, já ganhou e quantos clientes estão em risco de saída — além de quantas oportunidades estão <b>paradas</b> (e há quantos dias) e um consolidado <b>por mesa</b>. Clique no assessor pra ver as oportunidades quentes envelhecendo. Usa as mesmas oportunidades do Kanban, só reagrupadas por quem atende."},
         {"t": "imp", "x": "Na aba <b>Temas</b>, os cards de <b>Conversas recentes</b> agora são <b>clicáveis</b>: abrem a conversa do cliente já com o <b>tema/produto destacado</b> — um selo no topo mostra qual produto foi identificado e os trechos que mencionam o assunto ficam realçados (a tela rola até a 1ª menção)."},
         {"t": "fix", "x": "Na aba <b>Temas</b>, o <b>resumo</b> da IA nos cards de Conversas recentes não fica mais <b>cortado no meio</b> — agora aparece completo."},
+        {"t": "imp", "x": "Na aba <b>Temas</b>, <b>Câmbio</b> e <b>Offshore/Internacional</b> viraram um único produto na prateleira: <b>Câmbio / Internacional</b> (a prateleira passou de 14 para 13 produtos). A cobertura que já estava registrada como Câmbio continua valendo."},
     ]},
     {"date": "26/06/2026", "title": "Patch Notes e avaliação mais justa", "items": [
         {"t": "new", "x": "Nova aba <b>Patch Notes</b> (esta página) — daqui pra frente toda atualização do Grampo fica registrada aqui pro time acompanhar."},
