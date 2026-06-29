@@ -7015,7 +7015,7 @@ function pautaExcluir(id){
             f'<span style="font-size:12.5px;font-weight:600;color:#e8edf5;">{html_mod.escape(name or phone)}</span>'
             f'<span style="font-size:10.5px;font-weight:600;color:{tc};background:rgba(255,255,255,0.05);border-radius:5px;padding:2px 7px;">{html_mod.escape(tl)}</span>'
             f'<span style="font-size:11px;color:#5b6577;margin-left:auto;font-family:{JM};">{_v2_rel(last_ts_by_phone.get(phone))}</span></div>'
-            + (f'<div style="font-size:12.5px;color:#9aa3b8;line-height:1.45;">{html_mod.escape((resumo_by_phone.get(phone) or "")[:120])}</div>' if resumo_by_phone.get(phone) else "")
+            + (f'<div style="font-size:12.5px;color:#9aa3b8;line-height:1.45;">{html_mod.escape(resumo_by_phone.get(phone) or "")}</div>' if resumo_by_phone.get(phone) else "")
             + _v2_iadate(phone)
             + f'<div class="tconv-open" style="opacity:.55;font-size:11px;color:{tc};margin-top:5px;font-weight:600;">Abrir conversa →</div>'
             + '</div></a>'
@@ -14057,6 +14057,7 @@ _PATCH_NOTES = [
     {"date": "29/06/2026", "title": "Pipeline por assessor e Temas clicável", "items": [
         {"t": "new", "x": "Nova aba <b>Pipeline (R$)</b>: ranking de receita <b>por assessor</b> — quanto cada um tem em aberto, já ganhou e quantos clientes estão em risco de saída — além de quantas oportunidades estão <b>paradas</b> (e há quantos dias) e um consolidado <b>por mesa</b>. Clique no assessor pra ver as oportunidades quentes envelhecendo. Usa as mesmas oportunidades do Kanban, só reagrupadas por quem atende."},
         {"t": "imp", "x": "Na aba <b>Temas</b>, os cards de <b>Conversas recentes</b> agora são <b>clicáveis</b>: abrem a conversa do cliente já com o <b>tema/produto destacado</b> — um selo no topo mostra qual produto foi identificado e os trechos que mencionam o assunto ficam realçados (a tela rola até a 1ª menção)."},
+        {"t": "fix", "x": "Na aba <b>Temas</b>, o <b>resumo</b> da IA nos cards de Conversas recentes não fica mais <b>cortado no meio</b> — agora aparece completo."},
     ]},
     {"date": "26/06/2026", "title": "Patch Notes e avaliação mais justa", "items": [
         {"t": "new", "x": "Nova aba <b>Patch Notes</b> (esta página) — daqui pra frente toda atualização do Grampo fica registrada aqui pro time acompanhar."},
