@@ -3957,14 +3957,14 @@ def dashboard_conversa(request: Request, db: Session = Depends(get_db)):
         """Render message HTML; if any matched alert keyword appears in the
         plain text body, wrap each occurrence in a colored <mark>.
         Returns (html, has_alert_match)."""
-        if not _matched_alert_kws:
+        if not _hl_kws:
             return _render_msg_content(payload), False
         raw = _extract_content_preview(payload, max_len=10000) or ""
         if not raw:
             return _render_msg_content(payload), False
         lower = raw.lower()
         hits: list[str] = []
-        for kw in _matched_alert_kws:
+        for kw in _hl_kws:
             if " " in kw:
                 if kw in lower:
                     hits.append(kw)
@@ -3984,13 +3984,33 @@ def dashboard_conversa(request: Request, db: Session = Depends(get_db)):
             pat = _re.compile(_re.escape(kw_esc), _re.IGNORECASE)
             escaped = pat.sub(
                 lambda mo: (
-                    f'<mark style="background:{alrt_color}55;color:{alrt_color};'
+                    f'<mark style="background:{_hl_color}55;color:{_hl_color};'
                     f'padding:1px 5px;border-radius:3px;font-weight:700">'
                     f'{mo.group(0)}</mark>'
                 ),
                 escaped,
             )
         return escaped, True
+
+    # ── Tema vindo da aba Temas (?tema=<id>) ─────────────────────────────────
+    # Ao abrir a conversa por um card de "Conversas recentes" da aba Temas,
+    # destacamos as menções ao produto/assunto identificado e mostramos um
+    # banner no topo (além de rolar até a 1ª menção). Reaproveita as keywords
+    # de TOPIC_RULES e o mesmo mecanismo de <mark>/auto-scroll dos alertas.
+    _tema_id = (request.query_params.get("tema") or "").strip()
+    _tema_label = ""
+    _tema_color = ""
+    _tema_kws: list[str] = []
+    if _tema_id:
+        for _tid, _tlbl, _tcol, _tkws in TOPIC_RULES:
+            if _tid == _tema_id:
+                _tema_label, _tema_color, _tema_kws = _tlbl, _tcol, list(_tkws)
+                break
+    # Conjunto unificado de termos a destacar + cor. Alerta tem prioridade
+    # visual; sem alerta, usa a cor do tema. Sem nenhum dos dois, fica vazio
+    # (highlight é no-op, comportamento idêntico ao anterior).
+    _hl_kws = list(_matched_alert_kws) + [k for k in _tema_kws if k not in _matched_alert_kws]
+    _hl_color = alrt_color if _matched_alert_kws else (_tema_color or alrt_color)
 
     # Filter out status events for display
     _evs_filtered = [
@@ -4033,14 +4053,40 @@ def dashboard_conversa(request: Request, db: Session = Depends(get_db)):
         else:
             msg_ts = ""
         _hit_attrs = (
-            f' data-hit="{_hit_count}" style="outline:2px solid {alrt_color}aa;'
-            f'box-shadow:0 0 14px {alrt_color}44;outline-offset:2px"'
+            f' data-hit="{_hit_count}" style="outline:2px solid {_hl_color}aa;'
+            f'box-shadow:0 0 14px {_hl_color}44;outline-offset:2px"'
             if _is_hit else ""
         )
         if direction == "OUT":
             msgs_html += f'<div class="gp-msg out"{_hit_attrs}>{content}<div class="gp-msg-t">{msg_ts} ↑</div></div>'
         else:
             msgs_html += f'<div class="gp-msg in"{_hit_attrs}>{content}<div class="gp-msg-t">{msg_ts} ↓</div></div>'
+
+    # ── Cabeçalho/rodapé e banner sensíveis a alerta vs. tema ────────────────
+    if _hit_count:
+        _wlabel = "com alerta" if _matched_alert_kws else f"com menção a {html_mod.escape(_tema_label)}"
+        _hist_extra = f' · <strong style="color:{_hl_color}">{_hit_count}</strong> {_wlabel}'
+    else:
+        _hist_extra = ""
+    _hit_word = "alertas" if _matched_alert_kws else "menções"
+    _tema_banner = ""
+    if _tema_label:
+        if _hit_count:
+            _bn_tail = (f'<span style="font-size:11px;color:#5a6a8a;margin-left:auto">'
+                        f'{_hit_count} trecho{"s" if _hit_count != 1 else ""} destacado{"s" if _hit_count != 1 else ""} ↓</span>')
+        else:
+            _bn_tail = ('<span style="font-size:11px;color:#5a6a8a;margin-left:auto">'
+                        'tema detectado pela IA — sem trecho literal p/ destacar</span>')
+        _tema_banner = (
+            f'<div style="background:{_tema_color}1a;border:1px solid {_tema_color}55;'
+            f'border-left:3px solid {_tema_color};border-radius:10px;padding:11px 16px;'
+            f'margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+            f'<span style="font-size:14px">📌</span>'
+            f'<span style="font-size:12px;color:#8a96aa">Tema desta conversa (veio da aba Temas):</span>'
+            f'<span style="font-size:13px;font-weight:700;color:{_tema_color};'
+            f'background:{_tema_color}1a;border:1px solid {_tema_color}55;border-radius:6px;'
+            f'padding:3px 10px">{html_mod.escape(_tema_label)}</span>{_bn_tail}</div>'
+        )
 
     nav = _nav_html("alertas", canal=canal,
                     is_admin=(access or {}).get("role") == "admin",
@@ -4082,17 +4128,18 @@ def dashboard_conversa(request: Request, db: Session = Depends(get_db)):
     </div>
     <div style="min-width:200px">
       <div style="font-size:11px;color:#5a6a8a;letter-spacing:1px;font-weight:700;margin-bottom:4px">HISTÓRICO</div>
-      <div style="font-size:13px;color:#e8ecf1"><strong>{total_msgs}</strong> mensagens{f' · <strong style=\"color:{alrt_color}\">{_hit_count}</strong> com alerta' if _hit_count else ''}</div>
+      <div style="font-size:13px;color:#e8ecf1"><strong>{total_msgs}</strong> mensagens{_hist_extra}</div>
       <div style="font-family:'JetBrains Mono',monospace;font-size:10.5px;color:#8a96aa;margin-top:2px">{html_mod.escape(period_str)}</div>
     </div>
   </div>
 
+  {_tema_banner}
   <div class="gp-conv-body">
     <div class="gp-chat-msgs" id="msgs-standalone">{msgs_html}</div>
   </div>
 
   <div style="text-align:center;margin-top:14px;font-size:11px;color:#5a6a8a">
-    Visualização carrega até 90 dias de histórico · Sem auto-refresh nesta tela{f' · Use ↑/↓ para navegar entre os {_hit_count} alertas' if _hit_count > 1 else ''}
+    Visualização carrega até 90 dias de histórico · Sem auto-refresh nesta tela{f' · Use ↑/↓ para navegar entre as {_hit_count} {_hit_word}' if _hit_count > 1 else ''}
   </div>
 </div>
 <script>
@@ -6960,7 +7007,9 @@ function pautaExcluir(id){
         # conversas recentes (reais)
         cv = sorted(convos_by_agent.get(a.lower(), []), key=lambda x: last_ts_by_phone.get(x[3]) or _epoch_t, reverse=True)[:4]
         convos_html = "".join(
-            f'<div style="display:flex;gap:11px;align-items:flex-start;background:#0e1422;border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:11px 13px;">'
+            f'<a class="tconv" href="/dashboard/conversa?phone={_url_quote(phone, safe="")}&canal={canal}&tema={tid}" target="_blank" '
+            f'title="Abrir a conversa com o tema “{html_mod.escape(tl)}” destacado" '
+            f'style="display:flex;gap:11px;align-items:flex-start;background:#0e1422;border:1px solid rgba(255,255,255,0.06);border-radius:10px;padding:11px 13px;text-decoration:none;cursor:pointer;transition:border-color .15s,background .15s;">'
             f'<span style="width:6px;height:6px;border-radius:50%;background:{tc};margin-top:6px;flex:none;"></span>'
             f'<div style="flex:1;min-width:0;"><div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:3px;">'
             f'<span style="font-size:12.5px;font-weight:600;color:#e8edf5;">{html_mod.escape(name or phone)}</span>'
@@ -6968,7 +7017,8 @@ function pautaExcluir(id){
             f'<span style="font-size:11px;color:#5b6577;margin-left:auto;font-family:{JM};">{_v2_rel(last_ts_by_phone.get(phone))}</span></div>'
             + (f'<div style="font-size:12.5px;color:#9aa3b8;line-height:1.45;">{html_mod.escape((resumo_by_phone.get(phone) or "")[:120])}</div>' if resumo_by_phone.get(phone) else "")
             + _v2_iadate(phone)
-            + '</div></div>'
+            + f'<div class="tconv-open" style="opacity:.55;font-size:11px;color:{tc};margin-top:5px;font-weight:600;">Abrir conversa →</div>'
+            + '</div></a>'
             for tid, tl, tc, phone, name in cv
         ) or '<div style="font-size:12.5px;color:#6a7589;font-style:italic;">Sem conversas com produto identificado no período.</div>'
 
@@ -7144,6 +7194,8 @@ body{background:#070a12;font-family:'Plus Jakarta Sans',sans-serif;-webkit-font-
 .card{background:#0b101c;border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:14px 18px;}
 .advrow:hover{background:rgba(255,255,255,0.03);}
 .advdetail{display:none;}.advdetail.on{display:block;animation:fadeIn .25s ease;}
+.tconv:hover{border-color:rgba(255,255,255,0.20)!important;background:#121a2c!important;}
+.tconv:hover .tconv-open{opacity:1!important;}
 </style>"""
     V2JS = """<script>
 function selAdv(id){
@@ -14002,8 +14054,11 @@ def dashboard_mensagens(request: Request, db: Session = Depends(get_db)):
 # ── Patch Notes ───────────────────────────────────────────────────────────────
 # Changelog curado (legível pro time). Mais recente no topo. t: new/imp/fix.
 _PATCH_NOTES = [
-    {"date": "26/06/2026", "title": "Patch Notes e avaliação mais justa", "items": [
+    {"date": "29/06/2026", "title": "Pipeline por assessor e Temas clicável", "items": [
         {"t": "new", "x": "Nova aba <b>Pipeline (R$)</b>: ranking de receita <b>por assessor</b> — quanto cada um tem em aberto, já ganhou e quantos clientes estão em risco de saída — além de quantas oportunidades estão <b>paradas</b> (e há quantos dias) e um consolidado <b>por mesa</b>. Clique no assessor pra ver as oportunidades quentes envelhecendo. Usa as mesmas oportunidades do Kanban, só reagrupadas por quem atende."},
+        {"t": "imp", "x": "Na aba <b>Temas</b>, os cards de <b>Conversas recentes</b> agora são <b>clicáveis</b>: abrem a conversa do cliente já com o <b>tema/produto destacado</b> — um selo no topo mostra qual produto foi identificado e os trechos que mencionam o assunto ficam realçados (a tela rola até a 1ª menção)."},
+    ]},
+    {"date": "26/06/2026", "title": "Patch Notes e avaliação mais justa", "items": [
         {"t": "new", "x": "Nova aba <b>Patch Notes</b> (esta página) — daqui pra frente toda atualização do Grampo fica registrada aqui pro time acompanhar."},
         {"t": "imp", "x": "<b>Disparos</b>: ao clicar numa campanha, agora aparece também o <b>texto da mensagem disparada</b> (o template enviado), além da lista de quem recebeu e respondeu."},
         {"t": "fix", "x": "A IA parou de tratar como <b>erro</b> coisas que não são falha de atendimento: responder por <b>áudio</b>, <b>tom/linguagem informal</b> (abreviações, emojis, 'Legal!') e o detalhe de 'não aproveitou o 👍'. Os erros reais — atrasos, mensagens duplicadas, não responder, informação errada, vazamento de dado — continuam contando normalmente."},
