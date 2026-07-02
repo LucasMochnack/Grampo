@@ -364,6 +364,13 @@ AGENT_SEGMENT: dict[str, str] = {
     "Paulo José Teixeira Camarotto Manfio": "On Demand",
     "Vinícius Ruas": "On Demand",
     "Wellington Gutierrez": "On Demand",
+    "Douglas Henrique Cabeço Leite": "On Demand",
+    # Assessores que estavam ATIVOS mas fora do cadastro (add 02/07/2026): sem
+    # isto ficavam sem mesa (invisíveis na Cobertura/Temas) e sem reconhecimento
+    # por assinatura (caíam em "Sem atendente").
+    "Thiago Nunes": "Externo",
+    "Ian de Jorge Carlos": "Mesa RV",
+    "Jefferson de Souza Filho": "PJ",
 }
 
 SEGMENT_COLORS: dict[str, str] = {
@@ -14073,6 +14080,9 @@ def dashboard_mensagens(request: Request, db: Session = Depends(get_db)):
 # ── Patch Notes ───────────────────────────────────────────────────────────────
 # Changelog curado (legível pro time). Mais recente no topo. t: new/imp/fix.
 _PATCH_NOTES = [
+    {"date": "02/07/2026", "title": "Assessores que faltavam no cadastro", "items": [
+        {"t": "fix", "x": "Cadastramos <b>assessores que estavam ativos mas fora da lista</b> do sistema (Douglas, Ian, Thiago e Jefferson). Sem isso, eles ficavam <b>sem mesa</b> — sumiam da aba Temas/Cobertura e de visões por mesa — e parte das conversas deles caía em <b>'Sem atendente'</b>. Agora aparecem com a mesa correta e o Grampo reconhece as conversas deles pela assinatura."},
+    ]},
     {"date": "29/06/2026", "title": "Pipeline por assessor e Temas clicável", "items": [
         {"t": "new", "x": "Nova aba <b>Pipeline (R$)</b>: ranking de receita <b>por assessor</b> — quanto cada um tem em aberto, já ganhou e quantos clientes estão em risco de saída — além de quantas oportunidades estão <b>paradas</b> (e há quantos dias) e um consolidado <b>por mesa</b>. Clique no assessor pra ver as oportunidades quentes envelhecendo. Usa as mesmas oportunidades do Kanban, só reagrupadas por quem atende."},
         {"t": "imp", "x": "Na aba <b>Temas</b>, os cards de <b>Conversas recentes</b> agora são <b>clicáveis</b>: abrem a conversa do cliente já com o <b>tema/produto destacado</b> — um selo no topo mostra qual produto foi identificado e os trechos que mencionam o assunto ficam realçados (a tela rola até a 1ª menção)."},
